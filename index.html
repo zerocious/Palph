@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StudyBuddy — Твой цифровой помощник для учёбы</title>
+    <meta name="description" content="StudyBuddy помогает студентам победить прокрастинацию через геймификацию, цифрового питомца и умный таймер учёбы">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --secondary: #8b5cf6;
+            --accent: #f59e0b;
+            --success: #10b981;
+            --background: #0f172a;
+            --surface: #1e293b;
+            --surface-light: #334155;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --gradient-1: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            --gradient-2: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--background);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Header */
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--surface-light);
+        }
+
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 70px;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 30px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        .nav-links a:hover {
+            color: var(--primary);
+        }
+
+        .cta-button {
+            background: var(--gradient-1);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.3s, box-shadow 0.3s;
+            display: inline-block;
+        }
+
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(99, 102, 241, 0.4);
+        }
+
+        .cta-button.secondary {
+            background: var(--surface-light);
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 160px 0 100px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
+            animation: pulse 15s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 800;
+            margin-bottom: 20px;
+            line-height: 1.1;
+        }
+
+        .hero h1 span {
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto 40px;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .pet-mockup {
+            margin-top: 60px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .pet-avatar {
+            width: 200px;
+            height: 200px;
+            background: var(--gradient-1);
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 5rem;
+            animation: bounce 2s ease-in-out infinite;
+            box-shadow: 0 20px 60px rgba(99, 102, 241, 0.4);
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        /* Stats Section */
+        .stats {
+            padding: 80px 0;
+            background: var(--surface);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 40px;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 30px;
+            background: var(--surface-light);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stat-number {
+            font-size: 3rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        /* Problem Section */
+        .problem {
+            padding: 100px 0;
+        }
+
+        .section-title {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .section-title h2 {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 800;
+            margin-bottom: 20px;
+        }
+
+        .section-title p {
+            color: var(--text-muted);
+            font-size: 1.2rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .problem-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .problem-card {
+            background: var(--surface);
+            padding: 40px;
+            border-radius: 20px;
+            border-left: 4px solid var(--accent);
+        }
+
+        .problem-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+            color: var(--accent);
+        }
+
+        .problem-card p {
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+
+        /* Features Section */
+        .features {
+            padding: 100px 0;
+            background: var(--surface);
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 40px;
+        }
+
+        .feature-card {
+            background: var(--background);
+            padding: 40px;
+            border-radius: 20px;
+            transition: transform 0.3s, box-shadow 0.3s;
+            border: 1px solid var(--surface-light);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .feature-icon {
+            width: 60px;
+            height: 60px;
+            background: var(--gradient-1);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            margin-bottom: 25px;
+        }
+
+        .feature-card h3 {
+            font-size: 1.4rem;
+            margin-bottom: 15px;
+        }
+
+        .feature-card p {
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+
+        /* How It Works */
+        .how-it-works {
+            padding: 100px 0;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 40px;
+            margin-top: 60px;
+        }
+
+        .step {
+            text-align: center;
+            position: relative;
+        }
+
+        .step-number {
+            width: 60px;
+            height: 60px;
+            background: var(--gradient-1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 800;
+            margin: 0 auto 25px;
+        }
+
+        .step h3 {
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+        }
+
+        .step p {
+            color: var(--text-muted);
+        }
+
+        /* Testimonial/Story */
+        .story {
+            padding: 100px 0;
+            background: var(--surface);
+        }
+
+        .story-content {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .story-avatar {
+            width: 100px;
+            height: 100px;
+            background: var(--gradient-2);
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            margin-bottom: 30px;
+        }
+
+        .story blockquote {
+            font-size: 1.3rem;
+            font-style: italic;
+            line-height: 1.8;
+            margin-bottom: 30px;
+            color: var(--text);
+        }
+
+        .story cite {
+            color: var(--text-muted);
+            font-style: normal;
+        }
+
+        /* FAQ */
+        .faq {
+            padding: 100px 0;
+        }
+
+        .faq-list {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .faq-item {
+            background: var(--surface);
+            border-radius: 15px;
+            margin-bottom: 20px;
+            overflow: hidden;
+            border: 1px solid var(--surface-light);
+        }
+
+        .faq-question {
+            padding: 25px 30px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .faq-question::after {
+            content: '+';
+            font-size: 1.5rem;
+            transition: transform 0.3s;
+        }
+
+        .faq-item.active .faq-question::after {
+            transform: rotate(45deg);
+        }
+
+        .faq-answer {
+            padding: 0 30px;
+            max-height: 0;
+            overflow: hidden;
+            transition: all 0.3s;
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+
+        .faq-item.active .faq-answer {
+            padding: 0 30px 25px;
+            max-height: 500px;
+        }
+
+        /* Tips Section */
+        .tips {
+            padding: 100px 0;
+            background: var(--surface);
+        }
+
+        .tips-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .tip-card {
+            background: var(--background);
+            padding: 35px;
+            border-radius: 20px;
+            border-left: 4px solid var(--success);
+        }
+
+        .tip-card h3 {
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+            color: var(--success);
+        }
+
+        .tip-card p {
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+
+        /* CTA Section */
+        .cta-section {
+            padding: 100px 0;
+            text-align: center;
+        }
+
+        .cta-box {
+            background: var(--gradient-1);
+            padding: 80px 40px;
+            border-radius: 30px;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-box::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
+        }
+
+        .cta-box h2 {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 800;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .cta-box p {
+            font-size: 1.2rem;
+            margin-bottom: 40px;
+            opacity: 0.9;
+            position: relative;
+        }
+
+        .cta-box .cta-button {
+            background: white;
+            color: var(--primary);
+            position: relative;
+        }
+
+        .cta-box .cta-button:hover {
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Footer */
+        footer {
+            background: var(--surface);
+            padding: 60px 0 30px;
+            border-top: 1px solid var(--surface-light);
+        }
+
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 40px;
+            margin-bottom: 40px;
+        }
+
+        .footer-logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 15px;
+        }
+
+        .footer-description {
+            color: var(--text-muted);
+            line-height: 1.8;
+        }
+
+        .footer-links h4 {
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+        }
+
+        .footer-links ul {
+            list-style: none;
+        }
+
+        .footer-links li {
+            margin-bottom: 12px;
+        }
+
+        .footer-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .footer-links a:hover {
+            color: var(--primary);
+        }
+
+        .footer-bottom {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 1px solid var(--surface-light);
+            color: var(--text-muted);
+        }
+
+        /* Mobile Menu */
+        .mobile-menu-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none;
+            }
+
+            .mobile-menu-btn {
+                display: block;
+            }
+
+            .hero {
+                padding: 120px 0 60px;
+            }
+
+            .hero-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .pet-avatar {
+                width: 150px;
+                height: 150px;
+                font-size: 4rem;
+            }
+
+            .stats-grid,
+            .problem-grid,
+            .features-grid,
+            .steps,
+            .tips-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cta-box {
+                padding: 50px 25px;
+            }
+        }
+
+        /* Animations */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.6s, transform 0.6s;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="container">
+            <nav>
+                <div class="logo">StudyBuddy</div>
+                <ul class="nav-links">
+                    <li><a href="#problem">Проблема</a></li>
+                    <li><a href="#features">Возможности</a></li>
+                    <li><a href="#how-it-works">Как это работает</a></li>
+                    <li><a href="#faq">FAQ</a></li>
+                </ul>
+                <a href="https://t.me/studybuddy_bot" class="cta-button">Запустить бота</a>
+                <button class="mobile-menu-btn">☰</button>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1>Победи прокрастинацию с <span>цифровым питомцем</span></h1>
+                <p>StudyBuddy — это интегрированная образовательная экосистема, которая превращает учёбу в увлекательную игру с мгновенным вознаграждением</p>
+                <div class="hero-buttons">
+                    <a href="https://t.me/studybuddy_bot" class="cta-button">🚀 Начать бесплатно</a>
+                    <a href="https://t.me/studybuddy_channel" class="cta-button secondary">📢 Наш канал</a>
+                </div>
+                <div class="pet-mockup">
+                    <div class="pet-avatar">🐾</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="stats">
+        <div class="container">
+            <div class="stats-grid">
+                <div class="stat-card fade-in">
+                    <div class="stat-number">78%</div>
+                    <div class="stat-label">студентов испытывают прокрастинацию</div>
+                </div>
+                <div class="stat-card fade-in">
+                    <div class="stat-number">63%</div>
+                    <div class="stat-label">не могут вернуться к регулярной учёбе</div>
+                </div>
+                <div class="stat-card fade-in">
+                    <div class="stat-number">1000+</div>
+                    <div class="stat-label">студентов к декабрю 2026</div>
+                </div>
+                <div class="stat-card fade-in">
+                    <div class="stat-number">0₽</div>
+                    <div class="stat-label">полностью бесплатно</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Problem Section -->
+    <section id="problem" class="problem">
+        <div class="container">
+            <div class="section-title fade-in">
+                <h2>Знакомая ситуация?</h2>
+                <p>Ты не одинок. Эти проблемы знакомы большинству студентов</p>
+            </div>
+            <div class="problem-grid">
+                <div class="problem-card fade-in">
+                    <h3>⏰ Постоянные откладывания</h3>
+                    <p>«Сделаю завтра», «Ещё 5 минут» — эти фразы становятся привычкой. Дедлайны горят, а ты всё ещё листаешь ленту соцсетей.</p>
+                </div>
+                <div class="problem-card fade-in">
+                    <h3>😔 Отсутствие мотивации</h3>
+                    <p>Нет немедленной обратной связи. Ты учишься часами, но не видишь результата. Мотивация тает с каждым днём.</p>
+                </div>
+                <div class="problem-card fade-in">
+                    <h3>📱 Слишком сложные инструменты</h3>
+                    <p>Forest, Anki, Notion — все требуют настройки, изучения, времени. Тебе нужно простое решение прямо сейчас.</p>
+                </div>
+                <div class="problem-card fade-in">
+                    <h3>🎯 Нет системы</h3>
+                    <p>Учёба хаотична: сегодня 5 часов, потом неделя перерыва. Нет регулярности, нет прогресса, нет результата.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <div class="section-title fade-in">
+                <h2>Как StudyBuddy решает проблему</h2>
+                <p>Геймификация + эмоциональная связь + учебный контент = устойчивые привычки</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🐾</div>
+                    <h3>Цифровой питомец</h3>
+                    <p>Персональный мотиватор, который радуется при запуске таймера, грустит при пропуске дней и эволюционирует по мере накопления стрика. Эмоциональная связь, которая заставляет возвращаться.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">💰</div>
+                    <h3>Мгновенное вознаграждение</h3>
+                    <p>1 монета за 1 минуту учёбы. Достижения за каждый этап: «Первый шаг», «Огненный» (3 дня), «Неделя огня» (7 дней). Визуальный прогресс, который видно сразу.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📚</div>
+                    <h3>Учебный контент</h3>
+                    <p>Квизы по реальным предметам (производственный менеджмент). Флеш-карты с интервальным повторением для долгосрочного запоминания. Таймер Pomodoro (25 минут концентрации).</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Единая экосистема</h3>
+                    <p>Telegram-бот для мгновенного доступа и уведомлений. Веб-приложение для глубокой аналитики и статистики. Синхронизация в реальном времени — один профиль, единая статистика.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section id="how-it-works" class="how-it-works">
+        <div class="container">
+            <div class="section-title fade-in">
+                <h2>Как это работает</h2>
+                <p>Начни учиться за 3 простых шага</p>
+            </div>
+            <div class="steps">
+                <div class="step fade-in">
+                    <div class="step-number">1</div>
+                    <h3>Запусти бота</h3>
+                    <p>Перейди в Telegram и нажми /start. Регистрация за 5 секунд без паролей и сложных форм</p>
+                </div>
+                <div class="step fade-in">
+                    <div class="step-number">2</div>
+                    <h3>Запусти таймер</h3>
+                    <p>Выбери длительность сессии (25 минут по умолчанию) и начни учиться. Питомец будет радоваться вместе с тобой</p>
+                </div>
+                <div class="step fade-in">
+                    <div class="step-number">3</div>
+                    <h3>Получай награды</h3>
+                    <p>Копи монеты, открывай достижения, развивай питомца. Смотри прогресс в веб-приложении</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Story Section -->
+    <section class="story">
+        <div class="container">
+            <div class="story-content fade-in">
+                <div class="story-avatar">👨‍💻</div>
+                <blockquote>
+                    «Я создал StudyBuddy, потому что сам столкнулся с прокрастинацией во время учёбы. Перепробовал все приложения — слишком сложные, скучные, без души. Хотел сделать инструмент, который не просто считает минуты, а создаёт эмоциональную связь. Чтобы хотелось возвращаться не из чувства долга, а потому что твой питомец ждёт тебя.»
+                </blockquote>
+                <cite>— Создатель StudyBuddy, студент технического вуза</cite>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section id="faq" class="faq">
+        <div class="container">
+            <div class="section-title fade-in">
+                <h2>Частые вопросы</h2>
+                <p>Ответы на горящие вопросы</p>
+            </div>
+            <div class="faq-list">
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Это действительно бесплатно?</div>
+                    <div class="faq-answer">Да, StudyBuddy полностью бесплатен. Мы используем серверless архитектуру на Supabase и Vercel, что позволяет нам предоставлять все функции без оплаты. Наша цель — помочь 1000+ студентам к декабрю 2026 года.</div>
+                </div>
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Нужно ли скачивать приложение?</div>
+                    <div class="faq-answer">Нет! Основной интерфейс — Telegram-бот, который работает прямо в мессенджере. Веб-приложение открывается в браузере и работает как PWA (можно добавить на главный экран телефона).</div>
+                </div>
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Какие предметы доступны?</div>
+                    <div class="faq-answer">Сейчас доступны квизы по производственному менеджменту. Мы работаем над добавлением новых курсов. Если хочешь предложить свой предмет — напиши нам в канал!</div>
+                </div>
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Как работает система достижений?</div>
+                    <div class="faq-answer">Достижения открываются автоматически при выполнении условий: первая сессия, 3 дня стрика подряд, 7 дней, 1000 монет и другие. Каждое достижение даёт бонусные монеты и визуальное подтверждение в профиле.</div>
+                </div>
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Можно ли отключить уведомления?</div>
+                    <div class="faq-answer">Да, в настройках профиля можно гибко настроить уведомления: утренние (9:00), вечерние (21:00), поздравления со стриком. Полное отключение тоже доступно.</div>
+                </div>
+                <div class="faq-item fade-in">
+                    <div class="faq-question">Что будет с моими данными?</div>
+                    <div class="faq-answer">Мы не собираем персональные данные. Все данные хранятся в зашифрованном виде в Supabase с Row Level Security — ты видишь только свои данные. Соответствуем GDPR и российскому законодательству.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tips Section -->
+    <section class="tips">
+        <div class="container">
+            <div class="section-title fade-in">
+                <h2>Советы по тайм-менеджменту</h2>
+                <p>Используй StudyBuddy максимально эффективно</p>
+            </div>
+            <div class="tips-grid">
+                <div class="tip-card fade-in">
+                    <h3>🍅 Метод Pomodoro</h3>
+                    <p>25 минут концентрации + 5 минут отдыха. После 4 циклов — длинный перерыв 15-30 минут. Идеально для поддержания фокуса без выгорания.</p>
+                </div>
+                <div class="tip-card fade-in">
+                    <h3>🎯 Правило 2 минут</h3>
+                    <p>Если задача занимает меньше 2 минут — сделай её сразу. Не откладывай мелкие дела, они накапливаются и создают чувство перегрузки.</p>
+                </div>
+                <div class="tip-card fade-in">
+                    <h3>📊 Визуализируй прогресс</h3>
+                    <p>Смотри статистику в веб-приложении каждый день. Визуальный прогресс мотивирует лучше любых обещаний. Не прерывай цепь!</p>
+                </div>
+                <div class="tip-card fade-in">
+                    <h3>🌙 Утренние ритуалы</h3>
+                    <p>Начинай день с самой сложной задачи. Утром сила воли на максимуме. Включи утреннее уведомление в 9:00 — питомец разбудит тебя!</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <div class="container">
+            <div class="cta-box fade-in">
+                <h2>Готов победить прокрастинацию?</h2>
+                <p>Присоединяйся к 1000+ студентов, которые уже изменили свой подход к учёбе</p>
+                <a href="https://t.me/studybuddy_bot" class="cta-button">🚀 Запустить StudyBuddy бесплатно</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div>
+                    <div class="footer-logo">StudyBuddy</div>
+                    <p class="footer-description">Интегрированная образовательная экосистема для студентов, которые хотят победить прокрастинацию и сформировать устойчивые учебные привычки.</p>
+                </div>
+                <div class="footer-links">
+                    <h4>Продукт</h4>
+                    <ul>
+                        <li><a href="#features">Возможности</a></li>
+                        <li><a href="#how-it-works">Как это работает</a></li>
+                        <li><a href="#faq">FAQ</a></li>
+                    </ul>
+                </div>
+                <div class="footer-links">
+                    <h4>Сообщество</h4>
+                    <ul>
+                        <li><a href="https://t.me/studybuddy_channel">Telegram канал</a></li>
+                        <li><a href="https://t.me/studybuddy_bot">Telegram бот</a></li>
+                    </ul>
+                </div>
+                <div class="footer-links">
+                    <h4>Разработчикам</h4>
+                    <ul>
+                        <li><a href="#">GitHub</a></li>
+                        <li><a href="#">API документация</a></li>
+                        <li><a href="#">Технологии</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 StudyBuddy. Все права защищены. Сделано с ❤️ для студентов</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // FAQ Accordion
+        document.querySelectorAll('.faq-question').forEach(question => {
+            question.addEventListener('click', () => {
+                const item = question.parentElement;
+                const isActive = item.classList.contains('active');
+                
+                // Close all items
+                document.querySelectorAll('.faq-item').forEach(faq => {
+                    faq.classList.remove('active');
+                });
+                
+                // Open clicked item if it wasn't active
+                if (!isActive) {
+                    item.classList.add('active');
+                }
+            });
+        });
+
+        // Scroll Animation
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.fade-in').forEach(el => {
+            observer.observe(el);
+        });
+
+        // Smooth Scroll
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+
+        // Mobile Menu Toggle
+        const mobileMenuBtn = document.querySelector('.mobile-menu-btn');
+        const navLinks = document.querySelector('.nav-links');
+
+        mobileMenuBtn.addEventListener('click', () => {
+            navLinks.style.display = navLinks.style.display === 'flex' ? 'none' : 'flex';
+            if (navLinks.style.display === 'flex') {
+                navLinks.style.flexDirection = 'column';
+                navLinks.style.position = 'absolute';
+                navLinks.style.top = '70px';
+                navLinks.style.left = '0';
+                navLinks.style.right = '0';
+                navLinks.style.background = 'rgba(15, 23, 42, 0.98)';
+                navLinks.style.padding = '20px';
+                navLinks.style.borderBottom = '1px solid var(--surface-light)';
+            }
+        });
+
+        // Header scroll effect
+        let lastScroll = 0;
+        const header = document.querySelector('header');
+
+        window.addEventListener('scroll', () => {
+            const currentScroll = window.pageYOffset;
+            
+            if (currentScroll > 100) {
+                header.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.3)';
+            } else {
+                header.style.boxShadow = 'none';
+            }
+            
+            lastScroll = currentScroll;
+        });
+    </script>
+</body>
+</html>
