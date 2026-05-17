@@ -14,11 +14,6 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-15) [Алгоритм] SM-2 (SuperMemo-2) для флэш-карт — заменяет `[1,2,4,7]` интервалы для этого режима  
-Ценность: per-card ease factor калибруется автоматически (трудные карточки чаще, лёгкие — реже); проверенный алгоритм (Anki, Mnemosyne); возвращает соответствие оригинальному брифу. Lightner рассмотрен и отвергнут — SM-2 даёт лучшее долгосрочное удержание за ~25 дополнительных строк кода. Референс (не зависимость): thyagoluciano/sm2 на GitHub (Dart, GPL-3.0) — переписываем в Python  
-Готовность: новая таблица `flashcard_progress(user_id, card_hash, ease_factor REAL DEFAULT 2.5, interval_days INTEGER DEFAULT 0, repetitions INTEGER DEFAULT 0, last_review, next_review, PRIMARY KEY(user_id, card_hash))`; чистая функция `sm2_update(quality, reps, ef, interval) -> (new_interval, new_reps, new_ef)` в `services.py` (тестируется юнит-тестом); EF floor 1.3; UI «💡 Показать ответ» → 3-кнопочный inline-rating «❌ Не знал (q=1) / 😐 Сложно (q=3) / ✅ Легко (q=5)»; новый `FlashcardRepository`; существующая `quiz_progress` (ситуационные квизы) не трогается — её бинарный keyword-grader не даёт градиент качества для SM-2  
-Приоритет: Should — закрывает [TODO #5] для режима флэш-карт; для ситуационных квизов SM-2 остаётся «Won't»
-
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
 Готовность:  

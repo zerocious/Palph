@@ -303,6 +303,87 @@ class SessionRepository:
             return row[0] if row else 0
 
 
+class FlashcardRepository:
+    """
+    SM-2 прогресс по флэш-картам (v0.7 #15).
+    Алгоритм-чистая функция живёт в services.sm2_update; репозиторий —
+    только CRUD над таблицей flashcard_progress.
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def get_progress(self, user_id: int, card_hash: str) -> Optional[Dict[str, Any]]:
+        """Возвращает текущее состояние карточки или None если карта новая."""
+        async with self.db.execute(
+            "SELECT ease_factor, interval_days, repetitions, last_review, next_review "
+            "FROM flashcard_progress WHERE user_id = ? AND card_hash = ?",
+            (user_id, card_hash),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def upsert_progress(
+        self,
+        user_id: int,
+        card_hash: str,
+        ease_factor: float,
+        interval_days: int,
+        repetitions: int,
+        last_review: str,
+        next_review: str,
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO flashcard_progress "
+            "(user_id, card_hash, ease_factor, interval_days, repetitions, last_review, next_review) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, card_hash) DO UPDATE SET "
+            "ease_factor = excluded.ease_factor, "
+            "interval_days = excluded.interval_days, "
+            "repetitions = excluded.repetitions, "
+            "last_review = excluded.last_review, "
+            "next_review = excluded.next_review",
+            (user_id, card_hash, ease_factor, interval_days, repetitions, last_review, next_review),
+        )
+        await self.db.commit()
+
+    async def get_next_card_hash(self, user_id: int, candidate_hashes: list[str]) -> Optional[str]:
+        """
+        Возвращает hash следующей карточки для показа:
+          1) overdue карточка с минимальным next_review;
+          2) если overdue нет — первая карта из candidate_hashes,
+             которой нет в flashcard_progress (новая);
+          3) None если ни одной carte due нет.
+        """
+        if not candidate_hashes:
+            return None
+        placeholders = ",".join("?" * len(candidate_hashes))
+
+        # 1) Overdue карты
+        async with self.db.execute(
+            f"SELECT card_hash FROM flashcard_progress "
+            f"WHERE user_id = ? AND card_hash IN ({placeholders}) "
+            f"AND next_review IS NOT NULL AND next_review <= datetime('now') "
+            f"ORDER BY next_review ASC LIMIT 1",
+            (user_id, *candidate_hashes),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row["card_hash"]
+
+        # 2) Новые карты — те, которых нет в таблице
+        async with self.db.execute(
+            f"SELECT card_hash FROM flashcard_progress "
+            f"WHERE user_id = ? AND card_hash IN ({placeholders})",
+            (user_id, *candidate_hashes),
+        ) as cursor:
+            known = {row["card_hash"] for row in await cursor.fetchall()}
+        for h in candidate_hashes:
+            if h not in known:
+                return h
+        return None
+
+
 class AdminRepository:
     """
     Работа с таблицей admins. Источник истины — БД; `bot.py` держит

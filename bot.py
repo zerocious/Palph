@@ -29,8 +29,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
 
 from db import get_db, init_db
-from repository import UserRepository, SessionRepository, AdminRepository
-from services import AchievementService, StudyService, StreakService, ReminderService
+from repository import UserRepository, SessionRepository, AdminRepository, FlashcardRepository
+from services import AchievementService, StudyService, StreakService, ReminderService, sm2_update
 from tasks import streak_scheduler, reminder_scheduler
 
 # ------------------------------------------------------------
@@ -101,6 +101,7 @@ db = None
 user_repo: UserRepository = None
 session_repo: SessionRepository = None
 admin_repo: AdminRepository = None
+flashcard_repo: FlashcardRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -134,6 +135,7 @@ class QuizStates(StatesGroup):
     answering = State()
     answering_mcq = State()
     answering_task = State()
+    answering_flash = State()
 
 class SetupStates(StatesGroup):
     choosing_path = State()
@@ -352,6 +354,14 @@ def get_mcq_active_keyboard() -> ReplyKeyboardMarkup:
 
 def get_task_active_keyboard() -> ReplyKeyboardMarkup:
     """Активная photo-task сессия: только кнопка выхода (ответ — текстом)."""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🛑 Завершить")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_flash_active_keyboard() -> ReplyKeyboardMarkup:
+    """Активная сессия флэш-карт: только выход (рейтинг — inline)."""
     builder = ReplyKeyboardBuilder()
     builder.button(text="🛑 Завершить")
     builder.adjust(1)
@@ -596,6 +606,38 @@ def _normalize_task_answer(text: str) -> str:
     """Нормализует ответ для сравнения: lowercase, убрать пунктуацию, сжать пробелы."""
     no_punct = re.sub(r"[^\w\s]", " ", text.lower())
     return re.sub(r"\s+", " ", no_punct).strip()
+
+
+def _flashcard_hash(term: str) -> str:
+    """8-символьный hash термина (тот же паттерн, что у QuizTerm.hash)."""
+    return hashlib.md5(term.encode("utf-8")).hexdigest()[:8]
+
+
+def load_flashcards(subject_id: str) -> list[dict]:
+    """
+    Читает study_materials/<subject>/flashcards.txt.
+    Формат строки: 'термин || определение'.
+    Возвращает list of dicts: {"term", "definition", "hash"}.
+    Хэш — 8-символьный MD5 термина (PK части в flashcard_progress).
+    """
+    file_path = STUDY_MATERIALS_PATH / subject_id / "flashcards.txt"
+    if not file_path.exists():
+        return []
+    cards = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("||")]
+            if len(parts) == 2:
+                term, definition = parts
+                cards.append({
+                    "term": term,
+                    "definition": definition,
+                    "hash": _flashcard_hash(term),
+                })
+    return cards
 
 def _word_matches_keyword(user_word: str, keyword: str) -> bool:
     """
@@ -1537,15 +1579,6 @@ async def handle_mode_picked(message: Message, state: FSMContext):
     mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
     if not mode_id:
         return
-    # Stub-режим #15: пока без реализации (на случай если кто-то заполнил
-    # flashcards.txt до того, как ship'нулся SM-2 flow).
-    if mode_id == "flashcards":
-        await message.answer(
-            "🚧 Режим флэш-карт в разработке (v0.7 #15).\nВыбери другой режим:",
-            reply_markup=get_mode_keyboard(),
-        )
-        return
-
     subjects = subjects_with_mode(mode_id)
     if not subjects:
         await message.answer(
@@ -1587,6 +1620,8 @@ async def handle_subject_picked(message: Message, state: FSMContext):
         await start_mcq_session(message, state, subject_id, subject_label=message.text)
     elif mode_id == "tasks":
         await start_task_session(message, state, subject_id, subject_label=message.text)
+    elif mode_id == "flashcards":
+        await start_flashcard_session(message, state, subject_id, subject_label=message.text)
     else:
         # На всякий случай — не должно сюда попадать
         await message.answer(
@@ -1944,6 +1979,236 @@ async def handle_task_answer(message: Message, state: FSMContext):
     await state.update_data(task_index=idx + 1, task_attempts=0)
     await asyncio.sleep(1.0)
     await _send_next_task(message.chat.id, state)
+
+
+# ============================================================
+# Flashcards flow with SM-2 (#15)
+# ============================================================
+# UI: 3-кнопочный inline-рейтинг после показа ответа.
+# Маппинг кнопка → quality для sm2_update:
+FLASH_QUALITY_BY_LABEL = {
+    "❌ Не знал":  1,
+    "😐 Сложно":   3,
+    "✅ Легко":    5,
+}
+FLASH_COINS_PER_CARD = 1  # +1🪙 за просмотр независимо от рейтинга
+                         # (честная самооценка > монетомаксимизация)
+
+
+async def start_flashcard_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
+    cards = load_flashcards(subject_id)
+    if not cards:
+        await message.answer(
+            "🚧 Для этого предмета пока нет флэш-карт.",
+            reply_markup=get_mode_keyboard(),
+        )
+        await state.set_state(QuizStates.choosing_mode)
+        return
+
+    cards_by_hash = {c["hash"]: c for c in cards}
+    candidate_hashes = list(cards_by_hash.keys())
+    next_hash = await flashcard_repo.get_next_card_hash(message.from_user.id, candidate_hashes)
+    if next_hash is None:
+        await message.answer(
+            "🎉 Все карточки этого предмета уже проработаны на сегодня!\n"
+            "Возвращайся позже — SM-2 покажет их, когда придёт срок повторения.",
+            reply_markup=get_study_keyboard(),
+        )
+        return
+
+    await state.update_data(
+        flash_cards_by_hash=cards_by_hash,
+        flash_candidate_hashes=candidate_hashes,
+        flash_reviewed_count=0,
+        flash_coins_earned=0,
+        flash_user_id=message.from_user.id,
+        flash_subject_id=subject_id,
+        flash_subject_label=subject_label,
+        flash_current_hash=None,  # будет проставлено в _send_flashcard
+    )
+    await state.set_state(QuizStates.answering_flash)
+    await message.answer(
+        f"🃏 Флэш-карты — {subject_label}\n"
+        f"Алгоритм SM-2 подбирает интервалы автоматически. Будь честен с собой при оценке.",
+        reply_markup=get_flash_active_keyboard(),
+    )
+    await _send_flashcard(message.chat.id, state, next_hash)
+
+
+async def _send_flashcard(chat_id: int, state: FSMContext, card_hash: str):
+    data = await state.get_data()
+    card = data.get("flash_cards_by_hash", {}).get(card_hash)
+    if not card:
+        logger.warning("flash.card_missing_in_session hash=%s", card_hash)
+        await _finish_flashcard_session(chat_id, state)
+        return
+    await state.update_data(flash_current_hash=card_hash)
+    reviewed = data.get("flash_reviewed_count", 0)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💡 Показать ответ", callback_data=f"flash:show:{card_hash}")
+    kb.adjust(1)
+    await bot.send_message(
+        chat_id,
+        f"🃏 Карточка #{reviewed + 1}\n\n<b>{card['term']}</b>",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+async def _finish_flashcard_session(chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    reviewed = data.get("flash_reviewed_count", 0)
+    coins = data.get("flash_coins_earned", 0)
+    subject_label = data.get("flash_subject_label", "")
+    logger.info(
+        "flash.session.complete user_id=%s subject=%s reviewed=%s coins=%s",
+        data.get("flash_user_id"), data.get("flash_subject_id"),
+        reviewed, coins,
+    )
+    if reviewed == 0:
+        msg = "🎉 Все карточки уже проработаны. Возвращайся позже!"
+    else:
+        msg = (
+            f"🎉 Сессия завершена!\n{subject_label}\n"
+            f"Просмотрено карточек: {reviewed}\n"
+            f"🪙 Заработано: {coins} монет"
+        )
+    await bot.send_message(chat_id, msg, reply_markup=get_study_keyboard())
+    await state.clear()
+
+
+@router.message(QuizStates.answering_flash, F.text == "🛑 Завершить")
+async def handle_flashcard_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    reviewed = data.get("flash_reviewed_count", 0)
+    coins = data.get("flash_coins_earned", 0)
+    logger.info(
+        "flash.session.stop user_id=%s subject=%s reviewed=%s coins=%s",
+        message.from_user.id, data.get("flash_subject_id"), reviewed, coins,
+    )
+    await message.answer(
+        f"⏹ Сессия флэш-карт остановлена.\n"
+        f"Просмотрено: {reviewed}\n"
+        f"🪙 Получено: {coins} монет",
+        reply_markup=get_study_keyboard(),
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("flash:show:"))
+async def handle_flashcard_show(callback: CallbackQuery, state: FSMContext):
+    """Тап «💡 Показать ответ» — открывает определение + 3-кнопочный рейтинг."""
+    current_state = await state.get_state()
+    if current_state != QuizStates.answering_flash.state:
+        await callback.answer("Сессия завершена", show_alert=False)
+        return
+    card_hash = callback.data.split(":", 2)[2]
+    data = await state.get_data()
+    card = data.get("flash_cards_by_hash", {}).get(card_hash)
+    if not card:
+        await callback.answer("Карточка не найдена", show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    for label in ("❌ Не знал", "😐 Сложно", "✅ Легко"):
+        kb.button(text=label, callback_data=f"flash:rate:{card_hash}:{FLASH_QUALITY_BY_LABEL[label]}")
+    kb.adjust(3)
+
+    reviewed = data.get("flash_reviewed_count", 0)
+    new_text = (
+        f"🃏 Карточка #{reviewed + 1}\n\n"
+        f"<b>{card['term']}</b>\n\n"
+        f"💡 <i>{card['definition']}</i>\n\n"
+        f"Как тебе далось? Оцени честно — алгоритм подберёт интервал:"
+    )
+    try:
+        await callback.message.edit_text(new_text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        logger.warning("flash.show_edit_failed hash=%s reason=%s", card_hash, e)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("flash:rate:"))
+async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
+    """Тап рейтинга — применяем SM-2, начисляем монету, шлём следующую."""
+    current_state = await state.get_state()
+    if current_state != QuizStates.answering_flash.state:
+        await callback.answer("Сессия завершена", show_alert=False)
+        return
+    try:
+        _, _, card_hash, quality_str = callback.data.split(":", 3)
+        quality = int(quality_str)
+    except (ValueError, IndexError):
+        await callback.answer("Сломанный callback", show_alert=True)
+        return
+    if quality not in (1, 3, 5):
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    user_id = callback.from_user.id
+
+    # Текущее состояние карты в БД (или дефолты для новой)
+    progress = await flashcard_repo.get_progress(user_id, card_hash)
+    if progress:
+        ef = float(progress["ease_factor"])
+        reps = int(progress["repetitions"])
+        interval = int(progress["interval_days"])
+    else:
+        ef, reps, interval = 2.5, 0, 0
+
+    new_interval, new_reps, new_ef = sm2_update(quality, reps, ef, interval)
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    next_review = (now + timedelta(days=new_interval)).strftime("%Y-%m-%d %H:%M:%S")
+    await flashcard_repo.upsert_progress(
+        user_id=user_id,
+        card_hash=card_hash,
+        ease_factor=new_ef,
+        interval_days=new_interval,
+        repetitions=new_reps,
+        last_review=now_str,
+        next_review=next_review,
+    )
+    await user_repo.add_coins(user_id, FLASH_COINS_PER_CARD)
+
+    logger.info(
+        "flash.rated user_id=%s hash=%s quality=%s reps=%s->%s ef=%.2f->%.2f interval=%s->%s next=%s",
+        user_id, card_hash, quality, reps, new_reps, ef, new_ef, interval, new_interval, next_review,
+    )
+
+    # Feedback на той же карте (убираем кнопки, дописываем строку)
+    quality_labels = {1: "❌ Не знал", 3: "😐 Сложно", 5: "✅ Легко"}
+    feedback = (
+        f"\n\n{quality_labels.get(quality, '')} → следующее повторение через "
+        f"<b>{new_interval}</b> дн. (+{FLASH_COINS_PER_CARD} 🪙)"
+    )
+    try:
+        original = callback.message.html_text or callback.message.text or ""
+        await callback.message.edit_text(
+            f"{original}{feedback}",
+            reply_markup=None,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("flash.rate_edit_failed hash=%s reason=%s", card_hash, e)
+    await callback.answer()
+
+    # Обновляем сессионные счётчики
+    await state.update_data(
+        flash_reviewed_count=data.get("flash_reviewed_count", 0) + 1,
+        flash_coins_earned=data.get("flash_coins_earned", 0) + FLASH_COINS_PER_CARD,
+    )
+
+    # Следующая карта
+    candidate_hashes = data.get("flash_candidate_hashes", [])
+    await asyncio.sleep(0.8)
+    next_hash = await flashcard_repo.get_next_card_hash(user_id, candidate_hashes)
+    if next_hash is None:
+        await _finish_flashcard_session(callback.message.chat.id, state)
+        return
+    await _send_flashcard(callback.message.chat.id, state, next_hash)
 
 
 # ============================================================
@@ -2509,12 +2774,13 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, ach_service, study_service, streak_service, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, ach_service, study_service, streak_service, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
     session_repo = SessionRepository(db)
     admin_repo = AdminRepository(db)
+    flashcard_repo = FlashcardRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service)
     bot = Bot(token=BOT_TOKEN)

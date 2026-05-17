@@ -9,6 +9,59 @@ from repository import UserRepository, SessionRepository
 logger = logging.getLogger("studybuddy_bot")
 
 
+# ------------------------------------------------------------
+# SM-2 (SuperMemo-2) — чистая функция для алгоритма повторений.
+# Применяется в режиме флэш-карт (v0.7 #15). Ситуационные квизы
+# остаются на фиксированных интервалах [1,2,4,7] — их keyword-grader
+# не даёт градиента качества для SM-2.
+#
+# Reference (не зависимость, переписано в Python):
+#   thyagoluciano/sm2 на GitHub (Dart, GPL-3.0). Сам алгоритм
+#   опубликован SuperMemo (Wozniak 1985), implementation-agnostic.
+# ------------------------------------------------------------
+EF_FLOOR = 1.3
+
+
+def sm2_update(quality: int, repetitions: int, ease_factor: float, interval_days: int
+               ) -> tuple[int, int, float]:
+    """
+    Стандартное обновление SM-2.
+
+    Args:
+        quality: 0–5. 0 = полный провал, 5 = идеальный ответ.
+                 В нашем 3-кнопочном UI используется q=1/3/5
+                 («❌ Не знал» / «😐 Сложно» / «✅ Легко»).
+        repetitions: текущее число подряд успешных повторений.
+        ease_factor: текущий EF (стартует с 2.5; пол — EF_FLOOR=1.3).
+        interval_days: текущий интервал (дней до показа), 0 для новой карты.
+
+    Returns:
+        (new_interval_days, new_repetitions, new_ease_factor).
+
+    Логика:
+        quality < 3 → сбрасываем repetitions в 0, ставим interval=1 (завтра).
+        quality >= 3 → repetitions += 1; interval по ступенькам:
+                       1-я успешная — 1 день, 2-я — 6 дней, дальше — round(prev * EF).
+        EF корректируется всегда по канонической формуле SM-2:
+            EF += 0.1 − (5 − q) * (0.08 + (5 − q) * 0.02)
+        EF не опускается ниже EF_FLOOR=1.3.
+    """
+    if quality < 3:
+        new_reps = 0
+        new_interval = 1
+    else:
+        new_reps = repetitions + 1
+        if new_reps == 1:
+            new_interval = 1
+        elif new_reps == 2:
+            new_interval = 6
+        else:
+            new_interval = round(interval_days * ease_factor)
+    new_ef = ease_factor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+    new_ef = max(EF_FLOOR, new_ef)
+    return new_interval, new_reps, new_ef
+
+
 class AchievementService:
     """Проверка и выдача достижений. Не зависит от полей target/progress в JSON."""
     def __init__(self, user_repo: UserRepository, definitions: dict):

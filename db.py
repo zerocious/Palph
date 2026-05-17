@@ -85,6 +85,22 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_quiz_user_id ON quiz_progress(user_id);
 
+        -- SM-2 прогресс по флэш-картам (v0.7 #15).
+        -- Используется только в режиме flashcards; ситуационные квизы
+        -- остаются в quiz_progress на фиксированных интервалах.
+        CREATE TABLE IF NOT EXISTS flashcard_progress (
+            user_id INTEGER NOT NULL,
+            card_hash TEXT NOT NULL,
+            ease_factor REAL NOT NULL DEFAULT 2.5,
+            interval_days INTEGER NOT NULL DEFAULT 0,
+            repetitions INTEGER NOT NULL DEFAULT 0,
+            last_review TEXT,
+            next_review TEXT,
+            PRIMARY KEY (user_id, card_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_flashcard_user_next
+            ON flashcard_progress(user_id, next_review);
+
         -- Администраторы бота
         CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY
