@@ -254,6 +254,7 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="reply", description="Ответ пользователю по ID"),
     BotCommand(command="broadcast", description="Рассылка всем"),
     BotCommand(command="notif_status", description="Диагностика уведомлений"),
+    BotCommand(command="analytics", description="📊 Dashboard PA-аналитики (всё в одном)"),
     BotCommand(command="cohort_stats", description="Retention D1/D7/D30 по когортам"),
     BotCommand(command="funnel", description="Activation funnel"),
     BotCommand(command="dau", description="DAU/WAU/MAU + stickiness"),
@@ -3094,7 +3095,7 @@ async def cmd_export(message: Message, command: CommandObject):
         await message.answer("❌ Команда только для админов.")
         return
     arg = (command.args or "").strip().lower()
-    aliases = sorted(analytics_service.EXPORTABLE_TABLES.keys())
+    aliases = sorted(AnalyticsService.EXPORTABLE_TABLES.keys())
     if not arg:
         aliases_str = "\n".join(f"  • <code>{a}</code>" for a in aliases)
         await message.answer(
@@ -3104,7 +3105,7 @@ async def cmd_export(message: Message, command: CommandObject):
             parse_mode="HTML",
         )
         return
-    if arg not in analytics_service.EXPORTABLE_TABLES:
+    if arg not in AnalyticsService.EXPORTABLE_TABLES:
         await message.answer(
             f"❌ Неизвестная таблица: <code>{arg}</code>\n"
             f"Доступно: {', '.join(aliases)}",
@@ -3117,7 +3118,7 @@ async def cmd_export(message: Message, command: CommandObject):
         logger.error("export.failed alias=%s reason=%s detail=%s", arg, type(e).__name__, e)
         await message.answer(f"❌ Export failed: {type(e).__name__}: {e}")
         return
-    table_name = analytics_service.EXPORTABLE_TABLES[arg]
+    table_name = AnalyticsService.EXPORTABLE_TABLES[arg]
     filename = f"{table_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
     size_kb = len(csv_bytes) / 1024
     logger.info("export.done alias=%s table=%s rows=%s size_kb=%.1f", arg, table_name, row_count, size_kb)
@@ -3126,6 +3127,225 @@ async def cmd_export(message: Message, command: CommandObject):
         caption=f"📦 <b>{table_name}</b>\n{row_count} rows · {size_kb:.1f} KB",
         parse_mode="HTML",
     )
+
+
+# ============================================================
+# /analytics — единый dashboard с inline-меню по разделам
+# ============================================================
+async def _build_analytics_home_text() -> str:
+    """Главный экран /analytics: краткая сводка + приглашение."""
+    data = await analytics_service.compute_engagement()
+    stick = data["stickiness"]
+    stick_str = f"{stick * 100:.1f}%" if stick is not None else "—"
+    return (
+        f"📊 <b>PA-аналитика</b>\n\n"
+        f"<i>Today: {data['today']}</i>\n"
+        f"👥 Всего: <b>{data['total_users']}</b> · "
+        f"DAU: <b>{data['dau']}</b> · "
+        f"Stickiness: <b>{stick_str}</b>\n\n"
+        f"Выбери раздел:"
+    )
+
+
+def _build_analytics_menu_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔁 Cohort retention",                callback_data="anlt:cohort")
+    kb.button(text="🎯 Activation funnel",               callback_data="anlt:funnel")
+    kb.button(text="👥 Active users (DAU/WAU/MAU)",      callback_data="anlt:dau")
+    kb.button(text="🎮 Feature adoption",                callback_data="anlt:features")
+    kb.button(text="📦 Export CSV →",                    callback_data="anlt:export_menu")
+    kb.button(text="✖️ Закрыть",                          callback_data="anlt:close")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def _build_analytics_back_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К аналитике", callback_data="anlt:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def _build_analytics_export_menu_keyboard() -> InlineKeyboardMarkup:
+    """Подменю экспорта: 9 таблиц по 2 в ряд + back."""
+    kb = InlineKeyboardBuilder()
+    # AnalyticsService.EXPORTABLE_TABLES — class attribute; не зависит от того,
+    # инициализирован ли global analytics_service (важно для импорта в тестах).
+    for alias in sorted(AnalyticsService.EXPORTABLE_TABLES.keys()):
+        kb.button(text=f"📦 {alias}", callback_data=f"anlt:export:{alias}")
+    kb.button(text="◀️ К аналитике", callback_data="anlt:back")
+    kb.adjust(2)  # 2 колонки автоматически + back на отдельной строке (последний)
+    return kb.as_markup()
+
+
+async def _anlt_check_admin(callback: CallbackQuery) -> bool:
+    """Анти-spoof: callbacks из /analytics доступны только админам."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Только для админов", show_alert=True)
+        return False
+    return True
+
+
+@router.message(Command("analytics"))
+async def cmd_analytics(message: Message):
+    """Единая dashboard-команда: все PA-метрики через inline-меню."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    text = await _build_analytics_home_text()
+    await message.answer(
+        text,
+        reply_markup=_build_analytics_menu_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "anlt:cohort")
+async def handle_anlt_cohort(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_cohort_retention()
+    table = _render_cohort_table(data)
+    text = (
+        f"🔁 <b>Cohort retention</b>\n\n<pre>{table}</pre>\n\n"
+        f"<i>D_N = % активных ровно в день (signup + N). «—» = когорта моложе N дней.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=cohort reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:funnel")
+async def handle_anlt_funnel(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    steps = await analytics_service.compute_funnel()
+    body = _render_funnel(steps)
+    text = (
+        f"🎯 <b>Activation funnel</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>% считается от total registered. Шаги — не strict-subsets.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=funnel reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:dau")
+async def handle_anlt_dau(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_engagement()
+    body = _render_engagement(data)
+    text = (
+        f"👥 <b>Active users</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>Активность = любое событие (Pomodoro / квиз / флэш / MCQ / задача). "
+        f"Stickiness ≥20% — benchmark для consumer apps.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=dau reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:features")
+async def handle_anlt_features(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_feature_usage()
+    body = _render_feature_usage(data)
+    text = f"🎮 <b>Feature adoption</b>\n\n<pre>{body}</pre>"
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=features reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:export_menu")
+async def handle_anlt_export_menu(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    try:
+        await callback.message.edit_text(
+            "📦 <b>Export CSV</b>\n\n"
+            "Выбери таблицу — CSV-файл придёт отдельным сообщением.\n"
+            "После загрузки можно выбрать ещё или вернуться к аналитике.",
+            reply_markup=_build_analytics_export_menu_keyboard(),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=export_menu reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("anlt:export:"))
+async def handle_anlt_export_table(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    alias = callback.data.split(":", 2)[2]
+    if alias not in AnalyticsService.EXPORTABLE_TABLES:
+        await callback.answer("Неизвестная таблица", show_alert=True)
+        return
+    try:
+        csv_bytes, row_count = await analytics_service.export_table_csv(alias)
+    except Exception as e:
+        logger.error("anlt.export_failed alias=%s reason=%s", alias, e)
+        await callback.answer(f"❌ {type(e).__name__}: {e}", show_alert=True)
+        return
+    table_name = AnalyticsService.EXPORTABLE_TABLES[alias]
+    filename = f"{table_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    size_kb = len(csv_bytes) / 1024
+    logger.info("anlt.export.done alias=%s rows=%s size_kb=%.1f", alias, row_count, size_kb)
+    # Отправляем как отдельное сообщение — не editting'ом, чтобы пользователь
+    # мог выбрать ещё одну таблицу без возврата.
+    await callback.message.answer_document(
+        BufferedInputFile(csv_bytes, filename),
+        caption=f"📦 <b>{table_name}</b>\n{row_count} rows · {size_kb:.1f} KB",
+        parse_mode="HTML",
+    )
+    await callback.answer(f"📦 {table_name} sent")
+
+
+@router.callback_query(F.data == "anlt:back")
+async def handle_anlt_back(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    text = await _build_analytics_home_text()
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_menu_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=back reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:close")
+async def handle_anlt_close(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    try:
+        await callback.message.delete()
+    except Exception:
+        # Если delete недоступен (>48ч или нет прав) — редактируем в текст-заглушку
+        try:
+            await callback.message.edit_text("✅ Аналитика закрыта.", reply_markup=None)
+        except Exception:
+            pass
+    await callback.answer()
 
 
 @router.message(Command("cohort_stats"))
@@ -3209,6 +3429,7 @@ async def cmd_help(message: Message):
         "/broadcast <текст> — рассылка всем зарегистрированным\n"
         "/notif_status — диагностика уведомлений (TZ, расписание, попадаешь ли ты в текущую выборку)\n"
         "\n📊 Аналитика (для PA-портфолио):\n"
+        "/analytics — 🎯 единый dashboard со всеми разделами (рекомендую)\n"
         "/cohort_stats — D1/D7/D30 retention по неделям регистрации\n"
         "/funnel — activation funnel (% от регистраций)\n"
         "/dau — DAU/WAU/MAU + stickiness ratio\n"
