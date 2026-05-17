@@ -20,6 +20,7 @@ from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
+    FSInputFile,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from fsm_storage import SQLiteStorage
@@ -132,6 +133,7 @@ class QuizStates(StatesGroup):
     choosing_section = State()
     answering = State()
     answering_mcq = State()
+    answering_task = State()
 
 class SetupStates(StatesGroup):
     choosing_path = State()
@@ -348,6 +350,14 @@ def get_mcq_active_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
+def get_task_active_keyboard() -> ReplyKeyboardMarkup:
+    """Активная photo-task сессия: только кнопка выхода (ответ — текстом)."""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🛑 Завершить")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
 QUIZ_SECTIONS = [
     ("Раздел I", "i"),
     ("Раздел II", "ii"),
@@ -537,6 +547,55 @@ def load_mcq(subject_id: str) -> list[dict]:
                     "wrongs":   parts[2:5],
                 })
     return questions
+
+
+def load_tasks(subject_id: str) -> list[dict]:
+    """
+    Читает study_materials/<subject>/tasks/task-*.json и возвращает список задач.
+    Каждая задача — dict с полями:
+      - 'id': str (из имени файла, напр. 'task-01')
+      - 'problem': str (текстовая подпись к картинке, может быть пустой)
+      - 'accepted': list[str] (принимаемые ответы — без нормализации,
+        нормализация делается в _normalize_task_answer перед сравнением)
+      - 'solution_filename': str (имя файла solution-картинки в той же папке;
+        дефолт — '{id}-solution.png')
+    Задачи без существующего task-NN.png или с пустым accepted — пропускаются
+    с warning'ом в лог. Возвращает задачи отсортированные по id.
+    """
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    tasks = []
+    for json_file in sorted(tasks_dir.glob("task-*.json")):
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning(f"task.load_failed file={json_file.name} reason={e}")
+            continue
+        task_id = json_file.stem  # 'task-01'
+        image_path = tasks_dir / f"{task_id}.png"
+        if not image_path.exists():
+            logger.warning(f"task.missing_image task_id={task_id} expected={image_path.name}")
+            continue
+        accepted = data.get("accepted", [])
+        if not isinstance(accepted, list) or not accepted:
+            logger.warning(f"task.no_accepted task_id={task_id}")
+            continue
+        solution_filename = data.get("solution_image", f"{task_id}-solution.png")
+        tasks.append({
+            "id": task_id,
+            "problem": str(data.get("problem", "")),
+            "accepted": [str(a) for a in accepted],
+            "solution_filename": str(solution_filename),
+        })
+    return tasks
+
+
+def _normalize_task_answer(text: str) -> str:
+    """Нормализует ответ для сравнения: lowercase, убрать пунктуацию, сжать пробелы."""
+    no_punct = re.sub(r"[^\w\s]", " ", text.lower())
+    return re.sub(r"\s+", " ", no_punct).strip()
 
 def _word_matches_keyword(user_word: str, keyword: str) -> bool:
     """
@@ -1384,11 +1443,18 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     """
     Останавливает активный таймер пользователя, начисляет монеты и достижения.
     Возвращает True, если таймер был остановлен; False, если активного таймера не было.
+
+    ВАЖНО: не трогаем FSM-state, если пользователь сейчас в другом flow
+    (MCQ / photo-task / квиз). До v0.7 этот хелпер делал state.clear() безусловно,
+    что ломало MCQ/task-сессии при вызове /stop.
     """
     user_id = message.from_user.id
     task = active_timers.pop(user_id, None)
     if task and not task.done():
         task.cancel()
+    current_state = await state.get_state()
+    if current_state != TimerStates.active.state:
+        return False  # не таймерный flow — не трогаем чужие данные
     data = await state.get_data()
     start_time = data.get("start_time")
     if not start_time:
@@ -1471,16 +1537,11 @@ async def handle_mode_picked(message: Message, state: FSMContext):
     mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
     if not mode_id:
         return
-    # Stub-режимы (#14, #15) — пока без контента/реализации:
+    # Stub-режим #15: пока без реализации (на случай если кто-то заполнил
+    # flashcards.txt до того, как ship'нулся SM-2 flow).
     if mode_id == "flashcards":
         await message.answer(
             "🚧 Режим флэш-карт в разработке (v0.7 #15).\nВыбери другой режим:",
-            reply_markup=get_mode_keyboard(),
-        )
-        return
-    if mode_id == "tasks":
-        await message.answer(
-            "🚧 Режим задач с картинкой в разработке (v0.7 #14).\nВыбери другой режим:",
             reply_markup=get_mode_keyboard(),
         )
         return
@@ -1524,6 +1585,8 @@ async def handle_subject_picked(message: Message, state: FSMContext):
         )
     elif mode_id == "mcq":
         await start_mcq_session(message, state, subject_id, subject_label=message.text)
+    elif mode_id == "tasks":
+        await start_task_session(message, state, subject_id, subject_label=message.text)
     else:
         # На всякий случай — не должно сюда попадать
         await message.answer(
@@ -1673,6 +1736,214 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
     await state.update_data(mcq_index=data.get("mcq_index", 0) + 1)
     await asyncio.sleep(1.0)  # короткая пауза, чтобы фидбек был заметен
     await _send_next_mcq_question(callback.message.chat.id, state)
+
+
+# ============================================================
+# Photo-task flow (#14)
+# ============================================================
+# Награды: +3 / +2 / +1 / 0 монет в зависимости от попытки (0 = открыли решение).
+TASK_REWARDS_BY_ATTEMPT = [3, 2, 1]
+MAX_TASK_ATTEMPTS = 3
+
+
+async def start_task_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
+    tasks = load_tasks(subject_id)
+    if not tasks:
+        # subjects_with_mode уже фильтрует; страховка на случай гонки
+        await message.answer(
+            "🚧 Для этого предмета пока нет задач.",
+            reply_markup=get_mode_keyboard(),
+        )
+        await state.set_state(QuizStates.choosing_mode)
+        return
+    random.shuffle(tasks)
+    # FSM data — только JSON-serializable: храним serializable view задачи,
+    # пути к картинкам реконструируются по subject_id + task_id при отправке
+    await state.update_data(
+        task_questions=tasks,
+        task_index=0,
+        task_attempts=0,
+        task_correct_count=0,
+        task_coins_earned=0,
+        task_user_id=message.from_user.id,
+        task_subject_id=subject_id,
+        task_subject_label=subject_label,
+    )
+    await state.set_state(QuizStates.answering_task)
+    await message.answer(
+        f"📷 Задачи — {subject_label}\n"
+        f"Задач: {len(tasks)}. До 3 попыток на задачу. "
+        f"Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение.",
+        reply_markup=get_task_active_keyboard(),
+    )
+    await _send_next_task(message.chat.id, state)
+
+
+async def _send_next_task(chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    tasks = data.get("task_questions", [])
+    idx = data.get("task_index", 0)
+    if idx >= len(tasks):
+        await _finish_task_session(chat_id, state)
+        return
+    subject_id = data.get("task_subject_id", "")
+    task = tasks[idx]
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    image_path = tasks_dir / f"{task['id']}.png"
+    if not image_path.exists():
+        # Контент изменился во время сессии — пропускаем
+        logger.warning(
+            "task.image_missing_at_send task_id=%s subject=%s expected=%s",
+            task["id"], subject_id, image_path.name,
+        )
+        await state.update_data(task_index=idx + 1, task_attempts=0)
+        await _send_next_task(chat_id, state)
+        return
+    # Сбрасываем счётчик попыток для новой задачи
+    await state.update_data(task_attempts=0)
+
+    caption_lines = [f"📷 Задача {idx + 1}/{len(tasks)}"]
+    if task.get("problem"):
+        caption_lines.append("")
+        caption_lines.append(task["problem"])
+    caption_lines.append("")
+    caption_lines.append("✏️ Введи ответ:")
+    caption = "\n".join(caption_lines)
+
+    try:
+        await bot.send_photo(chat_id, FSInputFile(image_path), caption=caption)
+    except Exception as e:
+        logger.error("task.send_photo_failed task_id=%s reason=%s", task["id"], e)
+        # На случай если бот не смог отправить фото — переходим к следующей
+        await state.update_data(task_index=idx + 1, task_attempts=0)
+        await _send_next_task(chat_id, state)
+
+
+async def _finish_task_session(chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    correct = data.get("task_correct_count", 0)
+    coins = data.get("task_coins_earned", 0)
+    total = len(data.get("task_questions", []))
+    subject_label = data.get("task_subject_label", "")
+    logger.info(
+        "task.session.complete user_id=%s subject=%s correct=%s total=%s coins=%s",
+        data.get("task_user_id"), data.get("task_subject_id"),
+        correct, total, coins,
+    )
+    await bot.send_message(
+        chat_id,
+        f"🎉 Готово! {subject_label}\n"
+        f"Решено: {correct} из {total}\n"
+        f"🪙 Заработано: {coins} монет",
+        reply_markup=get_study_keyboard(),
+    )
+    await state.clear()
+
+
+@router.message(QuizStates.answering_task, F.text == "🛑 Завершить")
+async def handle_task_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    correct = data.get("task_correct_count", 0)
+    coins = data.get("task_coins_earned", 0)
+    idx = data.get("task_index", 0)
+    total = len(data.get("task_questions", []))
+    logger.info(
+        "task.session.stop user_id=%s subject=%s answered=%s/%s correct=%s coins=%s",
+        message.from_user.id, data.get("task_subject_id"),
+        idx, total, correct, coins,
+    )
+    await message.answer(
+        f"⏹ Задачи остановлены.\n"
+        f"Решено: {idx}/{total} (правильных: {correct})\n"
+        f"🪙 Получено: {coins} монет",
+        reply_markup=get_study_keyboard(),
+    )
+    await state.clear()
+
+
+@router.message(QuizStates.answering_task)
+async def handle_task_answer(message: Message, state: FSMContext):
+    # Команды и кнопки уже разобраны выше; здесь ответ — обычный текст
+    text = message.text or ""
+    if not text or text.startswith("/"):
+        return
+    data = await state.get_data()
+    tasks = data.get("task_questions", [])
+    idx = data.get("task_index", 0)
+    if idx >= len(tasks):
+        await _finish_task_session(message.chat.id, state)
+        return
+    task = tasks[idx]
+    user_norm = _normalize_task_answer(text)
+    accepted_norm = {_normalize_task_answer(a) for a in task.get("accepted", [])}
+    attempts = data.get("task_attempts", 0)
+    user_id = message.from_user.id
+
+    if user_norm in accepted_norm:
+        coins_for_this = TASK_REWARDS_BY_ATTEMPT[min(attempts, MAX_TASK_ATTEMPTS - 1)]
+        await user_repo.add_coins(user_id, coins_for_this)
+        await state.update_data(
+            task_correct_count=data.get("task_correct_count", 0) + 1,
+            task_coins_earned=data.get("task_coins_earned", 0) + coins_for_this,
+            task_index=idx + 1,
+            task_attempts=0,
+        )
+        logger.info(
+            "task.answered user_id=%s task_id=%s attempts=%s result=correct coins=%s",
+            user_id, task["id"], attempts + 1, coins_for_this,
+        )
+        await message.answer(f"✅ Верно! +{coins_for_this} 🪙")
+        await asyncio.sleep(1.0)
+        await _send_next_task(message.chat.id, state)
+        return
+
+    new_attempts = attempts + 1
+    if new_attempts < MAX_TASK_ATTEMPTS:
+        remaining = MAX_TASK_ATTEMPTS - new_attempts
+        await state.update_data(task_attempts=new_attempts)
+        logger.info(
+            "task.answered user_id=%s task_id=%s attempts=%s result=wrong remaining=%s",
+            user_id, task["id"], new_attempts, remaining,
+        )
+        await message.answer(
+            f"❌ Неверно. Попробуй ещё (осталось попыток: {remaining})."
+        )
+        return
+
+    # 3-я неверная — открываем решение
+    subject_id = data.get("task_subject_id", "")
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
+    correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
+    logger.info(
+        "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
+        user_id, task["id"], new_attempts,
+    )
+    if solution_path.exists():
+        try:
+            await bot.send_photo(
+                message.chat.id,
+                FSInputFile(solution_path),
+                caption=(
+                    f"💡 Решение:\n"
+                    f"Правильный ответ: {correct_answer}\n"
+                    f"Монеты за эту задачу: 0 🪙"
+                ),
+            )
+        except Exception as e:
+            logger.error("task.send_solution_failed task_id=%s reason=%s", task["id"], e)
+            await message.answer(
+                f"💡 Правильный ответ: {correct_answer}\nМонеты за эту задачу: 0 🪙"
+            )
+    else:
+        await message.answer(
+            f"💡 Правильный ответ: {correct_answer}\n"
+            f"(Изображение решения не найдено)\n"
+            f"Монеты за эту задачу: 0 🪙"
+        )
+    await state.update_data(task_index=idx + 1, task_attempts=0)
+    await asyncio.sleep(1.0)
+    await _send_next_task(message.chat.id, state)
 
 
 # ============================================================

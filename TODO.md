@@ -14,11 +14,6 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-14) [Фича] Режим задач с картинкой + 2 повторные попытки + изображение решения  
-Ценность: реальные задачи (особенно по математике) требуют визуального условия; обучение через «попытайся сам → если не вышло, посмотри решение»  
-Готовность: `tasks/task-NN.png` + `task-NN.json` (поля `problem`, `accepted[]`, `solution_image`); 3 попытки максимум, после 3-й неверной — отправка `task-NN-solution.png` как решения; счётчик попыток в FSM `Data` (без новой таблицы); награды +3 / +2 / +1 / 0 монет в зависимости от попытки  
-Приоритет: Should
-
 15) [Алгоритм] SM-2 (SuperMemo-2) для флэш-карт — заменяет `[1,2,4,7]` интервалы для этого режима  
 Ценность: per-card ease factor калибруется автоматически (трудные карточки чаще, лёгкие — реже); проверенный алгоритм (Anki, Mnemosyne); возвращает соответствие оригинальному брифу. Lightner рассмотрен и отвергнут — SM-2 даёт лучшее долгосрочное удержание за ~25 дополнительных строк кода. Референс (не зависимость): thyagoluciano/sm2 на GitHub (Dart, GPL-3.0) — переписываем в Python  
 Готовность: новая таблица `flashcard_progress(user_id, card_hash, ease_factor REAL DEFAULT 2.5, interval_days INTEGER DEFAULT 0, repetitions INTEGER DEFAULT 0, last_review, next_review, PRIMARY KEY(user_id, card_hash))`; чистая функция `sm2_update(quality, reps, ef, interval) -> (new_interval, new_reps, new_ef)` в `services.py` (тестируется юнит-тестом); EF floor 1.3; UI «💡 Показать ответ» → 3-кнопочный inline-rating «❌ Не знал (q=1) / 😐 Сложно (q=3) / ✅ Легко (q=5)»; новый `FlashcardRepository`; существующая `quiz_progress` (ситуационные квизы) не трогается — её бинарный keyword-grader не даёт градиент качества для SM-2  
