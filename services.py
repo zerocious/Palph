@@ -505,6 +505,179 @@ class AnalyticsService:
             "today": today.strftime("%Y-%m-%d"),
         }
 
+    async def _count(self, sql: str, params: tuple = ()) -> int:
+        """Хелпер: COUNT-запрос, возвращает int."""
+        async with self.db.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def compute_funnel(self) -> list[dict]:
+        """
+        Activation funnel: каждый шаг = % от total registered (не от предыдущего шага),
+        чтобы метрики оставались сравнимыми и не нужно было заставлять шаги быть
+        strict-subsets (в реале 3-day streak ≠ subset 10+ sessions).
+
+        Returns: [{"name": str, "count": int, "pct": float | 0.0}, ...]
+        """
+        total = await self._count("SELECT COUNT(*) FROM users")
+        if total == 0:
+            return []
+        steps_raw = [
+            ("Registered", total),
+            ("Started studying (≥1 session)", await self._count(
+                "SELECT COUNT(*) FROM users WHERE total_sessions >= 1"
+            )),
+            ("Reached 5+ sessions", await self._count(
+                "SELECT COUNT(*) FROM users WHERE total_sessions >= 5"
+            )),
+            ("Reached 10+ sessions", await self._count(
+                "SELECT COUNT(*) FROM users WHERE total_sessions >= 10"
+            )),
+            ("Earned 3-day streak achievement", await self._count(
+                "SELECT COUNT(*) FROM user_achievements "
+                "WHERE achievement_id = '3_day_streak' AND completed = 1"
+            )),
+            ("Earned 7-day streak achievement", await self._count(
+                "SELECT COUNT(*) FROM user_achievements "
+                "WHERE achievement_id = '7_day_streak' AND completed = 1"
+            )),
+        ]
+        return [
+            {"name": name, "count": count, "pct": count / total}
+            for name, count in steps_raw
+        ]
+
+    async def compute_engagement(self) -> dict:
+        """
+        DAU / WAU / MAU + новые пользователи сегодня + stickiness ratio.
+
+        Стандартные метрики engagement:
+          DAU = users с любой активностью сегодня
+          WAU = последние 7 дней включая сегодня
+          MAU = последние 30 дней включая сегодня
+          stickiness = DAU / MAU (типичный «good» ~20%+ для consumer apps)
+
+        Returns: {
+            "today": "YYYY-MM-DD", "new_today": int, "dau": int, "wau": int,
+            "mau": int, "stickiness": float | None, "total_users": int,
+        }
+        """
+        activity = await self._all_activity_dates_per_user()
+        today = datetime.now().date()
+        w_cutoff = today - timedelta(days=6)
+        m_cutoff = today - timedelta(days=29)
+
+        dau = sum(1 for dates in activity.values() if today in dates)
+        wau = sum(1 for dates in activity.values() if any(d >= w_cutoff for d in dates))
+        mau = sum(1 for dates in activity.values() if any(d >= m_cutoff for d in dates))
+        stickiness = (dau / mau) if mau > 0 else None
+
+        # Используем Python's today() вместо SQL date('now') — иначе SQLite
+        # сравнит с UTC, а users.created_at может быть в other TZ context.
+        # Для consistency со всей остальной engagement-логикой используем local time.
+        today_str = today.strftime("%Y-%m-%d")
+        new_today = await self._count(
+            "SELECT COUNT(*) FROM users WHERE date(created_at) = ?",
+            (today_str,),
+        )
+        total_users = await self._count("SELECT COUNT(*) FROM users")
+        return {
+            "today": today.strftime("%Y-%m-%d"),
+            "new_today": new_today,
+            "dau": dau,
+            "wau": wau,
+            "mau": mau,
+            "stickiness": stickiness,
+            "total_users": total_users,
+        }
+
+    async def compute_feature_usage(self) -> dict:
+        """
+        Feature adoption: % пользователей, использовавших каждую фичу.
+
+        Считаем «использовал» как «есть запись в соответствующей таблице».
+        Для timezone и notification settings — отклонение от дефолтов.
+
+        Returns: {
+            "total_users": int,
+            "features": [{"name": str, "count": int, "pct": float}, ...]
+        }
+        """
+        total = await self._count("SELECT COUNT(*) FROM users")
+        if total == 0:
+            return {"total_users": 0, "features": []}
+
+        items = [
+            ("🎯 Situational quizzes (≥1 ответ)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM quiz_progress"
+            )),
+            ("🃏 Flashcards (≥1 ревью)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM flashcard_progress"
+            )),
+            ("❓ MCQ (≥1 ответ)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM mcq_progress"
+            )),
+            ("📷 Photo tasks (≥1 попытка)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM task_progress"
+            )),
+            ("⏱️ Pomodoro (≥1 сессия)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM study_sessions"
+            )),
+            ("🌍 Изменил часовой пояс", await self._count(
+                "SELECT COUNT(*) FROM users WHERE timezone != 'Europe/Moscow'"
+            )),
+            ("🔕 Отключил хотя бы одно уведомление", await self._count(
+                "SELECT COUNT(*) FROM notification_settings WHERE "
+                "morning_enabled = 0 OR evening_enabled = 0 OR "
+                "streak_enabled = 0 OR achievements_enabled = 0"
+            )),
+            ("⏰ Изменил время напоминаний", await self._count(
+                "SELECT COUNT(*) FROM notification_settings WHERE "
+                "morning_time != '09:00' OR evening_time != '21:00'"
+            )),
+        ]
+        return {
+            "total_users": total,
+            "features": [
+                {"name": name, "count": count, "pct": count / total}
+                for name, count in items
+            ],
+        }
+
+    # Whitelist таблиц для /export — защита от SQL-инъекций (имя таблицы
+    # не параметризуется в SQLite). Ключи — короткие алиасы для UX.
+    EXPORTABLE_TABLES: dict[str, str] = {
+        "users": "users",
+        "sessions": "study_sessions",
+        "achievements": "user_achievements",
+        "quiz": "quiz_progress",
+        "flashcards": "flashcard_progress",
+        "mcq": "mcq_progress",
+        "tasks": "task_progress",
+        "subject_stats": "user_subject_stats",
+        "settings": "notification_settings",
+    }
+
+    async def export_table_csv(self, table_alias: str) -> tuple[bytes, int]:
+        """
+        Экспорт таблицы как CSV (UTF-8 bytes) + кол-во data-rows.
+        Возвращает (csv_bytes, row_count). Если alias неизвестен — KeyError.
+        """
+        import csv
+        import io
+        if table_alias not in self.EXPORTABLE_TABLES:
+            raise KeyError(f"Unknown table alias: {table_alias}")
+        table = self.EXPORTABLE_TABLES[table_alias]
+        async with self.db.execute(f"SELECT * FROM {table}") as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(cols)
+        for row in rows:
+            writer.writerow([row[c] for c in cols])
+        return buf.getvalue().encode("utf-8"), len(rows)
+
 
 # ------------------------------------------------------------
 # Backup service — ежедневный snapshot БД после обработки стриков.

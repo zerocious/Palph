@@ -204,3 +204,145 @@ class TestEligibilityFilter:
         assert old_cohort is not None
         assert old_cohort["d30"] == 0.0
         assert young_cohort is not None
+
+
+class TestFunnel:
+    async def test_empty_db(self, analytics):
+        steps = await analytics.compute_funnel()
+        assert steps == []
+
+    async def test_user_at_first_step_only(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        # users.total_sessions defaults to 0 → no further funnel progress
+        steps = await analytics.compute_funnel()
+        assert len(steps) == 6
+        registered = next(s for s in steps if s["name"] == "Registered")
+        started = next(s for s in steps if s["name"] == "Started studying (≥1 session)")
+        assert registered["count"] == 1
+        assert registered["pct"] == 1.0
+        assert started["count"] == 0
+        assert started["pct"] == 0.0
+
+    async def test_user_with_5_sessions_advances_funnel(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await db.execute("UPDATE users SET total_sessions = 5 WHERE user_id = 1")
+        await db.commit()
+        steps = await analytics.compute_funnel()
+        assert next(s for s in steps if "5+ sessions" in s["name"])["count"] == 1
+        assert next(s for s in steps if "10+ sessions" in s["name"])["count"] == 0
+
+    async def test_achievement_count_correct(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=10)
+        # Mark 3-day streak achievement as completed
+        await db.execute(
+            "INSERT INTO user_achievements (user_id, achievement_id, completed, progress, target) "
+            "VALUES (1, '3_day_streak', 1, 3, 3)"
+        )
+        await db.commit()
+        steps = await analytics.compute_funnel()
+        streak_step = next(s for s in steps if "3-day streak" in s["name"])
+        assert streak_step["count"] == 1
+        assert streak_step["pct"] == 1.0
+
+
+class TestEngagement:
+    async def test_empty_db(self, analytics):
+        data = await analytics.compute_engagement()
+        assert data["dau"] == 0
+        assert data["wau"] == 0
+        assert data["mau"] == 0
+        assert data["stickiness"] is None
+        assert data["total_users"] == 0
+
+    async def test_active_today_counts_in_dau(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=10)
+        await _add_activity(db, 1, days_ago=0, source="study_sessions")
+        data = await analytics.compute_engagement()
+        assert data["dau"] == 1
+        assert data["wau"] == 1
+        assert data["mau"] == 1
+
+    async def test_only_recent_active_in_wau(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=30)
+        # 10 days ago — outside WAU, inside MAU
+        await _add_activity(db, 1, days_ago=10, source="study_sessions")
+        data = await analytics.compute_engagement()
+        assert data["dau"] == 0
+        assert data["wau"] == 0
+        assert data["mau"] == 1
+
+    async def test_stickiness_correct(self, db, analytics):
+        # 3 users — 1 active today, 3 active in last 30 days
+        for uid in (1, 2, 3):
+            await _create_user_with_signup(db, uid, days_ago=20)
+            await _add_activity(db, uid, days_ago=15, source="study_sessions")  # MAU only
+        await _add_activity(db, 1, days_ago=0, source="study_sessions")  # 1 active today
+        data = await analytics.compute_engagement()
+        assert data["dau"] == 1
+        assert data["mau"] == 3
+        assert data["stickiness"] == pytest.approx(1 / 3)
+
+    async def test_new_today_counted(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=0)
+        await _create_user_with_signup(db, 2, days_ago=0)
+        await _create_user_with_signup(db, 3, days_ago=5)
+        data = await analytics.compute_engagement()
+        assert data["new_today"] == 2
+
+
+class TestFeatureUsage:
+    async def test_empty_db(self, analytics):
+        data = await analytics.compute_feature_usage()
+        assert data["total_users"] == 0
+        assert data["features"] == []
+
+    async def test_situational_quiz_adoption(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await _create_user_with_signup(db, 2, days_ago=1)
+        # Only user 1 has quiz progress
+        await _add_activity(db, 1, days_ago=0, source="quiz_progress")
+        data = await analytics.compute_feature_usage()
+        sit_quiz = next(f for f in data["features"] if "Situational" in f["name"])
+        assert sit_quiz["count"] == 1
+        assert sit_quiz["pct"] == 0.5
+
+    async def test_timezone_changed_counts(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await _create_user_with_signup(db, 2, days_ago=1)
+        # User 1 changes timezone
+        await db.execute("UPDATE users SET timezone = 'Asia/Yekaterinburg' WHERE user_id = 1")
+        await db.commit()
+        data = await analytics.compute_feature_usage()
+        tz_feat = next(f for f in data["features"] if "часовой пояс" in f["name"])
+        assert tz_feat["count"] == 1
+
+
+class TestExport:
+    async def test_export_unknown_table_raises(self, analytics):
+        with pytest.raises(KeyError):
+            await analytics.export_table_csv("nonexistent_alias")
+
+    async def test_export_users_returns_csv_with_header(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        csv_bytes, row_count = await analytics.export_table_csv("users")
+        text = csv_bytes.decode("utf-8")
+        lines = text.strip().split("\n")
+        # First line = header (column names)
+        assert "user_id" in lines[0]
+        # Plus 1 data row
+        assert row_count == 1
+        assert len(lines) == 2
+
+    async def test_export_empty_table(self, analytics):
+        csv_bytes, row_count = await analytics.export_table_csv("sessions")
+        # Header only, no data
+        assert row_count == 0
+        text = csv_bytes.decode("utf-8")
+        # Header line present
+        assert text.strip().split("\n")[0]  # at least one line
+
+    async def test_export_handles_multiple_rows(self, db, analytics):
+        for i in range(5):
+            await _create_user_with_signup(db, 100 + i, days_ago=i)
+        csv_bytes, row_count = await analytics.export_table_csv("users")
+        assert row_count == 5

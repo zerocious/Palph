@@ -20,7 +20,7 @@ from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
-    FSInputFile,
+    FSInputFile, BufferedInputFile,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from fsm_storage import SQLiteStorage
@@ -255,6 +255,10 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="broadcast", description="Рассылка всем"),
     BotCommand(command="notif_status", description="Диагностика уведомлений"),
     BotCommand(command="cohort_stats", description="Retention D1/D7/D30 по когортам"),
+    BotCommand(command="funnel", description="Activation funnel"),
+    BotCommand(command="dau", description="DAU/WAU/MAU + stickiness"),
+    BotCommand(command="feature_usage", description="% adoption per feature"),
+    BotCommand(command="export", description="Export table as CSV"),
     BotCommand(command="backup", description="Snapshot БД (главный админ)"),
     BotCommand(command="addadmin", description="Добавить админа (главный админ)"),
     BotCommand(command="rmadmin", description="Удалить админа (главный админ)"),
@@ -2949,6 +2953,144 @@ def _render_cohort_table(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_funnel(steps: list[dict]) -> str:
+    if not steps:
+        return "Пока нет пользователей."
+    # Самое длинное имя — для выравнивания
+    max_name = max(len(s["name"]) for s in steps)
+    lines = []
+    for s in steps:
+        bar_count = int(s["pct"] * 10)
+        bar = "█" * bar_count + "░" * (10 - bar_count)
+        lines.append(
+            f"{s['name']:<{max_name}} {bar} {s['pct']*100:5.1f}% ({s['count']})"
+        )
+    return "\n".join(lines)
+
+
+def _render_engagement(data: dict) -> str:
+    stickiness = data["stickiness"]
+    stick_str = f"{stickiness * 100:.1f}%" if stickiness is not None else "—"
+    lines = [
+        f"Today:                  {data['today']}",
+        f"New users today:        {data['new_today']}",
+        f"DAU:                    {data['dau']}",
+        f"WAU (last 7 days):      {data['wau']}",
+        f"MAU (last 30 days):     {data['mau']}",
+        f"Stickiness (DAU/MAU):   {stick_str}",
+        f"Total registered:       {data['total_users']}",
+    ]
+    return "\n".join(lines)
+
+
+def _render_feature_usage(data: dict) -> str:
+    if data["total_users"] == 0:
+        return "Пока нет пользователей."
+    lines = [f"% of {data['total_users']} registered users:\n"]
+    max_name = max(len(f["name"]) for f in data["features"])
+    for f in data["features"]:
+        bar_count = int(f["pct"] * 10)
+        bar = "█" * bar_count + "░" * (10 - bar_count)
+        lines.append(
+            f"{f['name']:<{max_name}} {bar} {f['pct']*100:5.1f}% ({f['count']})"
+        )
+    return "\n".join(lines)
+
+
+@router.message(Command("funnel"))
+async def cmd_funnel(message: Message):
+    """Activation funnel — шаги от регистрации до 7-дневного стрика. % от total registered."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    steps = await analytics_service.compute_funnel()
+    body = _render_funnel(steps)
+    note = (
+        "\n\n<i>% считается от всех зарегистрированных. Шаги не обязательно strict-subsets "
+        "(3-day streak ≠ subset of 10+ sessions), поэтому пропорции могут не убывать монотонно.</i>"
+    )
+    await message.answer(
+        f"📊 <b>Activation funnel</b>\n\n<pre>{body}</pre>{note}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("dau"))
+async def cmd_dau(message: Message):
+    """DAU / WAU / MAU + stickiness ratio."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_engagement()
+    body = _render_engagement(data)
+    note = (
+        "\n\n<i>Активность = любое событие (Pomodoro / квиз / флэш / MCQ / задача / визит). "
+        "Stickiness ≥20% — типичный benchmark для consumer apps.</i>"
+    )
+    await message.answer(
+        f"👥 <b>Active users</b>\n\n<pre>{body}</pre>{note}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("feature_usage"))
+async def cmd_feature_usage(message: Message):
+    """% пользователей, использовавших каждую фичу."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_feature_usage()
+    body = _render_feature_usage(data)
+    await message.answer(
+        f"🎮 <b>Feature adoption</b>\n\n<pre>{body}</pre>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("export"))
+async def cmd_export(message: Message, command: CommandObject):
+    """
+    Экспорт таблицы как CSV-файл (Telegram document).
+    Использование: /export <table_alias>
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    arg = (command.args or "").strip().lower()
+    aliases = sorted(analytics_service.EXPORTABLE_TABLES.keys())
+    if not arg:
+        aliases_str = "\n".join(f"  • <code>{a}</code>" for a in aliases)
+        await message.answer(
+            "📦 Экспорт таблицы как CSV — для анализа в Jupyter / pandas.\n\n"
+            "Использование: <code>/export &lt;alias&gt;</code>\n\n"
+            f"Доступные алиасы:\n{aliases_str}",
+            parse_mode="HTML",
+        )
+        return
+    if arg not in analytics_service.EXPORTABLE_TABLES:
+        await message.answer(
+            f"❌ Неизвестная таблица: <code>{arg}</code>\n"
+            f"Доступно: {', '.join(aliases)}",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        csv_bytes, row_count = await analytics_service.export_table_csv(arg)
+    except Exception as e:
+        logger.error("export.failed alias=%s reason=%s detail=%s", arg, type(e).__name__, e)
+        await message.answer(f"❌ Export failed: {type(e).__name__}: {e}")
+        return
+    table_name = analytics_service.EXPORTABLE_TABLES[arg]
+    filename = f"{table_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    size_kb = len(csv_bytes) / 1024
+    logger.info("export.done alias=%s table=%s rows=%s size_kb=%.1f", arg, table_name, row_count, size_kb)
+    await message.answer_document(
+        BufferedInputFile(csv_bytes, filename),
+        caption=f"📦 <b>{table_name}</b>\n{row_count} rows · {size_kb:.1f} KB",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("cohort_stats"))
 async def cmd_cohort_stats(message: Message):
     """
@@ -3029,7 +3171,12 @@ async def cmd_help(message: Message):
         "/reply <user_id> <текст> — ответ пользователю по ID\n"
         "/broadcast <текст> — рассылка всем зарегистрированным\n"
         "/notif_status — диагностика уведомлений (TZ, расписание, попадаешь ли ты в текущую выборку)\n"
-        "/cohort_stats — D1/D7/D30 retention по неделям регистрации (для PA-аналитики)\n"
+        "\n📊 Аналитика (для PA-портфолио):\n"
+        "/cohort_stats — D1/D7/D30 retention по неделям регистрации\n"
+        "/funnel — activation funnel (% от регистраций)\n"
+        "/dau — DAU/WAU/MAU + stickiness ratio\n"
+        "/feature_usage — % adoption per feature\n"
+        "/export <table> — CSV-дамп таблицы как Telegram-документ\n"
         "/help — эта справка\n"
     )
     if is_main:
