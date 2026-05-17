@@ -14,11 +14,6 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-12) [Рефакт] Перестройка папки контента → `study_materials/{industrial-management,math,english}/{situational,flashcards,mcq,tasks}/`  
-Ценность: модульная структура под несколько предметов и режимов; data-driven обнаружение скрывает пустые разделы автоматически  
-Готовность: `quizzes/` → `study_materials/`; `production-management/` → `industrial-management/` (контент сохраняется); добавлены пустые папки `math/` и `english/` с шаблонами `.txt` и `tasks/`; новые helpers `available_subjects()` и `available_modes(subject)` по аналогии с `available_quiz_sections()`  
-Приоритет: Should (фундамент для 13–15)
-
 13) [Фича] Режим квиза с выбором ответа (MCQ)  
 Ценность: для математики и английского формат «выбери правильный из 4» работает лучше, чем открытый ввод определения  
 Готовность: чтение из `mcq.txt` (формат: `вопрос || правильный || неправ1 || неправ2 || неправ3`); inline-клавиатура 4 кнопки (перетасовка); ✅/❌ feedback после нажатия + показ правильного ответа при ошибке; +1 монета за правильный  

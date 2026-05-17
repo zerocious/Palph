@@ -324,11 +324,15 @@ QUIZ_SECTIONS = [
 ]
 
 
-def available_quiz_sections() -> list[tuple[str, str]]:
-    """Возвращает только те разделы, файлы которых существуют и не пусты."""
+def available_quiz_sections(subject_id: str = "industrial-management") -> list[tuple[str, str]]:
+    """
+    Возвращает только те разделы ситуационных квизов, файлы которых
+    существуют и не пусты. `subject_id` — id из SUBJECTS (имя папки).
+    """
+    section_dir = STUDY_MATERIALS_PATH / subject_id / "situational"
     available = []
     for label, key in QUIZ_SECTIONS:
-        file_path = QUIZZES_PATH / f"section-{key}.txt"
+        file_path = section_dir / f"section-{key}.txt"
         if file_path.exists() and file_path.stat().st_size > 0:
             available.append((label, key))
     return available
@@ -349,9 +353,86 @@ def get_quiz_answer_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 # ------------------------------------------------------------
+# Каталог учебных материалов
+# ------------------------------------------------------------
+# Структура `study_materials/<subject>/<mode>` data-driven: пустые папки/
+# файлы автоматически скрываются. Заполнение контента — в обязанности
+# контентщика, код не требует доработки при добавлении файлов.
+#
+#   study_materials/
+#   ├── industrial-management/         ← id предмета (имя папки)
+#   │   ├── situational/section-i..iv.txt   (multi-section, открытый текст)
+#   │   ├── flashcards.txt                  (term || definition)
+#   │   ├── mcq.txt                         (вопрос || верный || w1 || w2 || w3)
+#   │   └── tasks/task-NN.{json,png}        (картинка-условие + accepted[])
+#   ├── math/                          ← без situational/ (не для учебника-теории)
+#   │   ├── flashcards.txt
+#   │   ├── mcq.txt
+#   │   └── tasks/
+#   └── english/
+#       ├── flashcards.txt
+#       ├── mcq.txt
+#       └── tasks/
+STUDY_MATERIALS_PATH = Path(__file__).parent / "study_materials"
+
+# Каталог предметов: (id, label). id = имя папки в study_materials/.
+SUBJECTS: list[tuple[str, str]] = [
+    ("industrial-management", "🏭 Основы производственного менеджмента"),
+    ("math",                  "🧮 Математика"),
+    ("english",               "🇬🇧 Английский"),
+]
+
+# Каталог режимов учёбы. id определяет где лежит контент:
+#   situational → subject/situational/section-*.txt (multi-section)
+#   flashcards / mcq → subject/<mode>.txt (один файл)
+#   tasks → subject/tasks/task-*.json + task-*.png
+STUDY_MODES: list[tuple[str, str]] = [
+    ("situational", "🎯 Ситуационные квизы"),
+    ("flashcards",  "🃏 Флэш-карты"),
+    ("mcq",         "❓ Тест с выбором ответа"),
+    ("tasks",       "📷 Задачи с картинкой"),
+]
+
+
+def available_modes(subject_id: str) -> list[tuple[str, str]]:
+    """
+    Возвращает режимы, у которых для данного предмета есть непустой контент.
+    UI-слой строит меню режимов по этому списку — пустые режимы автоматически
+    скрываются (как и пустые секции в available_quiz_sections).
+    """
+    subject_path = STUDY_MATERIALS_PATH / subject_id
+    if not subject_path.is_dir():
+        return []
+    result = []
+    for mode_id, label in STUDY_MODES:
+        if mode_id == "situational":
+            section_dir = subject_path / "situational"
+            if section_dir.is_dir() and any(
+                p.stat().st_size > 0 for p in section_dir.glob("section-*.txt")
+            ):
+                result.append((mode_id, label))
+        elif mode_id == "tasks":
+            tasks_dir = subject_path / "tasks"
+            if tasks_dir.is_dir() and any(tasks_dir.glob("task-*.json")):
+                result.append((mode_id, label))
+        else:
+            file_path = subject_path / f"{mode_id}.txt"
+            if file_path.exists() and file_path.stat().st_size > 0:
+                result.append((mode_id, label))
+    return result
+
+
+def available_subjects() -> list[tuple[str, str]]:
+    """
+    Возвращает только предметы, у которых есть хотя бы один непустой режим.
+    Так пользователь не видит «mock»-кнопок предметов без контента.
+    """
+    return [(sid, label) for sid, label in SUBJECTS if available_modes(sid)]
+
+
+# ------------------------------------------------------------
 # Вспомогательные функции для квизов
 # ------------------------------------------------------------
-QUIZZES_PATH = Path(__file__).parent / "quizzes" / "production-management"
 
 class QuizTerm:
     def __init__(self, term: str, definition: str, keywords: str, situation: str):
@@ -370,8 +451,8 @@ class QuizTerm:
             "hash": self.hash
         }
 
-def load_quiz_section(section: str) -> list[QuizTerm]:
-    file_path = QUIZZES_PATH / f"section-{section.lower()}.txt"
+def load_quiz_section(section: str, subject_id: str = "industrial-management") -> list[QuizTerm]:
+    file_path = STUDY_MATERIALS_PATH / subject_id / "situational" / f"section-{section.lower()}.txt"
     if not file_path.exists():
         return []
     terms = []
