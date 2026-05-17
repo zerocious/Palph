@@ -1,0 +1,1713 @@
+# -*- coding: utf-8 -*-
+import os
+import json
+import logging
+import random
+import re
+import pytz
+import hashlib
+from datetime import datetime
+import asyncio
+import platform
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, Router, types, F
+from aiogram.filters import Command, CommandObject
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import ReplyKeyboardBuilder 
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from sheets import send_achievement_notification
+
+# === ДЕКЛАРАТИВНАЯ КОНФИГУРАЦИЯ НАСТРОЕК ===
+NOTIFICATION_CONFIG = {
+    "morning": {
+        "key": "notification_morning_enabled",
+        "label": "🌅 Утро",
+        "time_key": "notification_time_morning",
+        "default_time": "09:00",
+        "emoji_on": "🌅",
+        "emoji_off": "🌚"
+    },
+    "evening": {
+        "key": "notification_evening_enabled",
+        "label": "🌙 Вечер",
+        "time_key": "notification_time_evening",
+        "default_time": "21:00",
+        "emoji_on": "🌙",
+        "emoji_off": "🌚"
+    },
+    "streak": {
+        "key": "notification_streak",
+        "label": "🔥 Стрик",
+        "time_key": None,
+        "default_time": "23:59",
+        "emoji_on": "🔥",
+        "emoji_off": "❄️"
+    },
+    "achievements": {
+        "key": "notification_achievements_enabled",
+        "label": "🎉 Достижения",
+        "time_key": None,
+        "default_time": None,
+        "emoji_on": "🎉",
+        "emoji_off": "🔕"
+    }
+}
+
+class NotificationSettings:
+    """Управление настройками уведомлений через декларативный конфиг"""
+    
+    def __init__(self, user_id: str):
+        self.user_id = str(user_id)
+        self.sheet = get_sheet()
+        self.cell = self._find_user_cell()
+        self.settings = self._load_settings()
+    
+    def _find_user_cell(self):
+        """Многоуровневый поиск пользователя в таблице"""
+        # Попытка 1: поиск по строке
+        try:
+            return self.sheet.find(self.user_id, in_column=1)
+        except:
+            pass
+        
+        # Попытка 2: поиск по числу
+        try:
+            return self.sheet.find(int(self.user_id), in_column=1)
+        except:
+            pass
+        
+        # Попытка 3: ручной поиск с очисткой пробелов
+        all_values = self.sheet.col_values(1)
+        for idx, value in enumerate(all_values, start=1):
+            if str(value).strip() == self.user_id.strip():
+                return type('obj', (object,), {'row': idx})()
+        
+        # Создаём пользователя, если не найден
+        if not user_exists(self.user_id):
+            add_user(self.user_id)
+            try:
+                return self.sheet.find(self.user_id, in_column=1)
+            except:
+                raise ValueError(f"Не удалось создать/найти пользователя {self.user_id}")
+        
+        raise ValueError(f"Пользователь {self.user_id} не найден в таблице")
+    
+    def _load_settings(self):
+        """Загрузка или инициализация настроек из колонки K"""
+        row = self.sheet.row_values(self.cell.row)
+        raw = row[10] if len(row) > 10 else ""
+        
+        try:
+            settings = json.loads(raw) if raw else {}
+        except:
+            settings = {}
+        
+        # Инициализация дефолтами из конфига
+        for cfg in NOTIFICATION_CONFIG.values():
+            if cfg["key"] not in settings:
+                settings[cfg["key"]] = True
+            if cfg["time_key"] and cfg["time_key"] not in settings:
+                settings[cfg["time_key"]] = cfg["default_time"]
+        
+        settings.setdefault("timezone", "Europe/Moscow")
+        return settings
+    
+    def toggle(self, setting_type: str) -> tuple[bool, str]:
+        """Переключение настройки + возврат статуса"""
+        cfg = NOTIFICATION_CONFIG.get(setting_type)
+        if not cfg:
+            raise ValueError(f"Неизвестный тип настройки: {setting_type}")
+        
+        key = cfg["key"]
+        current = self.settings.get(key, True)
+        new_value = not current
+        self.settings[key] = new_value
+        
+        # Сохранение в таблицу (колонка K = индекс 11)
+        self.sheet.update_cell(self.cell.row, 11, json.dumps(self.settings, ensure_ascii=False))
+        
+        status = "включены" if new_value else "отключены"
+        return new_value, f"{cfg['label']}: {status}"
+    
+    def get_display_text(self) -> str:
+        """Генерация текста меню настроек"""
+        lines = ["⚙️ Настройки уведомлений\n"]
+        
+        for name, cfg in NOTIFICATION_CONFIG.items():
+            enabled = self.settings.get(cfg["key"], True)
+            time_val = self.settings.get(cfg["time_key"], cfg["default_time"]) if cfg["time_key"] else None
+            
+            emoji = cfg["emoji_on"] if enabled else cfg["emoji_off"]
+            time_str = f" ({time_val})" if time_val else ""
+            status = "✅ Включено" if enabled else "❌ Отключено"
+            
+            lines.append(f"{emoji} {cfg['label']}{time_str}: {status}")
+        
+        lines.append("\n🇷🇺 Часовой пояс: Москва (UTC+3)")
+        return "\n".join(lines)
+    
+    def get_keyboard(self) -> InlineKeyboardMarkup:
+        """Генерация клавиатуры из конфига"""
+        kb = InlineKeyboardBuilder()
+        
+        for name, cfg in NOTIFICATION_CONFIG.items():
+            enabled = self.settings.get(cfg["key"], True)
+            btn_text = f"{cfg['label']}: {'Выкл' if enabled else 'Вкл'}"
+            kb.button(text=btn_text, callback_data=f"settings_toggle:{name}:{self.user_id}")
+        
+        kb.button(text="⬅️ Назад в профиль", callback_data=f"back_to_profile:{self.user_id}")
+        kb.adjust(2, 2, 1)
+        return kb.as_markup()
+    
+# Загружаем переменные окружения из .env
+load_dotenv()
+
+# Определяем, запущено ли на Windows
+IS_WINDOWS = platform.system() == "Windows"
+
+# Настройка логгера с поддержкой Windows
+def setup_logger():
+    logger = logging.getLogger("studybuddy_bot")
+    logger.setLevel(logging.INFO)
+    
+    # Форматтер
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Консольный обработчик
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    # Файловый обработчик с UTF-8 для Windows
+    file_handler = logging.FileHandler(
+        "bot.log", 
+        encoding='utf-8' if IS_WINDOWS else None
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Добавляем обработчики
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    # Обертка для Windows
+    if IS_WINDOWS:
+        return WindowsSafeLogger(logger)
+    return logger
+
+class WindowsSafeLogger:
+    """Обертка для логгера, которая заменяет эмодзи на Windows"""
+    def __init__(self, logger):
+        self.logger = logger
+        self.emoji_map = {
+            '✅': '[OK]', '❌': '[ERROR]', '🔥': '[STREAK]',
+            '🔄': '[RELOAD]', '🌙': '[NIGHT]', '💡': '[TIP]',
+            '🐾': '[PET]', '💰': '[COINS]', '⏱️': '[TIMER]',
+            '📊': '[STATS]', '⚠️': '[WARN]', '🔍': '[SEARCH]',
+            '🎉': '[CELEBRATE]', '💎': '[PREMIUM]'
+        }
+    
+    def _replace_emojis(self, message):
+        """Заменяет эмодзи на текстовые аналоги для Windows"""
+        if not IS_WINDOWS:
+            return message
+        
+        for emoji, text in self.emoji_map.items():
+            message = message.replace(emoji, text)
+        return message
+    
+    # Реализация всех методов логгера
+    def debug(self, msg, *args, **kwargs):
+        self.logger.debug(self._replace_emojis(msg), *args, **kwargs)
+    
+    def info(self, msg, *args, **kwargs):
+        self.logger.info(self._replace_emojis(msg), *args, **kwargs)
+    
+    def warning(self, msg, *args, **kwargs):
+        self.logger.warning(self._replace_emojis(msg), *args, **kwargs)
+    
+    def error(self, msg, *args, **kwargs):
+        self.logger.error(self._replace_emojis(msg), *args, **kwargs)
+    
+    def critical(self, msg, *args, **kwargs):
+        self.logger.critical(self._replace_emojis(msg), *args, **kwargs)
+
+# Создаем логгер
+logger = setup_logger()
+
+class QuizStates(StatesGroup):
+    answering = State()
+    choosing_section = State()
+    
+# Загрузка конфигурации из .env
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID", "0"))
+GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL")
+GOOGLE_CREDS_PATH = os.getenv("GOOGLE_CREDS_PATH", "credentials.json")
+SERVER_TIMEZONE = os.getenv("SERVER_TIMEZONE", "Europe/Moscow")
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
+
+# Проверка обязательных переменных
+if not BOT_TOKEN:
+    logger.critical("❌ BOT_TOKEN не установлен в .env! Получите его в @BotFather")
+    exit(1)
+
+if not GOOGLE_SHEET_URL:
+    logger.critical("❌ GOOGLE_SHEET_URL не установлен в .env! Укажите URL вашей Google Таблицы")
+    exit(1)
+
+# Инициализация
+bot = Bot(token=BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+router = Router()
+
+# Файлы данных
+ADMINS_FILE = 'admins.json'
+MESSAGES_FILE = 'messages.json'
+
+# Состояния FSM для кастомного таймера
+class TimerStates(StatesGroup):
+    waiting_for_duration = State()
+    active = State()
+    
+# Импорт функций из sheets.py
+try:
+    from sheets import (
+        user_exists, add_user, add_study_session, 
+        get_user_data, update_daily_streak, get_sheet
+    )
+except ImportError as e:
+    logger.critical(f"❌ Ошибка импорта sheets.py: {e}")
+    logger.critical("🔧 Убедитесь, что файл sheets.py существует в той же папке")
+    exit(1)
+
+# Загрузка админов
+def load_admins():
+    if os.path.exists(ADMINS_FILE):
+        try:
+            with open(ADMINS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return set(data.get("admins", []))
+        except Exception as e:
+            logger.error(f"Ошибка чтения {ADMINS_FILE}: {e}")
+    return set()
+
+ADMINS = load_admins()
+if MAIN_ADMIN_ID:
+    ADMINS.add(MAIN_ADMIN_ID)
+
+# Загрузка сообщений
+def load_messages():
+    if os.path.exists(MESSAGES_FILE):
+        try:
+            with open(MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка чтения {MESSAGES_FILE}: {e}")
+    return {"user_messages": {}}
+
+messages_data = load_messages()
+
+# Проверка прав администратора
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMINS or user_id == MAIN_ADMIN_ID
+
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ КВИЗОВ ===
+QUIZZES_PATH = "quizzes/production-management"
+
+class QuizTerm:
+    """Модель термина для квиза"""
+    def __init__(self, term: str, definition: str, keywords: str, situation: str):
+        self.term = term
+        self.definition = definition
+        self.keywords = [kw.strip() for kw in keywords.split(",")]
+        self.situation = situation
+        self.hash = hashlib.md5(term.encode('utf-8')).hexdigest()[:8]
+    
+    def to_dict(self):
+        return {
+            "term": self.term,
+            "definition": self.definition,
+            "keywords": self.keywords,
+            "situation": self.situation,
+            "hash": self.hash
+        }
+
+def load_quiz_section(section: str) -> list:
+    """Загружает термины из файла раздела"""
+    file_path = os.path.join(QUIZZES_PATH, f"section-{section.lower()}.txt")
+    
+    if not os.path.exists(file_path):
+        logger.error(f"Файл квиза не найден: {file_path}")
+        return []
+    
+    terms = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            parts = [p.strip() for p in line.split('||')]
+            if len(parts) == 4:
+                term, definition, keywords, situation = parts
+                terms.append(QuizTerm(term, definition, keywords, situation))
+    
+    return terms
+
+
+def add_user_with_settings(user_id, settings=None):
+    sheet = get_sheet()
+    
+    # Дефолтные настройки
+    if settings is None:
+        settings = {
+            "notification_time_morning": "09:00",
+            "notification_time_evening": "21:00",
+            "notification_streak": True,
+            "notification_morning_enabled": True,
+            "notification_evening_enabled": True,
+            "notification_achievements_enabled": True,  # ← ВКЛЮЧЕНО ПО УМОЛЧАНИЮ
+            "timezone": "Europe/Moscow"
+        }
+    
+    # Преобразуем настройки в JSON
+    settings_json = json.dumps(settings, ensure_ascii=False)
+    
+    # Добавляем пользователя с 11 колонками
+    sheet.append_row([
+        str(user_id),    # A: user_id
+        settings["timezone"],  # B: timezone
+        "FALSE",         # C: has_studied
+        "",              # D: last_reminder
+        "TRUE",          # E: reminder_active
+        "0",             # F: total_sessions
+        "0",             # G: total_coins
+        "",              # H: last_session
+        "0",             # I: current_streak
+        "{}",            # J: achievements
+        settings_json    # K: notification_settings
+    ])
+
+    
+def check_text_answer(user_answer: str, correct_definition: str, keywords: list) -> tuple:
+    """
+    Умная проверка дословного определения для экзамена
+    
+    Возвращает: (правильно_ли, сообщение_обратной_связи)
+    """
+    # Нормализация текста (удаляем знаки препинания, приводим к нижнему регистру)
+    user_norm = re.sub(r'[^\w\s]', ' ', user_answer.lower()).strip()
+    correct_norm = re.sub(r'[^\w\s]', ' ', correct_definition.lower()).strip()
+    
+    # Разбиваем на слова
+    user_words = user_norm.split()
+    correct_words = correct_norm.split()
+    
+    # Проверка 1: ключевые слова (минимум 2 из списка)
+    keyword_matches = sum(1 for kw in keywords if any(kw.lower() in uw for uw in user_words))
+    
+    if keyword_matches < 2:
+        missing = [kw for kw in keywords if not any(kw.lower() in uw for uw in user_words)][:2]
+        hint = f"❌ Не хватает ключевых слов: «{'», «'.join(missing)}»"
+        return False, hint
+    
+    # Проверка 2: семантическая близость (≥80% совпадения уникальных слов)
+    user_unique = set(user_words)
+    correct_unique = set(correct_words)
+    common = user_unique & correct_unique
+    similarity = len(common) / max(len(correct_unique), 1)
+    
+    if similarity >= 0.80:
+        if similarity >= 0.95:
+            return True, "✅ Точно! Дословное определение усвоено."
+        else:
+            return True, f"✅ Верно! Точная формулировка:\n«{correct_definition}»"
+    else:
+        # Подсчитываем пропущенные важные слова
+        missing_words = correct_unique - user_unique
+        if len(missing_words) <= 2:
+            hint = f"💡 Почти! Добавь слова: «{'», «'.join(list(missing_words)[:2])}»"
+        else:
+            hint = "💡 Почти! Сравни со стандартной формулировкой:"
+        return False, f"{hint}\n\n📖 Правильное определение:\n«{correct_definition}»"
+
+
+
+# === КЛАВИАТУРЫ ===
+
+# Генерация основной клавиатуры
+def get_main_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🐾 В чем будет главная фишка?")
+    builder.button(text="📚 Учеба")
+    builder.button(text="🛠 Техподдержка/Отзыв")
+    builder.button(text="📊 Мой профиль")
+    builder.button(text="📢 Новости")
+    builder.adjust(1, 2, 2)
+    return builder.as_markup(resize_keyboard=True)
+
+# Клавиатура для раздела "Квизы"
+def get_quiz_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🇬🇧 English")
+    builder.button(text="📐 Вышмат")
+    builder.button(text="📊 Бухучет")
+    builder.button(text="🏭 Основы производственного менеджмента")
+    builder.button(text="🗺 Пространственная экономика")
+    builder.button(text="⬅️ Назад к учебе")
+    builder.adjust(2)
+    return builder.as_markup(resize_keyboard=True)
+
+def get_study_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="⏱️ Стандартный таймер (25 мин)")
+    builder.button(text="⏱️ Кастомный таймер")
+    builder.button(text="❓ Квизы")
+    builder.button(text="🎓Советы для продуктивности")
+    builder.button(text="🏠 Назад в меню")
+    builder.adjust(3)
+    return builder.as_markup(resize_keyboard=True)
+
+def get_tips_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="⏰ Тайм-менеджмент")
+    builder.button(text="🧠 Техники запоминания")
+    builder.button(text="🔗 Ссылки на статьи и книги")
+    builder.button(text="⬅️ Назад к учебе")
+    builder.adjust(2)
+    return builder.as_markup(resize_keyboard=True)
+
+# === ОБРАБОТЧИКИ ===
+@router.callback_query(F.data.startswith("back_to_profile:"))
+async def back_to_profile(callback: CallbackQuery):  
+    await callback.answer() 
+    
+    user_id = callback.data.split(":")[1]
+    user = get_user_data(user_id)
+    
+    if not user:
+        await callback.message.answer("❌ Пользователь не найден")
+        return
+    
+
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
+    inline_kb.button(text="📅 Задачи", callback_data="daily_tasks")
+    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
+    inline_kb.adjust(2, 1)
+    
+    try:
+        await callback.message.edit_text(
+            f"📊 Твой профиль:\n"
+            f"🆔 ID: {user_id}\n"
+            f"📚 Всего сессий: {user.get('total_sessions', 0)}\n"
+            f"💰 Всего монет: {user.get('total_coins', 0)} 🪙\n"
+            f"🔥 Стрик: {user.get('current_streak', 0)} дней\n"
+            f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
+            f"🐾 Твой питомец: {get_pet_emotion(user.get('current_streak', 0))}",
+            reply_markup=inline_kb.as_markup()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения профиля: {e}")
+        await callback.message.answer(
+            f"📊 Твой профиль:\n"
+            f"🆔 ID: {user_id}\n"
+            f"📚 Всего сессий: {user.get('total_sessions', 0)}\n"
+            f"💰 Всего монет: {user.get('total_coins', 0)} 🪙\n"
+            f"🔥 Стрик: {user.get('current_streak', 0)} дней\n"
+            f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
+            f"🐾 Твой питомец: {get_pet_emotion(user.get('current_streak', 0))}",
+            reply_markup=inline_kb.as_markup()
+        )
+        
+# Обработчик меню настроек
+@router.callback_query(F.data.startswith("settings_menu:"))
+async def show_settings_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.data.split(":")[1]
+    
+    # Защита от пересылки: работаем только со своим профилем
+    if user_id != str(callback.from_user.id):
+        user_id = str(callback.from_user.id)
+        logger.warning(f"Пользователь {user_id} пытался изменить чужой профиль, перенаправлен на свой")
+    
+    try:
+        settings = NotificationSettings(user_id)
+        await callback.message.edit_text(
+            settings.get_display_text(),
+            reply_markup=settings.get_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка загрузки настроек для {user_id}: {e}")
+        await callback.message.answer(f"❌ Ошибка загрузки настроек: {str(e)}")
+
+# Обработчик переключения настроек
+@router.callback_query(F.data.startswith("settings_toggle:"))
+async def toggle_notification_setting(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    try:
+        parts = callback.data.split(":")
+        if len(parts) < 3:
+            raise ValueError("Неверный формат колбэка")
+        
+        setting_type, requested_user_id = parts[1], parts[2]
+        actual_user_id = str(callback.from_user.id)
+        
+        # Защита от пересылки
+        user_id = actual_user_id if requested_user_id != actual_user_id else requested_user_id
+        
+        settings = NotificationSettings(user_id)
+        new_value, status_text = settings.toggle(setting_type)
+        
+        # Обновляем меню
+        await callback.message.edit_text(
+            settings.get_display_text(),
+            reply_markup=settings.get_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка переключения настройки: {e}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)}")
+    
+# Кнопка "Назад в меню" во время таймера
+@router.message(TimerStates.active, F.text == "⬅️ Назад в меню")
+async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
+    await message.answer(
+        "🐾 Ты вернулся в главное меню.\n"
+        "Таймер продолжает работать в фоне — сессия завершится автоматически.\n\n",
+        reply_markup=get_main_keyboard()
+    )
+    # Состояние НЕ очищаем — таймер продолжает работать
+    
+# Универсальная клавиатура для активного таймера
+def get_timer_active_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="⏹️ Остановить")
+    builder.button(text="⬅️ Назад в меню")
+    builder.adjust(2)
+    return builder.as_markup(resize_keyboard=True)
+
+# Обработка кнопок информации
+@router.message(F.text == "🐾 В чем будет главная фишка?")
+async def handle_feature(message: Message):
+    await message.answer(
+        "🐾 Твой цифровой питомец, который растёт вместе с тобой. "
+        "Чем больше учишься — тем счастливее он становится. "
+        "Учёба превращается в игру, где даже 5 минут приносят радость ✨."
+    )
+
+@router.message(F.text == "🛠 Техподдержка/Отзыв")
+async def handle_support(message: Message):
+    await message.answer(
+        "🛠️ Для технической поддержки:\n"
+        "• Напишите ваш вопрос здесь\n"
+        "• Или обратитесь к @zerocious\n"
+        "• Мы отвечаем с минимиальной задержкой"
+    )
+
+@router.message(F.text == "📢 Новости")
+async def handle_pricing(message: Message):
+    await message.answer(
+        'Пока что нету тг канала\n'
+        )
+
+
+@router.message(F.text == "📚 Учеба")
+async def handle_study_menu(message: Message):
+    await message.answer(
+        "📖 Раздел учебы:\nВыберите инструмент ниже",
+        reply_markup=get_study_keyboard()
+    )
+
+@router.message(F.text == "❓ Квизы")
+async def handle_quiz_menu(message: Message):
+    await message.answer(
+        "📚 Выберите предмет для квиза:",
+        reply_markup=get_quiz_keyboard()
+    )
+
+@router.message(F.text == "🏠 Назад в меню")
+async def handle_back_to_main(message: Message):
+    await message.answer(
+        "🐾 Вы вернулись в главное меню",
+        reply_markup=get_main_keyboard()
+    )
+
+# Обработчики кнопок предметов (пока "В разработке")
+@router.message(F.text.in_([
+    "🇬🇧 English",
+    "📐 Вышмат",
+    "📊 Бухучет",
+    "🏭 Основы производственного менеджмента",
+    "🗺 Пространственная экономика"
+]))
+async def handle_quiz_subject(message: Message):
+    await message.answer("🛠️ Квизы находятся в разработке. Скоро появятся задания по этому предмету!")
+
+# Обработчик возврата назад
+@router.message(F.text == "⬅️ Назад к учебе")
+async def handle_back_to_study(message: Message):
+    await message.answer(
+        "📖 Раздел учебы:\nВыберите инструмент ниже",
+        reply_markup=get_study_keyboard()
+    )
+
+@router.message(F.text == "⏱️ Стандартный таймер (25 мин)")
+async def handle_standard_timer(message: Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    if not user_exists(user_id):
+        add_user(user_id)
+    
+    # Проверяем, не запущен ли уже таймер
+    current_state = await state.get_state()
+    if current_state == TimerStates.active.state:
+        data = await state.get_data()
+        start_time = data.get("start_time")
+        duration = data.get("duration", 25)
+        elapsed = (datetime.now() - start_time).total_seconds() / 60
+        remaining = max(0, duration - elapsed)
+        
+        await message.answer(
+            f"⏱️ Таймер уже запущен!\n"
+            f"Тип: Стандартный ({duration} мин)\n"
+            f"Прошло: {elapsed:.0f} мин из {duration}\n"
+            f"Осталось: {remaining:.0f} минут\n\n"
+            f"Что хочешь сделать?",
+            reply_markup=get_timer_active_keyboard()
+        )
+        return
+    
+    # Запускаем новый таймер
+    duration = 25
+    await state.set_state(TimerStates.active)
+    await state.update_data(
+        type="standard",
+        duration=duration,
+        start_time=datetime.now()
+    )
+    
+    await message.answer(
+        f"⏱️ Таймер запущен на {duration} минут!\n"
+        f"Ваш питомец ждёт вашего возвращения 🐾",
+        reply_markup=get_timer_active_keyboard()
+    )
+    
+    # Запускаем фоновую задачу (НЕ блокирует бота)
+    asyncio.create_task(run_timer_task(message.chat.id, state, user_id, duration))
+
+# Состояния для мастера настройки
+class SetupStates(StatesGroup):
+    choosing_path = State()      # Выбор: настроить сейчас или позже
+    setting_morning = State()    # Настройка утреннего времени
+    setting_evening = State()    # Настройка вечернего времени
+    confirming = State()         # Подтверждение настроек
+
+# Обработчик /start
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    
+    # Проверяем, существует ли пользователь
+    if user_exists(user_id):
+        # Пользователь уже зарегистрирован — показываем профиль
+        user_data = get_user_data(user_id)
+        total_sessions = user_data.get("total_sessions", 0)
+        total_coins = user_data.get("total_coins", 0)
+        current_streak = user_data.get("current_streak", 0)
+        
+        # Создаём инлайн-кнопки для профиля
+        inline_kb = InlineKeyboardBuilder()
+        inline_kb.add(InlineKeyboardButton(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1"))
+        inline_kb.add(InlineKeyboardButton(text="📅 Ежедневные задачи", callback_data="daily_tasks"))
+        inline_kb.adjust(2)
+        
+        await message.answer(
+            f"😊 С возвращением! Твой питомец скучал!\n\n"
+            f"📊 Твоя статистика:\n"
+            f"• Всего сессий: {total_sessions}\n"
+            f"• Всего монет: {total_coins} 🪙\n"
+            f"• Твой стрик: {current_streak} дней подряд 🔥\n\n"
+            f"Чем займёмся сегодня?",
+            reply_markup=inline_kb.as_markup()
+        )
+        return
+    
+    # Новый пользователь — показываем выбор пути
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.button(text="🔧 Настроить сейчас")
+    keyboard.button(text="🚀 Начать сразу")
+    keyboard.adjust(1)
+    
+    await message.answer(
+        "🐾 Привет! Я — StudyBuddy, твой цифровой питомец для учёбы!\n\n"
+        "✨ Я помогу тебе учиться регулярно и без стресса. "
+        "Даже 5 минут в день — это уже победа!\n\n"
+        "Хочешь сначала настроить уведомления под себя или начать сразу?",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+    await state.set_state(SetupStates.choosing_path)
+    
+# Запускаем таймер в фоне
+    try:
+        await asyncio.sleep(duration * 60)  # 25 минут в секундах
+        
+        # Проверяем, не отменил ли пользователь таймер
+        current_state = await state.get_state()
+        if current_state == TimerStates.active.state:
+            # Начисляем монеты
+            earned_achievements, bonus_coins, _ = add_study_session(user_id, duration_minutes=duration)
+            if earned_achievements:
+                await send_achievement_notification(user_id, earned_achievements)
+            user_data = get_user_data(user_id)
+            
+            await message.answer(
+                f"🎉 Отлично! Таймер завершён!\n"
+                f"🪙 Получено: {duration} монет\n"
+                f"📊 Всего монет: {user_data.get('total_coins', 0)}\n\n"
+                f"⏱️ Теперь возьми перерыв на 5 минут для восстановления концентрации🙃",
+                reply_markup=get_main_keyboard()
+            )
+            await state.clear()
+    except asyncio.CancelledError:
+        pass
+# Обработчик выбора пути
+@router.message(SetupStates.choosing_path, F.text.in_(["🔧 Настроить сейчас", "🚀 Начать сразу"]))
+async def handle_setup_choice(message: Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    
+    if message.text == "🚀 Начать сразу":
+        # Создаём пользователя с дефолтными настройками
+        default_settings = {
+            "notification_time_morning": "09:00",
+            "notification_time_evening": "21:00",
+            "notification_streak": True,
+            "notification_morning_enabled": True,
+            "notification_evening_enabled": True,
+            "timezone": "Europe/Moscow"  # Москва по умолчанию
+        }
+        add_user_with_settings(user_id, default_settings)
+        
+        await message.answer(
+            "✅ Отлично! Я настроил всё за тебя:\n"
+            "• 🌅 Утренние напоминания в 9:00\n"
+            "• 🌙 Вечерние напоминания в 21:00 (если не учился)\n"
+            "• 🔥 Поздравления со стриком в 23:59\n"
+            "• 🇷🇺 Часовой пояс: Москва\n\n"
+            "🐾 Твой питомец уже ждёт тебя! Начни учиться прямо сейчас:",
+            reply_markup=get_main_keyboard()
+        )
+        await state.clear()
+    
+    else:  # "🔧 Настроить сейчас"
+        # Шаг 1: настройка утра
+        keyboard = ReplyKeyboardBuilder()
+        keyboard.button(text="🌅 8:00")
+        keyboard.button(text="🌅 9:00")
+        keyboard.button(text="🌅 10:00")
+        keyboard.adjust(3)
+        
+        await message.answer(
+            "🔧 Давай настроим уведомления!\n\n"
+            "⏰ Когда присылать утреннее напоминание?",
+            reply_markup=keyboard.as_markup(resize_keyboard=True)
+        )
+        await state.update_data(notification_morning_enabled=True)
+        await state.set_state(SetupStates.setting_morning)
+
+# Шаг 2: настройка вечера
+@router.message(SetupStates.setting_morning, F.text.in_(["🌅 8:00", "🌅 9:00", "🌅 10:00"]))
+async def handle_morning_time(message: Message, state: FSMContext):
+    time_map = {
+        "🌅 8:00": "08:00",
+        "🌅 9:00": "09:00",
+        "🌅 10:00": "10:00"
+    }
+    selected_time = time_map[message.text]
+    
+    await state.update_data(notification_time_morning=selected_time)
+    
+    # Шаг 2: настройка вечера
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.button(text="🌙 20:00")
+    keyboard.button(text="🌙 21:00")
+    keyboard.button(text="🌙 22:00")
+    keyboard.adjust(3)
+    
+    await message.answer(
+        f"✅ Утро настроено на {selected_time}\n\n"
+        "⏰ Когда присылать вечернее напоминание?\n"
+        "(Только если ты сегодня ещё не учился)",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+    await state.update_data(notification_evening_enabled=True)
+    await state.set_state(SetupStates.setting_evening)
+
+# Шаг 3: подтверждение настроек
+@router.message(SetupStates.setting_evening, F.text.in_(["🌙 20:00", "🌙 21:00", "🌙 22:00"]))
+async def handle_evening_time(message: Message, state: FSMContext):
+    time_map = {
+        "🌙 20:00": "20:00",
+        "🌙 21:00": "21:00",
+        "🌙 22:00": "22:00"
+    }
+    selected_time = time_map[message.text]
+    
+    await state.update_data(notification_time_evening=selected_time)
+    
+    # Получаем все настройки
+    data = await state.get_data()
+    morning_time = data.get("notification_time_morning", "09:00")
+    evening_time = selected_time
+    
+    # Показываем итоговые настройки
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.button(text="✅ Всё верно, сохранить")
+    keyboard.button(text="✏️ Изменить настройки")
+    keyboard.adjust(1)
+    
+    await message.answer(
+        "🔧 Проверь свои настройки:\n\n"
+        f"🌅 Утро: {morning_time}\n"
+        f"🌙 Вечер: {evening_time} (только если не учился)\n"
+        f"🔥 Стрик: включено (23:59)\n"
+        f"🇷🇺 Часовой пояс: Москва\n\n"
+        "Всё правильно?",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+    await state.set_state(SetupStates.confirming)
+
+# Подтверждение и сохранение
+@router.message(SetupStates.confirming, F.text == "✅ Всё верно, сохранить")
+async def handle_confirmation(message: Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    data = await state.get_data()
+    
+    # Формируем настройки
+    settings = {
+        "notification_time_morning": data.get("notification_time_morning", "09:00"),
+        "notification_time_evening": data.get("notification_time_evening", "21:00"),
+        "notification_streak": True,
+        "notification_morning_enabled": data.get("notification_morning_enabled", True),
+        "notification_evening_enabled": data.get("notification_evening_enabled", True),
+        "timezone": "Europe/Moscow"  # Москва по умолчанию
+    }
+    
+    # Сохраняем пользователя
+    add_user_with_settings(user_id, settings)
+    
+    await message.answer(
+        "✅ Настройки сохранены!\n\n"
+        "🐾 Твой питомец готов помогать тебе учиться:\n"
+        f"• Утром в {settings['notification_time_morning']} напомнит начать день с пользой,\n"
+        f"• Вечером в {settings['notification_time_evening']} спросит, как прошёл день,\n"
+        f"• В 23:59 поздравит со стриком и начислит +15 монет 🔥\n\n"
+        "Готов начать первую сессию?",
+        reply_markup=get_main_keyboard()
+    )
+    await state.clear()
+
+# Изменить настройки (возврат к началу мастера)
+@router.message(SetupStates.confirming, F.text == "✏️ Изменить настройки")
+async def handle_edit_settings(message: Message, state: FSMContext):
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.button(text="🌅 8:00")
+    keyboard.button(text="🌅 9:00")
+    keyboard.button(text="🌅 10:00")
+    keyboard.adjust(3)
+    
+    await message.answer(
+        "⏰ Когда присылать утреннее напоминание?",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+    await state.set_state(SetupStates.setting_morning)
+
+# Отмена настройки (любой другой текст)
+@router.message(SetupStates.choosing_path)
+@router.message(SetupStates.setting_morning)
+@router.message(SetupStates.setting_evening)
+@router.message(SetupStates.confirming)
+async def handle_unexpected_input(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if current_state == SetupStates.choosing_path.state:
+        await message.answer(
+            "⚠️ Выбери один из вариантов ниже:",
+            reply_markup=ReplyKeyboardBuilder()
+                .button(text="🔧 Настроить сейчас")
+                .button(text="🚀 Начать сразу")
+                .adjust(1)
+                .as_markup(resize_keyboard=True)
+        )
+    elif current_state in [SetupStates.setting_morning.state, SetupStates.setting_evening.state]:
+        await message.answer("⚠️ Выбери время из предложенных кнопок")
+    else:
+        await message.answer("⚠️ Используй кнопки для настройки")
+
+async def send_achievement_notification(user_id: str, achievement_ids: list):
+    """
+    Отправляет уведомление о получении достижения(й) с проверкой настроек
+    """
+    # Проверяем, включены ли уведомления о достижениях
+    sheet = get_sheet()
+    cell = sheet.find(str(user_id), in_column=1)
+    
+    if not cell:
+        return
+    
+    row = sheet.row_values(cell.row)
+    
+    # Безопасное чтение колонки K
+    notification_settings_raw = row[10] if len(row) > 10 else ""
+    notification_settings = {}
+    
+    if notification_settings_raw:
+        try:
+            notification_settings = json.loads(notification_settings_raw)
+        except:
+            pass
+    
+    # Проверяем флаг уведомлений о достижениях (по умолчанию включено)
+    if not notification_settings.get("notification_achievements_enabled", True):
+        logger.info(f"Уведомления о достижениях отключены для пользователя {user_id}")
+        return
+    
+    # Загружаем данные достижений
+    try:
+        with open("achievements.json", "r", encoding="utf-8") as f:
+            all_achievements = json.load(f)
+    except Exception as e:
+        logger.error(f"Ошибка загрузки achievements.json: {e}")
+        return
+    
+    # Формируем сообщение
+    if len(achievement_ids) == 1:
+        ach_id = achievement_ids[0]
+        ach = all_achievements.get(ach_id, {})
+        message_text = (
+            f"🎉 ПОЗДРАВЛЯЕМ! Ты получил(а) новое достижение:\n\n"
+            f"{ach.get('icon', '🏆')} {ach.get('name', 'Достижение')}\n"
+            f"{ach.get('description', '')}\n\n"
+            f"🪙 Бонус: +{ach.get('reward', 0)} монет\n"
+            f"🐾 Твой питомец гордится тобой!"
+        )
+    else:
+        # Несколько достижений за одну сессию (редкий случай)
+        achievements_list = []
+        total_reward = 0
+        for ach_id in achievement_ids:
+            ach = all_achievements.get(ach_id, {})
+            achievements_list.append(f"{ach.get('icon', '🏆')} {ach.get('name', 'Достижение')} (+{ach.get('reward', 0)} монет)")
+            total_reward += ach.get('reward', 0)
+        
+        message_text = (
+            f"🎊 ВАУ! Ты получил(а) несколько достижений за одну сессию:\n\n"
+            + "\n".join(achievements_list) + f"\n\n"
+            f"🪙 Общий бонус: +{total_reward} монет\n"
+            f"🔥 Ты настоящий чемпион учёбы!"
+        )
+    
+    # Отправляем уведомление
+    try:
+        await bot.send_message(
+            chat_id=int(user_id),
+            text=message_text,
+            parse_mode="HTML"
+        )
+        logger.info(f"Уведомление о достижении отправлено пользователю {user_id}: {achievement_ids}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления о достижении {user_id}: {e}")
+        
+# Обработчик отмены таймера
+@router.message(TimerStates.active, F.text == "⏹️ Остановить")
+async def handle_stop_timer(message: Message, state: FSMContext):
+    data = await state.get_data()
+    duration = data.get("duration", 25)
+    start_time = data.get("start_time")
+    elapsed = (datetime.now() - start_time).total_seconds() / 60
+    actual_duration = min(int(elapsed), duration)
+    
+    user_id = str(message.from_user.id)
+    earned_achievements, bonus_coins, current_streak = add_study_session(
+        user_id, 
+        duration_minutes=actual_duration
+    )
+    user_data = get_user_data(user_id)
+    
+    response = (
+        f"⏹️ Таймер остановлен!\n"
+        f"⏱️ Фактическая сессия: {actual_duration} минут\n"
+        f"🪙 Получено: {actual_duration} монет"
+    )
+    if bonus_coins > 0:
+        response += f"\n✨ Бонус за достижения: +{bonus_coins} монет"
+    response += f"\n📊 Всего монет: {user_data.get('total_coins', 0)}"
+    
+    await message.answer(response, reply_markup=get_main_keyboard())
+    await state.clear()  # Очищаем состояние — таймер завершён
+    
+    # Отправляем уведомления о достижениях
+    if earned_achievements:
+        await send_achievement_notification(user_id, earned_achievements)
+    
+# Кастомный таймер - начало
+@router.message(F.text == "⏱️ Кастомный таймер")
+async def handle_custom_timer_start(message: Message, state: FSMContext):
+    # Проверяем активный таймер
+    current_state = await state.get_state()
+    if current_state == TimerStates.active.state:
+        data = await state.get_data()
+        start_time = data.get("start_time")
+        duration = data.get("duration", 25)
+        elapsed = (datetime.now() - start_time).total_seconds() / 60
+        remaining = max(0, duration - elapsed)
+        
+        await message.answer(
+            f"⏱️ Таймер уже запущен!\n"
+            f"Тип: Кастомный ({duration} мин)\n"
+            f"Прошло: {elapsed:.0f} мин из {duration}\n"
+            f"Осталось: {remaining:.0f} минут\n\n",
+            reply_markup=get_timer_active_keyboard()
+        )
+        return
+    
+    await message.answer(
+        "🔢 Сколько минут ты хочешь учиться?\n"
+        "Введите число от 5 до 120:"
+    )
+    await state.set_state(TimerStates.waiting_for_duration)
+
+# Обработчик ввода длительности кастомного таймера
+@router.message(TimerStates.waiting_for_duration)
+async def process_duration(message: Message, state: FSMContext):
+    clean_text = ''.join(filter(str.isdigit, message.text))
+    
+    if not clean_text:
+        await message.answer("❌ Пожалуйста, введите число от 5 до 120:")
+        return
+    
+    duration = int(clean_text)
+    
+    if duration < 5:
+        await message.answer("⚠️ Минимум 5 минут. Попробуйте ещё раз:")
+        return
+    if duration > 120:
+        await message.answer("⚠️ Максимум 120 минут. Попробуйте ещё раз:")
+        return
+    
+    user_id = str(message.from_user.id)
+    if not user_exists(user_id):
+        add_user(user_id)
+    
+    # Запускаем таймер
+    await state.set_state(TimerStates.active)
+    await state.update_data(
+        type="custom",
+        duration=duration,
+        start_time=datetime.now()
+    )
+    
+    await message.answer(
+        f"⏱️ Таймер запущен на {duration} минут!\n"
+        f"Ваш питомец ждёт вашего возвращения 🐾",
+        reply_markup=get_timer_active_keyboard()
+    )
+    
+    # Запускаем фоновую задачу
+    asyncio.create_task(run_timer_task(message.chat.id, state, user_id, duration))
+
+# Фоновая задача таймера (НЕ блокирует бота)
+async def run_timer_task(chat_id: int, state: FSMContext, user_id: str, duration: int):
+    """Фоновая задача таймера — работает параллельно с квизами"""
+    try:
+        await asyncio.sleep(duration * 60)
+        
+        # Проверяем, всё ещё активен ли таймер
+        current_state = await state.get_state()
+        if current_state == TimerStates.active.state:
+            data = await state.get_data()
+            actual_duration = duration  # Полная длительность
+            
+            # Сохраняем сессию
+            earned_achievements, bonus_coins, current_streak = add_study_session(
+                user_id, 
+                duration_minutes=actual_duration
+            )
+            user_data = get_user_data(user_id)
+            
+            # Формируем ответ
+            response = (
+                f"🎉 Таймер завершён!\n"
+                f"⏱️ Сессия: {actual_duration} минут\n"
+                f"🪙 Получено: {actual_duration} монет"
+            )
+            if bonus_coins > 0:
+                response += f"\n✨ Бонус за достижения: +{bonus_coins} монет"
+            response += f"\n📊 Всего монет: {user_data.get('total_coins', 0)}"
+            
+            # Отправляем уведомление
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=response,
+                    reply_markup=get_main_keyboard()
+                )
+                
+                # Отправляем уведомления о достижениях
+                if earned_achievements:
+                    await send_achievement_notification(user_id, earned_achievements)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка отправки завершения таймера: {e}")
+            
+            await state.clear()
+            
+    except asyncio.CancelledError:
+        # Таймер был остановлен вручную — ничего не делаем
+        pass
+
+
+# Обработчик кнопки "🎓Советы для продуктивности"
+@router.message(F.text == "🎓Советы для продуктивности")
+async def handle_tips_menu(message: Message):
+    await message.answer(
+        "📚 Выберите категорию советов:",
+        reply_markup=get_tips_keyboard()
+    )
+
+
+
+# Обработчик "⏰ Тайм-менеджмент"
+@router.message(F.text == "⏰ Тайм-менеджмент")
+async def handle_time_management(message: Message):
+    file_path = "timemanagement.txt"
+    
+    with open(file_path, 'r', encoding='utf-8') as file:
+        tips = [line.strip() for line in file if line.strip()]
+    
+    await message.answer(f"⏰ Совет по тайм-менеджменту:\n\n{random.choice(tips)}")
+
+# Обработчик "🧠 Техники запоминания"
+@router.message(F.text == "🧠 Техники запоминания")
+async def handle_memory_retention(message: Message):
+    file_path = "memoryretention.txt"
+    
+    with open(file_path, 'r', encoding='utf-8') as file:
+        tips = [line.strip() for line in file if line.strip()]
+    
+    await message.answer(f"🧠 Совет по запоминанию:\n\n{random.choice(tips)}")
+        
+# Обработчик "🔗 Ссылки на статьи и книги"
+@router.message(F.text == "🔗 Ссылки на статьи и книги")
+async def handle_links(message: Message):
+    file_path = "links-to-productivity-material.txt"
+    
+    with open(file_path, 'r', encoding='utf-8') as file:
+        content = file.read().strip()
+    
+    await message.answer(f"📚 Полезные материалы:\n\n{content}")
+
+# Обработчик возврата назад
+@router.message(F.text == "⬅️ Назад к учебе")
+async def handle_back_to_study(message: Message):
+    await message.answer(
+        "📖 Раздел учебы:\nВыберите инструмент ниже",
+        reply_markup=get_study_keyboard()
+    )
+    
+
+# Профиль пользователя
+@router.message(F.text == "📊 Мой профиль")
+@router.message(Command("profile"))
+async def cmd_profile(message: Message):
+    user_id = str(message.from_user.id)
+    user = get_user_data(user_id)
+    
+    if not user:
+        await message.answer("Сначала напиши /start для регистрации")
+        return
+    
+    total_sessions = user.get("total_sessions", 0)
+    total_coins = user.get("total_coins", 0)
+    current_streak = user.get("current_streak", 0)
+    last_session = user.get("last_session", "никогда")
+    
+    # Создаём инлайн-кнопки
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
+    inline_kb.button(text="📅 Задачи", callback_data="daily_tasks")
+    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")  
+    inline_kb.adjust(2, 1)  
+    
+    await message.answer(
+        f"📊 Твой профиль:\n"
+        f"🆔 ID: {user_id}\n"
+        f"📚 Всего сессий: {total_sessions}\n"
+        f"💰 Всего монет: {total_coins} 🪙\n"
+        f"🔥 Стрик: {current_streak} дней подряд\n"
+        f"⏱️ Последняя сессия: {last_session}\n\n"
+        f"🐾 Твой питомец: {get_pet_emotion(current_streak)}",
+        reply_markup=inline_kb.as_markup()
+    )
+
+#заглушка
+@router.callback_query(F.data == "daily_tasks")
+async def show_daily_tasks(callback: types.CallbackQuery):
+    await callback.answer()
+    
+    # Временный контент (замените на реальную логику позже)
+    text = (
+        "📅 Ежедневные задачи (в разработке)\n\n"
+        "💡 Функция запустится после тестирования системы достижений"
+    )
+    
+    # Кнопка возврата
+    back_kb = InlineKeyboardBuilder()
+    back_kb.add(InlineKeyboardButton(text="⬅️ Назад к профилю", callback_data=f"back_to_profile:{callback.from_user.id}"))
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=back_kb.as_markup())
+    except:
+        await callback.message.answer(text, reply_markup=back_kb.as_markup())
+        try:
+            await callback.message.delete()
+        except:
+            pass
+    
+def get_pet_emotion(streak):
+    """Возвращает эмодзи питомца в зависимости от стрика"""
+    if streak == 0:
+        return "грустный 😢 (начни учиться сегодня!)"
+    elif streak < 3:
+        return "радостный 😊 (так держать!)"
+    elif streak < 7:
+        return "очень счастливый 🤗 (ты молодец!)"
+    else:
+        return "легендарный 🌟 (ты чемпион!)"
+
+# Обработчик кнопки "Посмотреть достижения"
+@router.callback_query(F.data.startswith("show_achievements:"))
+async def show_achievements(callback: types.CallbackQuery):
+    # Парсим данные: "show_achievements:user_id:page"
+    parts = callback.data.split(":")
+    user_id = parts[1]
+    page = int(parts[2]) if len(parts) > 2 else 1
+    
+    # Загружаем все достижения
+    try:
+        with open("achievements.json", "r", encoding="utf-8") as f:
+            all_achievements = json.load(f)
+    except Exception as e:
+        await callback.answer(f"Ошибка загрузки: {str(e)}", show_alert=True)
+        return
+    
+    # Читаем прогресс пользователя
+    sheet = get_sheet()
+    cell = sheet.find(str(user_id), in_column=1)
+    if not cell:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+    
+    row = sheet.row_values(cell.row)
+    achievements_raw = row[9] if len(row) > 9 else ""
+    user_achievements = {}
+    if achievements_raw:
+        try:
+            user_achievements = json.loads(achievements_raw)
+        except:
+            pass
+    
+    # Фильтруем достижения по странице
+    page_achievements = {
+        k: v for k, v in all_achievements.items() 
+        if v.get("page", 1) == page
+    }
+    
+    # Формируем текст для текущей страницы
+    text = f"🏆 Достижения (страница {page}/3)\n\n"
+    
+    for ach_id, ach_data in page_achievements.items():
+        ach_name = ach_data["name"]
+        ach_desc = ach_data["description"]
+        ach_reward = ach_data["reward"]
+        ach_icon = ach_data["icon"]
+        
+        status = user_achievements.get(ach_id)
+        
+        if status == True:
+            text += f"✅ {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — ПОЛУЧЕНО!\n\n"
+        elif isinstance(status, dict):
+            progress = status.get("progress", 0)
+            target = status.get("target", 0)
+            text += f"⏳ {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — {progress}/{target}\n\n"
+        else:
+            text += f"🔒 {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — ЗАБЛОКИРОВАНО\n\n"
+    
+    # Создаём кнопки навигации
+    keyboard = InlineKeyboardBuilder()
+    
+    # Добавляем кнопки для других страниц
+    for p in range(1, 4):
+        if p != page:
+            keyboard.button(text=str(p), callback_data=f"show_achievements:{user_id}:{p}")
+    
+    # Кнопка возврата в профиль
+    keyboard.button(text="◀️ Профиль", callback_data=f"back_to_profile:{callback.from_user.id}")
+    
+    keyboard.adjust(2, 1)
+    
+    # Отправляем/редактируем сообщение
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard.as_markup()
+        )
+    except:
+        await callback.message.answer(
+            text,
+            reply_markup=keyboard.as_markup()
+        )
+        try:
+            await callback.message.delete()
+        except:
+            pass
+    
+    await callback.answer()
+
+
+
+
+
+# === КВИЗЫ: Основы производственного менеджмента ===
+
+@router.message(F.text == "🏭 Основы производственного менеджмента")
+async def handle_production_management(message: Message, state: FSMContext):
+    await message.answer(
+        "📚 Курс «Основы производственного менеджмента»\nВыбери раздел для повторения:",
+        reply_markup=get_quiz_section_keyboard()
+    )
+    await state.set_state(QuizStates.choosing_section)
+
+@router.message(F.text.in_(["Раздел I", "Раздел II", "Раздел III", "Раздел IV"]))
+async def handle_quiz_section(message: Message, state: FSMContext):
+    section_map = {
+        "Раздел I": "i",
+        "Раздел II": "ii",
+        "Раздел III": "iii",
+        "Раздел IV": "iv"
+    }
+    
+    section_key = section_map.get(message.text)
+    
+    # Обработка разделов с вопросами/практикой
+    if message.text in ["Вопросы к экзамену", "Практика к экзамену"]:
+        await message.answer("🛠️ Этот раздел пока в разработке. Скоро появится!", reply_markup=get_quiz_section_keyboard())
+        return
+    
+    if not section_key:
+        await message.answer("⚠️ Неизвестный раздел", reply_markup=get_quiz_section_keyboard())
+        return
+    
+    # Загружаем термины раздела
+    terms = load_quiz_section(section_key)
+    if not terms:
+        await message.answer(
+            f"❌ Файл раздела {message.text} не найден или пуст.\n"
+            f"Проверьте наличие файла: `quizzes/production-management/section-{section_key}.txt`",
+            reply_markup=get_quiz_section_keyboard()
+        )
+        return
+    
+    # Находим следующий термин для повторения
+    user_id = str(message.from_user.id)
+    next_term = get_next_quiz_term(user_id, terms)
+    
+    if not next_term:
+        await message.answer(
+            "🎉 Ты повторил все термины этого раздела! Отличная работа! 🏆",
+            reply_markup=get_quiz_section_keyboard()
+        )
+        return
+    
+    # Сохраняем текущий термин в состоянии
+    await state.update_data(
+        current_term=next_term.to_dict(),
+        section=section_key,
+        section_name=message.text
+    )
+    
+    # Задаём вопрос
+    await message.answer(
+        f"✏️ Раздел: {message.text}\n\n"
+        f"Напиши ДОСЛОВНОЕ определение термина:\n"
+        f"«{next_term.term}»\n\n"
+        f"❗ На экзамене требуется точная формулировка.",
+        reply_markup=get_quiz_answer_keyboard()
+    )
+    await state.set_state(QuizStates.answering)
+
+@router.message(QuizStates.answering, F.text == "🛑 Завершить квиз")
+async def handle_quiz_exit(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("✅ Квиз завершён. Твой прогресс сохранён!", reply_markup=get_study_keyboard())
+
+@router.message(QuizStates.answering)
+async def handle_quiz_answer(message: Message, state: FSMContext):
+    data = await state.get_data()
+    current_term = data.get("current_term")
+    
+    if not current_term:
+        await message.answer("⚠️ Ошибка: термин не найден. Начни квиз заново.", reply_markup=get_quiz_section_keyboard())
+        await state.clear()
+        return
+    
+    # Проверяем ответ
+    is_correct, feedback = check_text_answer(
+        message.text,
+        current_term["definition"],
+        current_term["keywords"]
+    )
+    
+    # Обновляем прогресс
+    user_id = str(message.from_user.id)
+    progress = get_quiz_progress(user_id, current_term["hash"])
+    streak = progress.get("streak", 0)
+    
+    if is_correct:
+        streak += 1
+        feedback = f"{feedback}\n\n🔥 Отлично! Термин будет повторён через {2 ** min(streak, 3)} дня для закрепления."
+    else:
+        streak = 0
+    
+    update_quiz_progress(user_id, current_term["hash"], is_correct, streak)
+    
+    # Отправляем обратную связь
+    await message.answer(feedback)
+    await asyncio.sleep(1.5)
+    
+    # Предлагаем следующий термин
+    terms = load_quiz_section(data["section"])
+    next_term = get_next_quiz_term(user_id, terms)
+    
+    if next_term:
+        await state.update_data(
+            current_term=next_term.to_dict(),
+            section=data["section"],
+            section_name=data["section_name"]
+        )
+        await message.answer(
+            f"✏️ Раздел: {data['section_name']}\n\n"
+            f"Напиши ДОСЛОВНОЕ определение термина:\n"
+            f"«{next_term.term}»",
+            reply_markup=get_quiz_answer_keyboard()
+        )
+    else:
+        await message.answer(
+            "🎉 Все термины раздела повторены! Ты молодец!",
+            reply_markup=get_quiz_section_keyboard()
+        )
+        await state.clear()
+
+
+# Команда /reply (только для админов)
+@router.message(Command("reply"))
+async def cmd_reply(message: Message, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ У вас нет прав для ответа пользователям.")
+        return
+    
+    args = command.args
+    if not args or len(args.split(maxsplit=1)) < 2:
+        await message.answer(
+            "❌ Использование: /reply <user_id> <сообщение>\n"
+            "Пример: /reply 123456789 Спасибо за вопрос!"
+        )
+        return
+    
+    user_id_str, reply_text = args.split(maxsplit=1)
+    
+    try:
+        user_id = int(user_id_str)
+        await bot.send_message(user_id, f"📨 Ответ от администратора:\n\n{reply_text}")
+        await message.answer(f"✅ Ответ отправлен пользователю {user_id}")
+        
+    except ValueError:
+        await message.answer("❌ Неверный формат ID. Введите числовой ID.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка отправки: {str(e)}")
+
+# Обработка всех остальных сообщений (для пользователей)
+@router.message()
+async def handle_any_message(message: Message):
+    user_id = message.from_user.id
+    
+    # Если сообщение от админа — даём подсказку
+    if is_admin(user_id):
+        await message.answer(" Используйте команду /reply <user_id> <сообщение> для ответа пользователям.")
+        return
+    
+    # Сохраняем сообщение для админов
+    user_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Сохраняем в файл
+    if str(user_id) not in messages_data["user_messages"]:
+        messages_data["user_messages"][str(user_id)] = []
+    
+    messages_data["user_messages"][str(user_id)].append({
+        "timestamp": timestamp,
+        "user_name": user_name,
+        "text": message.text,
+        "message_id": message.message_id
+    })
+    
+    # Сохраняем файл с кодировкой UTF-8
+    try:
+        with open(MESSAGES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(messages_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения сообщений: {e}")
+    
+    # Отправляем админам
+    admin_msg = (
+        f"📩 Новое сообщение:\n"
+        f"👤 {user_name} (ID: {user_id})\n"
+        f"⏰ {timestamp}\n"
+        f"📝 {message.text}"
+    )
+    
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(admin_id, admin_msg)
+        except Exception as e:
+            logger.error(f"Не удалось отправить админу {admin_id}: {e}")
+    
+    await message.answer(
+        "✅ Твое сообщение отправлено! Администратор ответит в ближайшее время.\n\n"
+        "А пока можешь продолжить учиться — выбери Учеба в меню ниже 👇",
+        reply_markup=get_main_keyboard()
+    )
+
+async def check_daily_streaks():
+    """
+    ОДНОКРАТНАЯ проверка стриков ВСЕХ пользователей в 23:59 по МСК.
+    Вызывается фоновой задачей ТОЛЬКО один раз в сутки.
+    """
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(moscow_tz)
+    
+    # Логируем для отладки
+    logger.info(f"🌙 Запуск проверки стриков. Время МСК: {now.strftime('%Y-%m-%d %H:%M')}")
+    
+    try:
+        sheet = get_sheet()
+        all_users = sheet.get_all_records()
+        processed = 0
+        bonuses = 0
+        
+        for user in all_users:
+            user_id = user.get("user_id", "")
+            if not user_id:
+                continue
+            
+            # Запускаем синхронную функцию в отдельном потоке
+            result = await asyncio.to_thread(update_daily_streak, user_id)
+            
+            if result["success"]:
+                processed += 1
+                bonuses += result["bonus"]
+                
+                # Отправляем уведомление при бонусе
+                if result["bonus"] > 0:
+                    try:
+                        await bot.send_message(
+                            int(user_id),
+                            f"🌙 Добрый вечер! Твой стрик обновлён:\n"
+                            f"🔥 {result['streak']} дней подряд\n"
+                            f"🪙 +{result['bonus']} монет за упорство!"
+                        )
+                    except:
+                        pass
+        
+        logger.info(f"✅ Стрики обработаны: {processed}/{len(all_users)} пользователей, +{bonuses} монет")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке стриков: {e}")
+
+
+
+async def streak_checker_task():
+    """
+    Фоновый планировщик. Проверяет время КАЖДУЮ МИНУТУ и запускает 
+    check_daily_streaks() ТОЛЬКО один раз в 23:59.
+    """
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    last_check_date = None  # Запоминаем дату последней проверки
+    
+    while True:
+        now = datetime.now(moscow_tz)
+        today = now.strftime("%Y-%m-%d")
+        
+        # Запускаем ТОЛЬКО один раз в день в 23:59
+        if now.hour == 23 and now.minute == 59 and last_check_date != today:
+            await check_daily_streaks()
+            last_check_date = today  # Отмечаем, что проверка сегодня выполнена
+        
+        # Спим 60 секунд ДО СЛЕДУЮЩЕЙ ПРОВЕРКИ ВРЕМЕНИ
+        await asyncio.sleep(60)
+
+def get_timezone_name(timezone_str):
+    """Преобразует UTC+3 в название часового пояса"""
+    tz_map = {
+        "UTC+3": "Europe/Moscow",
+        "UTC+2": "Europe/Kiev",
+        "UTC+4": "Europe/Samara",
+        "UTC+7": "Asia/Novosibirsk"
+    }
+    return tz_map.get(timezone_str, "UTC")
+
+
+
+# Запуск фоновой задачи
+@dp.startup()
+async def on_startup():
+    asyncio.create_task(streak_checker_task())
+    logger.info("✅ Фоновая задача для проверки стриков запущена")
+    
+    # Проверяем подключение к Google Sheets
+    try:
+        test_sheet = get_sheet()
+        logger.info(f"✅ Подключение к Google Таблице 'palph' успешно")
+    except Exception as e:
+        logger.error(f"❌ Не удалось подключиться к Google Таблице: {e}")
+        logger.error(f"🔧 Проверьте:")
+        logger.error(f"  • Файл {GOOGLE_CREDS_PATH} существует")
+        logger.error(f"  • GOOGLE_SHEET_URL в .env корректен: {GOOGLE_SHEET_URL}")
+        logger.error(f"  • Сервисному аккаунту даны права на редактирование таблицы")
+        # Не выходим, чтобы бот продолжал работать с базовой функциональностью
+
+
+
+# Основной запуск
+async def main():
+    logger.info("✅ StudyBuddy Bot запускается...")
+    logger.info(f"🌍 Часовой пояс сервера: {SERVER_TIMEZONE}")
+    logger.info(f"👑 Главный админ: {MAIN_ADMIN_ID}")
+    logger.info(f"📁 Google Таблица: palph")
+    logger.info(f"🔐 Файл сервисного аккаунта: {GOOGLE_CREDS_PATH}")
+    
+    # Регистрация роутеров
+    dp.include_router(router)
+    
+    # Запускаем бота
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

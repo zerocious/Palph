@@ -1,0 +1,65 @@
+{
+  "first_session": {
+    "name": "Первый шаг",
+    "description": "Заверши первую учебную сессию",
+    "reward": 25,
+    "icon": "🐣",
+    "page": 1
+  },
+  "3_day_streak": {
+    "name": "Огненный",
+    "description": "3 дня подряд без пропусков",
+    "reward": 50,
+    "icon": "🔥",
+    "page": 1
+  },
+  "100_minutes": {
+    "name": "Марафонец",
+    "description": "Набери 100 минут учёбы всего",
+    "reward": 75,
+    "icon": "🏃",
+    "page": 1
+  },
+  "10_sessions": {
+    "name": "Десятый шаг",
+    "description": "Заверши десятую учебную сессию",
+    "reward": 50,
+    "icon": "🔟",
+    "page": 2
+  },
+  "7_day_streak": {
+    "name": "Неделя огня",
+    "description": "7 дней подряд без пропусков",
+    "reward": 75,
+    "icon": "📅",
+    "page": 2
+  },
+  "300_minutes": {
+    "name": "Марафон",
+    "description": "Набери 300 минут учёбы всего",
+    "reward": 100,
+    "icon": "🏅",
+    "page": 2
+  },
+  "30_sessions": {
+    "name": "Тридцатый шаг",
+    "description": "Заверши 30 учебных сессий",
+    "reward": 75,
+    "icon": "🎯",
+    "page": 3
+  },
+  "14_day_streak": {
+    "name": "Две недели огня",
+    "description": "14 дней подряд без пропусков",
+    "reward": 100,
+    "icon": "🔥🔥",
+    "page": 3
+  },
+  "750_minutes": {
+    "name": "Ультрамарафон",
+    "description": "Набери 750 минут учёбы всего",
+    "reward": 125,
+    "icon": "🚀",
+    "page": 3
+  }
+}

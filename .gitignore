@@ -1,0 +1,40 @@
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+credentials.json
+*.pem
+*.key
+
+# --- Local data ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+admins.json
+admins.json.migrated*
+messages.json
+messages.log
+bot.log
+bot.log.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Claude Code local session data ---
+.claude/

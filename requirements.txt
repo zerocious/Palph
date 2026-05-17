@@ -1,0 +1,4 @@
+aiogram>=3.26,<4
+aiosqlite>=0.22,<1
+pytz>=2024.1
+python-dotenv>=1.0,<2

@@ -1,0 +1,314 @@
+# services.py
+import logging
+from datetime import datetime
+
+from aiogram.exceptions import TelegramForbiddenError
+
+from repository import UserRepository, SessionRepository
+
+logger = logging.getLogger("studybuddy_bot")
+
+
+class AchievementService:
+    """Проверка и выдача достижений. Не зависит от полей target/progress в JSON."""
+    def __init__(self, user_repo: UserRepository, definitions: dict):
+        self.user_repo = user_repo
+        self.definitions = definitions  # загружены из achievements.json
+
+    async def check_and_award(self, user_id: int, sessions: int, streak: int, total_minutes: int) -> tuple[list, int]:
+        """
+        sessions – новое количество сессий (после завершения текущей)
+        streak – текущий стрик до обновления (обновляется отдельно)
+        total_minutes – общее количество минут (sessions * длительность одной сессии)
+        Возвращает: (список id новых достижений, сумма бонусных монет)
+        """
+        user_achievements = await self._load_user_achievements(user_id)
+        new_achievements = []
+        bonus_coins = 0
+
+        # 1. Первый шаг
+        if sessions >= 1 and not user_achievements.get("first_session", {}).get("completed"):
+            await self._complete_achievement(user_id, "first_session", target=1)
+            new_achievements.append("first_session")
+            bonus_coins += self._get_reward("first_session")
+
+        # 2. Огненный (3 дня стрика)
+        if streak >= 3 and not self._is_completed(user_achievements, "3_day_streak"):
+            await self._complete_achievement(user_id, "3_day_streak", target=3)
+            new_achievements.append("3_day_streak")
+            bonus_coins += self._get_reward("3_day_streak")
+        elif not self._is_completed(user_achievements, "3_day_streak"):
+            await self._update_progress(user_id, "3_day_streak", progress=streak, target=3)
+
+        # 3. Марафонец (100 минут)
+        if total_minutes >= 100 and not self._is_completed(user_achievements, "100_minutes"):
+            await self._complete_achievement(user_id, "100_minutes", target=100)
+            new_achievements.append("100_minutes")
+            bonus_coins += self._get_reward("100_minutes")
+        elif not self._is_completed(user_achievements, "100_minutes"):
+            await self._update_progress(user_id, "100_minutes", progress=total_minutes, target=100)
+
+        # 4. Десятый шаг (10 сессий)
+        if sessions >= 10 and not self._is_completed(user_achievements, "10_sessions"):
+            await self._complete_achievement(user_id, "10_sessions", target=10)
+            new_achievements.append("10_sessions")
+            bonus_coins += self._get_reward("10_sessions")
+
+        # 5. Неделя огня (7 дней)
+        if streak >= 7 and not self._is_completed(user_achievements, "7_day_streak"):
+            await self._complete_achievement(user_id, "7_day_streak", target=7)
+            new_achievements.append("7_day_streak")
+            bonus_coins += self._get_reward("7_day_streak")
+        elif not self._is_completed(user_achievements, "7_day_streak"):
+            await self._update_progress(user_id, "7_day_streak", progress=streak, target=7)
+
+        # 6. Марафон (300 минут)
+        if total_minutes >= 300 and not self._is_completed(user_achievements, "300_minutes"):
+            await self._complete_achievement(user_id, "300_minutes", target=300)
+            new_achievements.append("300_minutes")
+            bonus_coins += self._get_reward("300_minutes")
+        elif not self._is_completed(user_achievements, "300_minutes"):
+            await self._update_progress(user_id, "300_minutes", progress=total_minutes, target=300)
+
+        # 7. Тридцатый шаг (30 сессий)
+        if sessions >= 30 and not self._is_completed(user_achievements, "30_sessions"):
+            await self._complete_achievement(user_id, "30_sessions", target=30)
+            new_achievements.append("30_sessions")
+            bonus_coins += self._get_reward("30_sessions")
+
+        # 8. Две недели огня (14 дней)
+        if streak >= 14 and not self._is_completed(user_achievements, "14_day_streak"):
+            await self._complete_achievement(user_id, "14_day_streak", target=14)
+            new_achievements.append("14_day_streak")
+            bonus_coins += self._get_reward("14_day_streak")
+        elif not self._is_completed(user_achievements, "14_day_streak"):
+            await self._update_progress(user_id, "14_day_streak", progress=streak, target=14)
+
+        # 9. Ультрамарафон (750 минут)
+        if total_minutes >= 750 and not self._is_completed(user_achievements, "750_minutes"):
+            await self._complete_achievement(user_id, "750_minutes", target=750)
+            new_achievements.append("750_minutes")
+            bonus_coins += self._get_reward("750_minutes")
+        elif not self._is_completed(user_achievements, "750_minutes"):
+            await self._update_progress(user_id, "750_minutes", progress=total_minutes, target=750)
+
+        return new_achievements, bonus_coins
+
+    def _get_reward(self, ach_id: str) -> int:
+        return self.definitions[ach_id]["reward"]
+
+    def _is_completed(self, user_achievements: dict, ach_id: str) -> bool:
+        return user_achievements.get(ach_id, {}).get("completed", False)
+
+    async def _load_user_achievements(self, user_id: int) -> dict:
+        async with self.user_repo.db.execute(
+            "SELECT achievement_id, completed, progress, target FROM user_achievements WHERE user_id = ?",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {
+                row["achievement_id"]: {
+                    "completed": bool(row["completed"]),
+                    "progress": row["progress"],
+                    "target": row["target"]
+                }
+                for row in rows
+            }
+
+    async def _complete_achievement(self, user_id: int, ach_id: str, target: int):
+        await self.user_repo.db.execute(
+            "INSERT INTO user_achievements (user_id, achievement_id, completed, progress, target) "
+            "VALUES (?, ?, 1, ?, ?) ON CONFLICT(user_id, achievement_id) DO UPDATE SET "
+            "completed = 1, progress = excluded.progress, target = excluded.target",
+            (user_id, ach_id, target, target)   # progress = target, completed = 1
+        )
+        await self.user_repo.db.commit()
+
+    async def _update_progress(self, user_id: int, ach_id: str, progress: int, target: int):
+        await self.user_repo.db.execute(
+            "INSERT INTO user_achievements (user_id, achievement_id, completed, progress, target) "
+            "VALUES (?, ?, 0, ?, ?) ON CONFLICT(user_id, achievement_id) DO UPDATE SET "
+            "progress = excluded.progress, target = excluded.target",
+            (user_id, ach_id, progress, target)
+        )
+        await self.user_repo.db.commit()
+
+class StudyService:
+    def __init__(self, user_repo: UserRepository, session_repo: SessionRepository, achievement_service: AchievementService):
+        self.user_repo = user_repo
+        self.session_repo = session_repo
+        self.achievement_service = achievement_service
+
+    async def complete_session(self, user_id: int, duration: int) -> tuple[list, int, int]:
+        """
+        Возвращает (earned_achievements, bonus_coins, session_id).
+        session_id нужен для последующей пользовательской оценки сессии.
+        """
+        async with self.user_repo.db.lock:
+            user = await self.user_repo.get_user(user_id)
+            if not user:
+                await self.user_repo.create_user(user_id)
+                user = await self.user_repo.get_user(user_id)
+
+            previous_minutes = await self.session_repo.get_total_minutes(user_id)
+            total_minutes = previous_minutes + duration
+
+            sessions = user["total_sessions"] + 1
+            streak = user["current_streak"]
+
+            base_coins = duration
+
+            earned, bonus = await self.achievement_service.check_and_award(
+                user_id, sessions, streak, total_minutes
+            )
+
+            await self.user_repo.increment_sessions(user_id)
+            await self.user_repo.add_coins(user_id, base_coins + bonus)
+            session_id = await self.session_repo.add_session(user_id, duration, base_coins, bonus)
+
+        return earned, bonus, session_id
+    
+class ReminderService:
+    """
+    Отправка утренних и вечерних напоминаний.
+    Вызывается планировщиком раз в минуту для каждого TZ, с локальным hhmm этого TZ.
+    """
+    def __init__(self, user_repo: UserRepository, bot):
+        self.user_repo = user_repo
+        self.bot = bot
+
+    async def tick(self, tz: str, hhmm: str) -> None:
+        """Отправляет утренние и вечерние напоминания для указанного TZ и hhmm."""
+        await self._send_morning(tz, hhmm)
+        await self._send_evening(tz, hhmm)
+
+    async def _send_morning(self, tz: str, hhmm: str) -> None:
+        users = await self.user_repo.get_users_due_for_morning(tz, hhmm)
+        if users:
+            logger.info(
+                "reminder.morning.dispatched tz=%s hhmm=%s count=%s",
+                tz, hhmm, len(users),
+            )
+        for u in users:
+            uid = u["user_id"]
+            try:
+                await self.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        "🌅 Доброе утро!\n"
+                        "Твой питомец ждёт первую сессию сегодня 🐾\n"
+                        "Даже 5 минут — это уже победа."
+                    ),
+                )
+            except TelegramForbiddenError:
+                # Пользователь заблокировал бота — ожидаемо, INFO.
+                logger.info(
+                    "reminder.send_failed kind=morning uid=%s reason=blocked", uid
+                )
+            except Exception as e:
+                logger.warning(
+                    "reminder.send_failed kind=morning uid=%s reason=%s detail=%s",
+                    uid, type(e).__name__, e,
+                )
+
+    async def _send_evening(self, tz: str, hhmm: str) -> None:
+        users = await self.user_repo.get_users_due_for_evening(tz, hhmm)
+        if users:
+            logger.info(
+                "reminder.evening.dispatched tz=%s hhmm=%s count=%s",
+                tz, hhmm, len(users),
+            )
+        for u in users:
+            uid = u["user_id"]
+            try:
+                await self.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        "🌙 Вечер!\n"
+                        "Сегодня ещё не было ни одной учебной сессии — "
+                        "успей хотя бы 5 минут до полуночи, чтобы сохранить стрик 🔥"
+                    ),
+                )
+            except TelegramForbiddenError:
+                logger.info(
+                    "reminder.send_failed kind=evening uid=%s reason=blocked", uid
+                )
+            except Exception as e:
+                logger.warning(
+                    "reminder.send_failed kind=evening uid=%s reason=%s detail=%s",
+                    uid, type(e).__name__, e,
+                )
+
+
+class StreakService:
+    """
+    Обработка ежедневного обновления стриков.
+    Вызывается ОДИН раз в сутки по расписанию.
+    """
+    def __init__(self, user_repo: UserRepository, bot=None):
+        self.user_repo = user_repo
+        self.bot = bot  # опционально, для отправки уведомлений
+
+    async def process_users_in_timezone(self, tz: str):
+        """
+        Обрабатывает стрики для пользователей указанного часового пояса.
+        Вызывается планировщиком, когда в этом TZ наступает 23:59.
+        """
+        users = await self.user_repo.get_users_for_streak_update_in_timezone(tz)
+        if not users:
+            return
+        await self._process(users, tz=tz)
+
+    async def process_all_users(self):
+        """Обратная совместимость: обработка всех пользователей независимо от TZ."""
+        users = await self.user_repo.get_users_for_streak_update()
+        if not users:
+            return
+        await self._process(users, tz="*")
+
+    async def _process(self, users: list[dict], tz: str = "*"):
+        incremented = 0
+        reset = 0
+        bonuses_total = 0
+        for user in users:
+            user_id = user["user_id"]
+            has_studied = user["has_studied_today"]
+            current_streak = user["current_streak"]
+
+            if has_studied:
+                new_streak = current_streak + 1
+                # Бонус со второго дня стрика
+                bonus = 15 if new_streak >= 2 else 0
+                async with self.user_repo.db.lock:
+                    await self.user_repo.apply_streak_increment(user_id, new_streak, bonus)
+                incremented += 1
+                bonuses_total += bonus
+
+                # Уведомление (если передан bot)
+                if self.bot and bonus > 0:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                f"🌙 Добрый вечер! Твой стрик обновлён:\n"
+                                f"🔥 {new_streak} дней подряд\n"
+                                f"🪙 +{bonus} монет за упорство!"
+                            )
+                        )
+                    except Exception as e:
+                        # Блокировка / прочие ошибки — пишем в лог, не падаем.
+                        logger.warning(
+                            "streak.notify_failed user_id=%s reason=%s",
+                            user_id, type(e).__name__,
+                        )
+            else:
+                # Сброс стрика
+                if current_streak > 0:
+                    async with self.user_repo.db.lock:
+                        await self.user_repo.apply_streak_reset(user_id)
+                    reset += 1
+
+        logger.info(
+            "streak.batch tz=%s users=%s incremented=%s reset=%s bonuses=%s",
+            tz, len(users), incremented, reset, bonuses_total,
+        )
