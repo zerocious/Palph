@@ -29,7 +29,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
 
 from db import get_db, init_db
-from repository import UserRepository, SessionRepository, AdminRepository, FlashcardRepository
+from repository import (
+    UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
+    McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
+)
 from services import AchievementService, StudyService, StreakService, ReminderService, sm2_update
 from tasks import streak_scheduler, reminder_scheduler
 
@@ -105,6 +108,9 @@ user_repo: UserRepository = None
 session_repo: SessionRepository = None
 admin_repo: AdminRepository = None
 flashcard_repo: FlashcardRepository = None
+mcq_repo: McqProgressRepository = None
+task_repo: TaskProgressRepository = None
+subject_stats_repo: SubjectStatsRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -616,6 +622,11 @@ def _flashcard_hash(term: str) -> str:
     return hashlib.md5(term.encode("utf-8")).hexdigest()[:8]
 
 
+def _mcq_hash(question: str) -> str:
+    """8-символьный hash MCQ-вопроса для mcq_progress.question_hash."""
+    return hashlib.md5(question.encode("utf-8")).hexdigest()[:8]
+
+
 def load_flashcards(subject_id: str) -> list[dict]:
     """
     Читает study_materials/<subject>/flashcards.txt.
@@ -971,7 +982,8 @@ async def cmd_profile(message: Message):
     inline_kb = InlineKeyboardBuilder()
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
-    inline_kb.adjust(2)
+    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    inline_kb.adjust(2, 1)
     await message.answer(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -982,6 +994,210 @@ async def cmd_profile(message: Message):
         f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
         reply_markup=inline_kb.as_markup()
     )
+
+# ------------------------------------------------------------
+# Экран прогресса по предметам
+# ------------------------------------------------------------
+PROGRESS_BAR_FILLED = "🟩"
+PROGRESS_BAR_EMPTY = "⬜"
+PROGRESS_BAR_LENGTH = 10
+
+# Пороги «выучено». Можно менять централизованно.
+SITUATIONAL_MASTERY_STREAK = 3   # streak в quiz_progress
+FLASHCARD_MASTERY_REPS = 3       # repetitions в flashcard_progress
+
+
+def _render_bar(pct: float) -> str:
+    """Рендерит progress-bar из 10 квадратов. pct в [0..1]."""
+    pct = max(0.0, min(1.0, pct))
+    filled = round(pct * PROGRESS_BAR_LENGTH)
+    return PROGRESS_BAR_FILLED * filled + PROGRESS_BAR_EMPTY * (PROGRESS_BAR_LENGTH - filled)
+
+
+def _humanize_when(ts_str: str | None) -> str:
+    """'сегодня в HH:MM' / 'вчера' / 'N дней назад' / 'давно'."""
+    if not ts_str:
+        return "—"
+    try:
+        ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return "—"
+    now = datetime.now()
+    delta_days = (now.date() - ts.date()).days
+    if delta_days == 0:
+        return f"сегодня в {ts.strftime('%H:%M')}"
+    if delta_days == 1:
+        return "вчера"
+    if delta_days < 7:
+        return f"{delta_days} дн. назад"
+    return f"{delta_days} дн. назад"
+
+
+async def _count_situational_mastered(user_id: int, term_hashes: list[str]) -> int:
+    """Сколько ситуационных терминов с streak ≥ SITUATIONAL_MASTERY_STREAK."""
+    if not term_hashes:
+        return 0
+    placeholders = ",".join("?" * len(term_hashes))
+    async with db.execute(
+        f"SELECT COUNT(*) FROM quiz_progress "
+        f"WHERE user_id = ? AND streak >= ? AND term_hash IN ({placeholders})",
+        (user_id, SITUATIONAL_MASTERY_STREAK, *term_hashes),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def _count_flashcards_mastered(user_id: int, card_hashes: list[str]) -> int:
+    if not card_hashes:
+        return 0
+    placeholders = ",".join("?" * len(card_hashes))
+    async with db.execute(
+        f"SELECT COUNT(*) FROM flashcard_progress "
+        f"WHERE user_id = ? AND repetitions >= ? AND card_hash IN ({placeholders})",
+        (user_id, FLASHCARD_MASTERY_REPS, *card_hashes),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def _count_situational_due(user_id: int, term_hashes: list[str]) -> int:
+    """Overdue ситуационных терминов (next_review ≤ сегодня)."""
+    if not term_hashes:
+        return 0
+    today = datetime.now().strftime("%Y-%m-%d")
+    placeholders = ",".join("?" * len(term_hashes))
+    async with db.execute(
+        f"SELECT COUNT(*) FROM quiz_progress "
+        f"WHERE user_id = ? AND next_review IS NOT NULL AND next_review <= ? "
+        f"AND term_hash IN ({placeholders})",
+        (user_id, today, *term_hashes),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def _count_flashcards_due(user_id: int, card_hashes: list[str]) -> int:
+    """Overdue флэш-карт (next_review ≤ сейчас)."""
+    if not card_hashes:
+        return 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    placeholders = ",".join("?" * len(card_hashes))
+    async with db.execute(
+        f"SELECT COUNT(*) FROM flashcard_progress "
+        f"WHERE user_id = ? AND next_review IS NOT NULL AND next_review <= ? "
+        f"AND card_hash IN ({placeholders})",
+        (user_id, now, *card_hashes),
+    ) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def _build_subject_progress_block(user_id: int, subject_id: str, subject_label: str) -> str:
+    """
+    Строит блок для одного предмета:
+      <label>
+      <bar> <pct>%
+        🔔 К повторению ...
+        🕐 Активность ...
+        📈 Заходов ...
+    Если контента нет — заглушка с «🚧 Скоро».
+    """
+    # Загружаем все items предмета. Используем существующие load_*-функции.
+    section_terms: list[str] = []  # term_hash из всех непустых разделов situational
+    for _label, key in available_quiz_sections(subject_id):
+        for term in load_quiz_section(key, subject_id):
+            section_terms.append(term.hash)
+    cards = load_flashcards(subject_id)
+    mcq_qs = load_mcq(subject_id)
+    tasks_list = load_tasks(subject_id)
+
+    card_hashes = [c["hash"] for c in cards]
+    mcq_hashes = [_mcq_hash(q["question"]) for q in mcq_qs]
+    task_ids = [t["id"] for t in tasks_list]
+
+    total = len(section_terms) + len(card_hashes) + len(mcq_hashes) + len(task_ids)
+    if total == 0:
+        return (
+            f"{subject_label}\n"
+            f"{PROGRESS_BAR_EMPTY * PROGRESS_BAR_LENGTH}  0%\n"
+            f"  🚧 Контент в разработке\n"
+        )
+
+    # Сколько items освоено в каждом режиме
+    mastered_sit   = await _count_situational_mastered(user_id, section_terms)
+    mastered_cards = await _count_flashcards_mastered(user_id, card_hashes)
+    mastered_mcq   = await mcq_repo.count_mastered(user_id, mcq_hashes)
+    mastered_tasks = await task_repo.count_mastered(user_id, task_ids)
+    total_mastered = mastered_sit + mastered_cards + mastered_mcq + mastered_tasks
+    pct = total_mastered / total
+    pct_int = round(pct * 100)
+
+    # Сколько items overdue (только SRS-режимы)
+    due_sit   = await _count_situational_due(user_id, section_terms)
+    due_cards = await _count_flashcards_due(user_id, card_hashes)
+    total_due = due_sit + due_cards
+
+    # Активность из user_subject_stats
+    stats = await subject_stats_repo.get(user_id, subject_id)
+    visits = stats["visits"] if stats else 0
+    last_activity = _humanize_when(stats["last_activity"] if stats else None)
+
+    lines = [
+        subject_label,
+        f"{_render_bar(pct)} {pct_int}%",
+    ]
+    if total_due > 0:
+        lines.append(f"  🔔 К повторению сегодня: {total_due}")
+    else:
+        lines.append(f"  🔔 К повторению сегодня: ничего")
+    lines.append(f"  🕐 Активность: {last_activity}")
+    lines.append(f"  📈 Заходов: {visits}")
+    return "\n".join(lines) + "\n"
+
+
+async def build_progress_view(user_id: int) -> str:
+    """Полный текст экрана прогресса (Markdown/plain — без parse_mode)."""
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return "Сначала напиши /start для регистрации."
+    # Общие монеты и стрик из users; общие минуты — из study_sessions
+    total_minutes = await session_repo.get_total_minutes(user_id)
+    header = (
+        f"📊 Прогресс\n\n"
+        f"Всего: 🪙 {user['total_coins']} монет · "
+        f"⏱️ {total_minutes} мин учёбы · "
+        f"🔥 стрик {user['current_streak']} дней\n"
+    )
+    blocks = []
+    for subject_id, subject_label in SUBJECTS:
+        blocks.append(await _build_subject_progress_block(user_id, subject_id, subject_label))
+    return header + "\n" + "\n".join(blocks)
+
+
+@router.callback_query(F.data.startswith("show_progress:"))
+async def handle_show_progress(callback: CallbackQuery):
+    try:
+        target_user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    # Анти-spoof: пользователь видит только свой прогресс
+    if callback.from_user.id != target_user_id:
+        await callback.answer("Это не твой прогресс", show_alert=True)
+        return
+    text = await build_progress_view(target_user_id)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{target_user_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+# ------------------------------------------------------------
+
 
 def get_pet_emotion(streak: int) -> str:
     if streak == 0:
@@ -1261,7 +1477,8 @@ async def back_to_profile(callback: CallbackQuery):
     inline_kb = InlineKeyboardBuilder()
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
-    inline_kb.adjust(2)
+    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    inline_kb.adjust(2, 1)
     await callback.message.edit_text(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1647,6 +1864,7 @@ async def start_mcq_session(message: Message, state: FSMContext, subject_id: str
         )
         await state.set_state(QuizStates.choosing_mode)
         return
+    await subject_stats_repo.bump_visit(message.from_user.id, subject_id)
     random.shuffle(questions)
     await state.update_data(
         mcq_questions=questions,
@@ -1751,6 +1969,12 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
 
     user_id = callback.from_user.id
     is_correct = (user_idx == correct_idx)
+    # Per-question tracking (для экрана прогресса)
+    questions = data.get("mcq_questions", [])
+    cur_idx = data.get("mcq_index", 0)
+    if 0 <= cur_idx < len(questions):
+        q_hash = _mcq_hash(questions[cur_idx]["question"])
+        await mcq_repo.record_attempt(user_id, q_hash, is_correct)
     if is_correct:
         await user_repo.add_coins(user_id, 1)
         feedback = "✅ Верно! +1 🪙"
@@ -1794,6 +2018,7 @@ async def start_task_session(message: Message, state: FSMContext, subject_id: st
         )
         await state.set_state(QuizStates.choosing_mode)
         return
+    await subject_stats_repo.bump_visit(message.from_user.id, subject_id)
     random.shuffle(tasks)
     # FSM data — только JSON-serializable: храним serializable view задачи,
     # пути к картинкам реконструируются по subject_id + task_id при отправке
@@ -1920,6 +2145,10 @@ async def handle_task_answer(message: Message, state: FSMContext):
     if user_norm in accepted_norm:
         coins_for_this = TASK_REWARDS_BY_ATTEMPT[min(attempts, MAX_TASK_ATTEMPTS - 1)]
         await user_repo.add_coins(user_id, coins_for_this)
+        # Per-task tracking: задача решена с (attempts+1)-й попытки
+        await task_repo.record_attempt(
+            user_id, task["id"], attempts_used=attempts + 1, succeeded=True
+        )
         await state.update_data(
             task_correct_count=data.get("task_correct_count", 0) + 1,
             task_coins_earned=data.get("task_coins_earned", 0) + coins_for_this,
@@ -1953,6 +2182,10 @@ async def handle_task_answer(message: Message, state: FSMContext):
     tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
     solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
     correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
+    # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
+    await task_repo.record_attempt(
+        user_id, task["id"], attempts_used=new_attempts, succeeded=False
+    )
     logger.info(
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
@@ -2019,6 +2252,7 @@ async def start_flashcard_session(message: Message, state: FSMContext, subject_i
         )
         return
 
+    await subject_stats_repo.bump_visit(message.from_user.id, subject_id)
     await state.update_data(
         flash_cards_by_hash=cards_by_hash,
         flash_candidate_hashes=candidate_hashes,
@@ -2221,11 +2455,14 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
 async def handle_quiz_section(message: Message, state: FSMContext):
     section_map = {label: key for label, key in QUIZ_SECTIONS}
     section_key = section_map[message.text]
-    terms = load_quiz_section(section_key)
+    data = await state.get_data()
+    subject_id = data.get("subject_id", "industrial-management")
+    terms = load_quiz_section(section_key, subject_id)
     if not terms:
         await message.answer("Раздел не найден или пуст.", reply_markup=get_quiz_section_keyboard())
         return
     user_id = message.from_user.id
+    await subject_stats_repo.bump_visit(user_id, subject_id)
     next_term = await get_next_quiz_term(user_id, terms)
     if not next_term:
         await message.answer("🎉 Все термины раздела повторены! Отличная работа! 🏆", reply_markup=get_quiz_section_keyboard())
@@ -2777,13 +3014,16 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, ach_service, study_service, streak_service, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
     session_repo = SessionRepository(db)
     admin_repo = AdminRepository(db)
     flashcard_repo = FlashcardRepository(db)
+    mcq_repo = McqProgressRepository(db)
+    task_repo = TaskProgressRepository(db)
+    subject_stats_repo = SubjectStatsRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service)
     bot = Bot(token=BOT_TOKEN)

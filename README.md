@@ -91,6 +91,13 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
   - 📷 **Задачи с картинкой** — `task-NN.png` + JSON с принимаемыми
     ответами, 3 попытки → solution image; награды +3 / +2 / +1 / 0 🪙
+- **📊 Экран прогресса** (в профиле кнопка `📊 Прогресс по предметам`):
+  10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
+  «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
+  предметы (math/english пока без контента) показываются с пометкой
+  «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
+  termы с `streak ≥ 3`, флэш-карты с `repetitions ≥ 3`, MCQ-вопросы
+  отвеченные хотя бы раз верно, решённые задачи.
 - **Цифровой питомец** (пока простой; настроение по стрику; полный
   переработка с эмоциями/кастомизацией/уровнями — в v0.7 #16)
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
@@ -136,6 +143,9 @@ study_materials/    # Учебные материалы — data-driven дере
 - `quiz_progress` — SRS для **ситуационных** квизов (fixed intervals)
 - `flashcard_progress` — SM-2 состояние per (user, card): ease_factor,
   interval_days, repetitions, last_review, next_review
+- `mcq_progress` — per-question статистика MCQ: correct_count, total_count
+- `task_progress` — per-task: attempts_used, succeeded
+- `user_subject_stats` — per-subject visits + last_activity (для экрана прогресса)
 - `admins` — список админов (источник истины; in-memory кеш для is_admin())
 - `fsm_storage` — постоянное FSM хранилище для aiogram
 
@@ -180,10 +190,12 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — 49 тестов: `sm2_update` (стандартный путь, fail-path, EF
+Покрытие — 65 тестов: `sm2_update` (стандартный путь, fail-path, EF
 floor, parametrized properties), `AchievementService` (все 9 ачивок +
 многократные выдачи + идемпотентность), `StreakService` (инкремент,
-сброс, бонусные +15🪙 со 2-го дня, мультипользовательская изоляция).
+сброс, бонусные +15🪙 со 2-го дня, мультипользовательская изоляция),
+**progress-репозитории** (MCQ counter accumulation, task best-attempts
+idempotency, subject_stats visits isolation между пользователями).
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
 

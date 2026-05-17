@@ -101,6 +101,42 @@ async def init_db(db: aiosqlite.Connection):
         CREATE INDEX IF NOT EXISTS idx_flashcard_user_next
             ON flashcard_progress(user_id, next_review);
 
+        -- Per-question прогресс MCQ (v0.7 progress tracking).
+        -- correct_count — сколько раз пользователь ответил правильно;
+        -- total_count — сколько раз вопрос был показан. "Mastered" = correct_count ≥ 1.
+        CREATE TABLE IF NOT EXISTS mcq_progress (
+            user_id INTEGER NOT NULL,
+            question_hash TEXT NOT NULL,
+            correct_count INTEGER NOT NULL DEFAULT 0,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt TEXT,
+            PRIMARY KEY (user_id, question_hash)
+        );
+
+        -- Per-task прогресс (v0.7 progress tracking).
+        -- attempts_used — сколько попыток заняло (1..3); succeeded — bool (0/1).
+        -- "Mastered" = succeeded=1 при любом attempts_used.
+        CREATE TABLE IF NOT EXISTS task_progress (
+            user_id INTEGER NOT NULL,
+            task_id TEXT NOT NULL,
+            attempts_used INTEGER NOT NULL DEFAULT 0,
+            succeeded INTEGER NOT NULL DEFAULT 0,
+            last_attempt TEXT,
+            PRIMARY KEY (user_id, task_id)
+        );
+
+        -- Aggregate-статистика per (user, subject): visits + last_activity.
+        -- Bump'ается из 4 точек старта учебных режимов (start_*_session +
+        -- handle_quiz_section). Используется в экране прогресса как
+        -- «Заходов» и «Последняя активность».
+        CREATE TABLE IF NOT EXISTS user_subject_stats (
+            user_id INTEGER NOT NULL,
+            subject_id TEXT NOT NULL,
+            visits INTEGER NOT NULL DEFAULT 0,
+            last_activity TEXT,
+            PRIMARY KEY (user_id, subject_id)
+        );
+
         -- Администраторы бота
         CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY

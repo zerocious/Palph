@@ -384,6 +384,116 @@ class FlashcardRepository:
         return None
 
 
+class McqProgressRepository:
+    """Per-question прогресс MCQ. Используется в экране прогресса."""
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def record_attempt(self, user_id: int, question_hash: str, is_correct: bool) -> None:
+        """Инкрементирует total_count; если ответ верный — ещё и correct_count."""
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.db.execute(
+            "INSERT INTO mcq_progress "
+            "(user_id, question_hash, correct_count, total_count, last_attempt) "
+            "VALUES (?, ?, ?, 1, ?) "
+            "ON CONFLICT(user_id, question_hash) DO UPDATE SET "
+            "correct_count = correct_count + excluded.correct_count, "
+            "total_count = total_count + 1, "
+            "last_attempt = excluded.last_attempt",
+            (user_id, question_hash, 1 if is_correct else 0, now),
+        )
+        await self.db.commit()
+
+    async def count_mastered(self, user_id: int, candidate_hashes: list[str]) -> int:
+        """Сколько из переданных вопросов «выучены» (correct_count ≥ 1)."""
+        if not candidate_hashes:
+            return 0
+        placeholders = ",".join("?" * len(candidate_hashes))
+        async with self.db.execute(
+            f"SELECT COUNT(*) FROM mcq_progress "
+            f"WHERE user_id = ? AND correct_count >= 1 "
+            f"AND question_hash IN ({placeholders})",
+            (user_id, *candidate_hashes),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+class TaskProgressRepository:
+    """Per-task прогресс. Используется в экране прогресса."""
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def record_attempt(
+        self, user_id: int, task_id: str, attempts_used: int, succeeded: bool
+    ) -> None:
+        """
+        Сохраняет результат попытки. Идемпотентно: если задача уже решена
+        (succeeded=1), повторный вызов с succeeded=1 ничего не портит.
+        """
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.db.execute(
+            "INSERT INTO task_progress "
+            "(user_id, task_id, attempts_used, succeeded, last_attempt) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, task_id) DO UPDATE SET "
+            # Сохраняем минимум попыток (best result) и max(succeeded)
+            "attempts_used = MIN(attempts_used, excluded.attempts_used), "
+            "succeeded = MAX(succeeded, excluded.succeeded), "
+            "last_attempt = excluded.last_attempt",
+            (user_id, task_id, attempts_used, 1 if succeeded else 0, now),
+        )
+        await self.db.commit()
+
+    async def count_mastered(self, user_id: int, candidate_ids: list[str]) -> int:
+        """Сколько задач решены (succeeded=1)."""
+        if not candidate_ids:
+            return 0
+        placeholders = ",".join("?" * len(candidate_ids))
+        async with self.db.execute(
+            f"SELECT COUNT(*) FROM task_progress "
+            f"WHERE user_id = ? AND succeeded = 1 "
+            f"AND task_id IN ({placeholders})",
+            (user_id, *candidate_ids),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+class SubjectStatsRepository:
+    """Aggregate-статистика per (user, subject): visits + last_activity."""
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def bump_visit(self, user_id: int, subject_id: str) -> None:
+        """+1 к visits + обновить last_activity до сейчас."""
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.db.execute(
+            "INSERT INTO user_subject_stats (user_id, subject_id, visits, last_activity) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(user_id, subject_id) DO UPDATE SET "
+            "visits = visits + 1, "
+            "last_activity = excluded.last_activity",
+            (user_id, subject_id, now),
+        )
+        await self.db.commit()
+
+    async def get(self, user_id: int, subject_id: str) -> Optional[Dict[str, Any]]:
+        async with self.db.execute(
+            "SELECT visits, last_activity FROM user_subject_stats "
+            "WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
 class AdminRepository:
     """
     Работа с таблицей admins. Источник истины — БД; `bot.py` держит
