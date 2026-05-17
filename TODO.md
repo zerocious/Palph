@@ -54,3 +54,60 @@ Example:
 Ценность: дополнительный игровой механизм — задание дня с бонусом; в проектном контексте отмечено как «stub exists», но в коде следов нет  
 Готовность: новая таблица daily_tasks, кнопка в главном меню, генерация задачи в начале дня, проверка выполнения, начисление бонуса  
 Приоритет: Won't (на сейчас) — не входит в MVP-scope из брифа
+
+---
+
+## PA-аналитика (data collection для портфолио)
+
+Контекст: проект используется как booster резюме для роли product analyst intern/junior. Цель — превратить бот в источник данных для realистичного PA-анализа в Jupyter.
+
+### ✅ Ship'нуто (доступно прямо сейчас через админ-команды)
+
+- `/cohort_stats` — D1/D7/D30 retention по ISO-неделям регистрации
+- `/funnel` — activation funnel (6 шагов: registered → started → 5+ sessions → 10+ sessions → 3-day streak → 7-day streak); % от total registered
+- `/dau` — DAU / WAU / MAU + stickiness ratio (DAU/MAU) + новые пользователи сегодня
+- `/feature_usage` — % adoption per feature: 4 учебных режима + Pomodoro + custom timezone + disabled notifications + custom reminder time
+- `/export <alias>` — CSV-дамп таблицы как Telegram-документ (9 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings). **Killer feature** для портфолио — превращает бот в data source для pandas/Jupyter.
+
+Реализация: `services.AnalyticsService` (purely SQL aggregates над existing tables, новых таблиц не вводит). 29 pytest-тестов покрывают edge cases (empty DB, single user, multi-source activity, eligibility filters, stickiness math, CSV header correctness, unknown alias raises).
+
+### 🟡 Расширения (приоритет Could, после первых деплоев)
+
+A) [PA] `/segments` — user segmentation  
+Ценность: фундаментальная PA-практика; помогает писать insights вида «power users используют флэш-карты в 3× чаще остальных»  
+Готовность: 5 сегментов с порогами — power (≥10 сессий), active (3-9), tried (1-2), never-started (0), churned (last activity >14d ago); admin-команда выводит counts + %  
+Приоритет: Could
+
+B) [PA] `/content_stats` — какой контент работает  
+Ценность: actionable — «эту карточку либо переформулируй, либо она хороший diagnostic»; пища для итераций над контентом  
+Готовность: hardest terms (по % неверных ответов в situational), most-attempted в MCQ, unused items (никто не видел), EF distribution в flashcards (сколько «трудных» карт у среднего пользователя)  
+Приоритет: Could
+
+C) [PA] `/event_timeline` — последние N важных событий  
+Ценность: «что произошло пока меня не было»; полезно для отслеживания живого использования  
+Готовность: лента registrations / sessions / achievements за 24-48 часов с timestamps; формат «HH:MM user_id event detail»  
+Приоритет: Could
+
+D) [PA] `/parse_logs` — bot.log → CSV  
+Ценность: bot.log хранит structured events (session.complete source=natural duration=25 ...) — парсер превращает append-only лог в analytics-ready dataset; **это уже data engineering** — большой плюс к резюме (event-tracking, ETL опыт)  
+Готовность: парсер regex'ом или re.findall'ом разбирает каждую строку лога; экспорт как `events.csv` (timestamp, level, event_name, properties dict в JSON-колонке)  
+Приоритет: Could
+
+E) [PA] `/heatmap` — почасовая активность  
+Ценность: actionable insight «когда юзеры реально занимаются» → может определить времена для reminder'ов  
+Готовность: ASCII-heatmap по часам × дням недели (7×24), bins нормализованы; данные из study_sessions + activity timestamps  
+Приоритет: Could
+
+### 🎯 Главный портфолио-asset (внешняя аналитика)
+
+После сбора 30+ дней реальных данных:
+
+- Папка `analysis/` в репозитории с Jupyter notebooks
+- 4 notebook'а:
+  - `01_cohort_retention.ipynb` — matplotlib heatmap retention table + key findings
+  - `02_activation_funnel.ipynb` — waterfall chart + drop-off insights
+  - `03_feature_adoption.ipynb` — adoption per mode + корреляция с retention
+  - `04_session_patterns.ipynb` — heatmap часов × дней недели + рекомендации по timing
+- `analysis/README.md` с executive summary + recommendations
+
+Это будет выглядеть в резюме как реальная PA-работа, не как «вот мой Telegram-бот».
