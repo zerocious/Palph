@@ -11,6 +11,11 @@ photo tasks), real digital pet (1 design + multi-emotion + customization),
 main-menu 2×2 redesign, FAQ rewrite + tech-support absorbed, news channel
 link, `/help` command.
 
+**Итог:** 5 из 6 пунктов плана закрыты + 2 бэклог-пункта (admins→БД, резюм
+таймера) + bonus-fix `stop_active_timer` + GitHub push (`zerocious/Palph`).
+Остался только пункт #16 (полноценный питомец) — самая большая фича,
+разбита на код-трек и арт-трек.
+
 Plan file: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 
 ### Planned scope
@@ -53,39 +58,90 @@ Plan file: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 
 ### Bugs caught
 
-- _none yet — все правки этой партии прошли как статические edits; runtime-проверка через `python bot.py` ещё впереди_
+- **`stop_active_timer` чистил чужой FSM-state.** Pre-existing bug: при отсутствии `start_time` в FSM data функция всегда вызывала `state.clear()`, не проверяя в каком state сейчас пользователь. Это значило, что `/stop` во время MCQ или photo-task сессии стирал её прогресс. Поймано во время дизайна #14 (защитное мышление о command-flow); пофикшено там же двухстрочной проверкой `current_state == TimerStates.active.state` перед `state.clear()`. Затрагивало #13 (MCQ) тоже задним числом — теперь починено для всех режимов.
+- _Других багов в этой сессии не было — все остальные правки прошли как чистые edits + smoke-тесты_
 
 ### Files modified
 
-- [bot.py](bot.py) — все 4 быстрые правки: импорты (`BotCommand`, scope-классы), `get_main_keyboard` (2×2), удаление `handle_support`, добавление `CHANNEL_URL` константы, переработка `handle_news` (inline-кнопка), переписанный `handle_faq` (7 Q&A + `@zerocious` в финале), новый `cmd_help` хендлер, `set_my_commands` логика в `main()`
-- [bot.py](bot.py) — миграция админов: `ADMINS` теперь in-memory кеш над БД; `_migrate_admins_json_to_db()`; команды `/addadmin`/`/rmadmin`/`/listadmins`; `DEFAULT_COMMANDS`/`ADMIN_COMMANDS` на модульный уровень; `MAIN_ADMIN_ID` сидится в БД на старте
-- [bot.py](bot.py) — резюм таймера: `run_timer_task` читает `start_time` из FSM data; `reconcile_stale_timers` ветка `resumed` пересоздаёт asyncio-задачу через `start_timer` и FSMContext; импорт `StorageKey`
-- [repository.py](repository.py) — новый класс `AdminRepository` (get_all_ids / add / remove / is_admin)
-- [admin_commands.md](admin_commands.md) — переписана секция «Как добавить/удалить админа»; добавлены подсекции для `/addadmin`, `/rmadmin`, `/listadmins`
-- [.gitignore](.gitignore) — добавлены `admins.json.migrated*` и `messages.log` (раньше игнорировался только `messages.json`, которого больше нет)
-- [TODO.md](TODO.md) — закрыты пп. 7 (admins.json → БД) и 8 (резюм таймера); оба сняты из бэклога
+**Код:**
+- [bot.py](bot.py) — крупный набор изменений (см. таблицу Changes выше): импорты, FSM-states, mode picker, 4 учебных режима, MCQ/photo-task/flashcards handlers, миграция админов, резюм таймера, фикс stop_active_timer
+- [db.py](db.py) — таблица `flashcard_progress` + индекс `(user_id, next_review)`
+- [repository.py](repository.py) — новые классы `AdminRepository`, `FlashcardRepository`
+- [services.py](services.py) — чистая функция `sm2_update()` + константа `EF_FLOOR=1.3`
+
+**Контент:**
+- `study_materials/` (создана) ← `quizzes/` (удалена); структура `{industrial-management,math,english}/{situational,flashcards.txt,mcq.txt,tasks/}`
+- `study_materials/industrial-management/mcq.txt` — 3 примера MCQ
+- `study_materials/industrial-management/flashcards.txt` — 5 примеров карточек
+- `study_materials/industrial-management/tasks/task-01.{png,-solution.png,json}` — placeholder для photo-task
+
+**Инфраструктура / docs:**
+- [.gitignore](.gitignore) — добавлены `admins.json.migrated*`, `messages.log`, `.claude/`, `.git_commit_msg*`, `_smoke_*.py`, `bot.log.*`
+- [admin_commands.md](admin_commands.md) — обновлена секция про управление админами; добавлены `/addadmin`/`/rmadmin`/`/listadmins`
+- [TODO.md](TODO.md) — закрыты пп. 7, 8, 12, 13, 14, 15; путь в п. 1 обновлён; п. 5 помечен что флэш-карты сделаны
+- [README.md](README.md) (создан) — для GitHub-репозитория
+- [BACKLOG.md](BACKLOG.md) (создан) — applied-math идея отложена в v0.8
+- [requirements.txt](requirements.txt) (создан) — aiogram, aiosqlite, pytz, python-dotenv
+
+**Git/GitHub:**
+- 6 коммитов: initial → #12 → #13 → #14 (+ cleanup) → #15
+- Запушено в `zerocious/Palph` (PRIVATE)
 
 ### Verification
 
-- Статическая проверка: грепы подтверждают отсутствие лишних ссылок на `Техподдержка` и `handle_support`; `is_admin()` используется в `cmd_help` тем же паттерном, что в `/reply`/`/broadcast`/`/notif_status`. `python -c "import ast; ast.parse(...)"` подтверждает синтаксис `bot.py` и `repository.py`.
-- **Live walkthrough ещё не запущен** — нужно `python bot.py` и в реальном Telegram:
-  1. `/start` → проверить, что главное меню — это сетка 2×2 без кнопки техподдержки
-  2. Нажать 📢 Новости → должна появиться inline-кнопка, открывающая `t.me/palph_study`
-  3. Нажать ❓ FAQ → 7 вопросов, в конце «Остались вопросы? Напиши @zerocious»
-  4. Отправить `/help` от админа → полный список; от не-админа → перенаправление на FAQ
-  5. Открыть `/-`пикер в Telegram (нужно перезапустить клиент, чтобы подтянуть `set_my_commands`): админ видит `/help` + админские; обычный пользователь — только `/start` и `/stop`
-  6. **Миграция админов**: при первом запуске после деплоя — в логе строка `admins.migration_done imported=3 archived=admins.json.migrated`; `ls` подтверждает что `admins.json` пропал, есть `admins.json.migrated`. На следующем рестарте — нет строки `migration_done` (повторно не запускается). `sqlite3 studybuddy.db "SELECT * FROM admins"` показывает 3 строки.
-  7. **Управление админами**: от главного админа `/addadmin <test_id>` → ответ ✅ + в логе `admin.added`; от того же `test_id` `/help` теперь работает; `/listadmins` показывает 4 ID, главный с ★; `/rmadmin <test_id>` → ✅; `/listadmins` показывает 3 ID; `/rmadmin <MAIN_ADMIN_ID>` → ❌ «Нельзя удалить главного». От не-главного админа `/addadmin <id>` → ❌ «Только главный админ».
-  8. **Резюм таймера**: запустить 5-минутный таймер, подождать 30 сек, Ctrl+C бота, подождать 10 сек, `python bot.py`. В логе: `reconcile.resume user_id=... duration=5 elapsed=0.5 remaining=5` и `reconcile.summary completed=0 resumed=1`. В чате — сообщение «♻️ Бот перезапустился — но твой таймер продолжается! Осталось: 5 мин». Через 4.5 минуты — таймер срабатывает естественно, монеты начисляются, прилетает запрос оценки.
+**Автоматическая (4 smoke-теста + финальная сессионная проверка):**
+
+| Скрипт | Кол-во групп assertions | Что покрывает |
+|---|---|---|
+| `_smoke_item12.py` | 8 | study_materials/ структура, helpers, фильтр math/english пустых, section-i не потерян |
+| `_smoke_item13.py` | 10 | MCQ helpers/state/handlers, парсинг mcq.txt, mode picker visibility |
+| `_smoke_item14.py` | 10 | load_tasks, нормализация ответа, +3/+2/+1/0 константа, backwards compat |
+| `_smoke_item15.py` | 7 SM-2 unit + 6 module + 5 async DB | SM-2 алгоритм (стандартные переходы, EF floor, q=4 no-change), wiring, FlashcardRepository roundtrip |
+| `_verify_session.py` | 9 групп (A–I) | Всё сразу: load, quick fixes, refactors, #12-15, full DB roundtrip — **прошёл 100%** |
+
+Все smoke-скрипты удаляются после прохождения (через `.gitignore` паттерн `_smoke_*.py`). Финальная верификация подтвердила: bot.py загружается, все таблицы создаются (9 штук), helpers/states/handlers на месте, SM-2 алгоритм соответствует canonical SuperMemo-2 формуле.
+
+**Статическая:** грепы подтверждают отсутствие лишних ссылок (`Техподдержка`/`handle_support`/`QUIZZES_PATH`/`get_quiz_keyboard`/`handle_production_management`); `python -c "import ast; ast.parse(...)"` подтверждает синтаксис всех модифицированных файлов.
+**Live walkthrough — статус по пунктам:**
+
+| Пункт | Live-подтверждено пользователем? |
+|---|---|
+| #9 menu 2×2 + #10 news link + #11 FAQ + #17 /help | ✅ да |
+| #7 admins.json → БД + новые команды | ✅ да («все команды с администрированием работают») |
+| #8 timer resume | ✅ да («продолжение тоже работает: ♻️ Осталось 4 мин») |
+| #12 study_materials | косвенно (квиз ОПМ работает в новом расположении) |
+| #13 MCQ / #14 photo tasks / #15 SM-2 flashcards | ⬜ ещё нужно |
+
+**Полный план live-walkthrough** (✅ = подтверждено пользователем; ⬜ = осталось):
+
+  1. ✅ `/start` → главное меню это сетка 2×2 без кнопки техподдержки
+  2. ✅ 📢 Новости → inline-кнопка открывает `t.me/palph_study`
+  3. ✅ ❓ FAQ → 7 вопросов, в конце «Остались вопросы? Напиши @zerocious»
+  4. ✅ `/help` от админа → полный список; от не-админа → перенаправление на FAQ
+  5. ✅ `/-`пикер в Telegram: админ видит `/help` + админские; обычный пользователь — только `/start`/`/stop`
+  6. ✅ Миграция админов: `admins.migration_done imported=3 archived=admins.json.migrated` в логе; `admins.json` исчез, есть `admins.json.migrated`; БД содержит 3 строки в таблице `admins`
+  7. ✅ Управление админами: `/addadmin`/`/rmadmin`/`/listadmins` все работают; защита от удаления главного админа; не-главный админ не может добавлять
+  8. ✅ Резюм таймера: после Ctrl+C → рестарт → лог `reconcile.resume` + сообщение «♻️ Бот перезапустился, осталось N мин» → естественное завершение
+  9. ⬜ **MCQ flow (#13):** `❓ Квизы` → 4 режима в picker → `❓ Тест с выбором` → 🏭 ОПМ → 3 вопроса с перетасовкой; ✅/❌ feedback в той же карточке (кнопки убираются); +1🪙 за правильный; финальный summary
+  10. ⬜ **Photo task (#14):** 📷 Задачи → 🏭 ОПМ → placeholder картинка с текстом + «✏️ Введи ответ»; 1-я неверная → «осталось 2»; 2-я неверная → «осталось 1»; 3-я неверная → solution image + 0🪙; либо 1/2/3 верных → +3/+2/+1 🪙; нормализация (Фотография / ФОТОГРАФИЯ!!! / фотография рабочего времени — все принимаются)
+  11. ⬜ **SM-2 flashcards (#15):** 🃏 Флэш-карты → 🏭 ОПМ → 5 карточек с показом термина → «💡 Показать ответ» → 3 кнопки рейтинга → feedback с интервалом; после сессии: `sqlite3 studybuddy.db "SELECT * FROM flashcard_progress"` показывает 5 строк с разными ease_factor / interval_days / next_review
+  12. ⬜ **Bonus fix:** в активной MCQ/task/flash сессии отправить `/stop` → ответ «Сейчас нет активного таймера», но сессия НЕ должна сброситься (продолжаешь отвечать)
 
 ### Deferred
 
-- Real-time wall clock during timer (Item 6)
-- Personal task manager (Item 6)
-- Pet hunger/happiness/energy decay loop
-- SM-2 for **situational quiz** (TODO #5 — needs a better grader first; SM-2 for flashcards ships in this session)
-- Actual content for math/English (files created empty; user fills)
-- Real channel URL + final FAQ wording (placeholders until user supplies)
+**В рамках v0.7 (осталось доделать):**
+- 🐾 **Item #16 — полноценный питомец** (1 дизайн + 5 derived эмоций + hybrid customization + 2 таблицы + 4-state picker + build-script для 125 PNG + 5 GIF). Самая большая фича сессии; разбита на код-трек (~120 мин) и арт-трек (отдельно). Закрывает TODO #2 (sad pet on no session today) автоматически через `derive_emotion()`.
+
+**За пределы v0.7:**
+- Real-time wall clock during timer (item 6 из исходного плана) — deferred
+- Personal task manager (item 6) — deferred
+- Pet hunger/happiness/energy decay loop — не в этой версии
+- SM-2 для **ситуационных** квизов (TODO #5) — Won't, нужен лучший grader сначала
+- Контент для math/English (flashcards/mcq/tasks файлы пусты — пользователь заполняет когда готов)
+- Финальная редакция FAQ wording — placeholder-текст из этой сессии; пользователь может переписать
+- Applied-математика (контекстуализированные задачи) — defer до v0.8 после анализа engagement в #14, см. [BACKLOG.md](BACKLOG.md)
+
+**Live walkthrough для #13/#14/#15** — пользователь подтвердил quick fixes + админ-команды + резюм таймера; для трёх новых учебных режимов live-проверка ещё впереди (см. Verification → план).
 
 ---
 

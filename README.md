@@ -4,8 +4,10 @@ Telegram-бот для формирования регулярных учебн�
 геймификацию (монеты, ачивки, стрики), Pomodoro-таймер, квизы и
 цифрового питомца.
 
-**Статус:** MVP в эксплуатации; идёт спринт v0.7 (расширение режимов учёбы +
-полноценный питомец). См. [TODO.md](TODO.md) и [session_notes.md](session_notes.md).
+**Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
+(4 учебных режима + SM-2 + админ-CRUD + резюм таймера). Остался только
+полноценный цифровой питомец. См. [TODO.md](TODO.md) и
+[session_notes.md](session_notes.md).
 
 ---
 
@@ -63,14 +65,24 @@ python bot.py
 ## Что умеет бот
 
 - **Pomodoro-таймер** (стандартный 25 мин + кастомный 5–120 мин); живёт в
-  фоне, переживает рестарт бота (FSM в SQLite + автовозобновление задач)
+  фоне, переживает рестарт бота (FSM в SQLite + автовозобновление задач,
+  пользователь видит сообщение «♻️ Таймер продолжается, осталось N мин»)
 - **Монеты** за каждую минуту учёбы + бонусы за достижения и стрик
 - **Стрики** — ежедневный шедулер в локальном TZ пользователя
 - **9 достижений** (первые сессии, длинные стрики, суммарные минуты)
-- **Квизы** с интервальным повторением по фиксированной сетке `[1, 2, 4, 7]`
-- **Цифровой питомец** (пока что простой; в v0.7 — полная переработка)
+- **4 учебных режима** под несколько предметов; пустые контентом
+  предметы/режимы автоматически скрываются (data-driven обнаружение):
+  - 🎯 **Ситуационные квизы** — открытый ответ + keyword-grader +
+    фиксированные интервалы `[1, 2, 4, 7]` дней
+  - 🃏 **Флэш-карты с SM-2** — 3-кнопочный рейтинг ❌/😐/✅, per-card
+    ease factor, EF floor 1.3; +1 🪙 за карточку любого рейтинга
+  - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
+  - 📷 **Задачи с картинкой** — `task-NN.png` + JSON с принимаемыми
+    ответами, 3 попытки → solution image; награды +3 / +2 / +1 / 0 🪙
+- **Цифровой питомец** (пока простой; настроение по стрику; полный
+  переработка с эмоциями/кастомизацией/уровнями — в v0.7 #16)
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
-  время и часовой пояс настраивается per-user
+  время и часовой пояс настраиваются per-user
 - **FAQ + техподдержка**: пользователь пишет в чат → forward всем админам;
   ответ через `/reply <user_id> <текст>`
 - **Админ-инструменты**: `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
@@ -84,24 +96,36 @@ python bot.py
 хендлерах.
 
 ```
-bot.py            # Хендлеры aiogram, FSM-состояния, клавиатуры, main()
-db.py             # aiosqlite connection, init_db (схема + индексы + миграции)
-repository.py     # UserRepository, SessionRepository, AdminRepository
-                  # (только CRUD, без бизнес-логики)
-services.py       # AchievementService, StudyService, StreakService,
-                  # ReminderService (бизнес-логика — начисление монет,
-                  # проверка ачивок, обработка стриков)
-tasks.py          # Фоновые asyncio-шедулеры (стрики 23:59 локально,
-                  # утро/вечер раз в минуту)
-fsm_storage.py    # SQLite-бэкенд для aiogram FSM → состояние таймеров,
-                  # квизов и мастеров переживает рестарт
-achievements.json # Каталог ачивок (id, иконка, описание, награда)
-quizzes/          # Учебные материалы (термины для интервального повторения)
+bot.py              # Хендлеры aiogram, FSM-состояния, клавиатуры, mode picker,
+                    # 4 учебных режима, main()
+db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
+repository.py       # UserRepository, SessionRepository, AdminRepository,
+                    # FlashcardRepository (только CRUD, без бизнес-логики)
+services.py         # AchievementService, StudyService, StreakService,
+                    # ReminderService + чистая функция sm2_update() для SM-2
+tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
+                    # утро/вечер раз в минуту)
+fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
+                    # квизов и мастеров переживает рестарт
+achievements.json   # Каталог ачивок (id, иконка, описание, награда)
+study_materials/    # Учебные материалы — data-driven дерево:
+  industrial-management/
+    situational/section-{i,ii,iii,iv}.txt   (термин ‖ опр ‖ ключи ‖ ситуация)
+    flashcards.txt                          (термин ‖ определение)
+    mcq.txt                          (вопрос ‖ верный ‖ w1 ‖ w2 ‖ w3)
+    tasks/task-NN.{png,json,-solution.png}  (картинка-условие + JSON метаданных)
+  math/, english/                           (то же без situational/, ждут контента)
 ```
 
-Полная схема БД и список модулей —
-[Archives/Startup/StudyBuddy – Контекст проекта.md](Archives/Startup/) (исторический документ;
-описывает MVP-стадию).
+**Таблицы в БД** (создаются в `db.init_db`):
+- `users`, `notification_settings` — профиль и настройки уведомлений
+- `study_sessions` — каждая завершённая сессия (длительность, монеты, рейтинг)
+- `user_achievements` — прогресс по 9 достижениям
+- `quiz_progress` — SRS для **ситуационных** квизов (fixed intervals)
+- `flashcard_progress` — SM-2 состояние per (user, card): ease_factor,
+  interval_days, repetitions, last_review, next_review
+- `admins` — список админов (источник истины; in-memory кеш для is_admin())
+- `fsm_storage` — постоянное FSM хранилище для aiogram
 
 ---
 
@@ -131,9 +155,20 @@ python -c "import importlib.util; s=importlib.util.spec_from_file_location('t','
 ### Дебаг через SQLite напрямую
 
 ```bash
+# Пользователи и прогресс
 sqlite3 studybuddy.db "SELECT user_id, current_streak, total_coins FROM users"
+
+# Админы
 sqlite3 studybuddy.db "SELECT * FROM admins"
+
+# SM-2 состояние карточек: какие на повторении, какие "разогнаны"
+sqlite3 studybuddy.db "SELECT card_hash, ease_factor, interval_days, repetitions, next_review FROM flashcard_progress ORDER BY next_review"
+
+# Что сейчас в активных FSM (таймеры, мастера, незавершённые сессии)
 sqlite3 studybuddy.db "SELECT key, state FROM fsm_storage WHERE state IS NOT NULL"
+
+# Топ-сессии по длительности
+sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, created_at FROM study_sessions ORDER BY id DESC LIMIT 10"
 ```
 
 ### Логи
@@ -143,9 +178,17 @@ sqlite3 studybuddy.db "SELECT key, state FROM fsm_storage WHERE state IS NOT NUL
 aiosqlite) глушится до WARNING.
 
 Бизнес-события идут как структурированные строки `event.tag key=value`:
-`app.start`, `session.complete source=natural|stop|reconcile`, `session.rated`,
-`reconcile.summary completed=X resumed=Y broken=Z`, `admin.added`,
-`broadcast.done delivered=X failed=Y`, `streak.batch`, и т. д.
+- `app.start`, `app.shutdown`
+- `session.complete source=natural|stop|reconcile`, `session.rated`
+- `reconcile.summary completed=X resumed=Y broken=Z`,
+  `reconcile.resume user_id=X duration=Y remaining=Z`
+- `mcq.session.complete user_id=X subject=Y correct=A total=B coins=C`
+- `task.answered user_id=X task_id=Y attempts=N result=correct|wrong|show_solution`
+- `flash.rated user_id=X hash=Y quality=Z reps=A->B ef=C->D interval=E->F next=...`
+- `flash.session.complete user_id=X subject=Y reviewed=N coins=M`
+- `admin.added`/`admin.removed user_id=X by=Y`
+- `broadcast.start`/`broadcast.done delivered=X failed=Y`
+- `streak.batch`, `reminder.morning.dispatched`
 
 ---
 
