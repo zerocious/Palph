@@ -119,8 +119,19 @@ class TimerStates(StatesGroup):
     active = State()
 
 class QuizStates(StatesGroup):
+    # Новый mode-picker flow (введён в v0.7 #13):
+    #   choosing_mode    — пользователь выбирает режим (situational/MCQ/...)
+    #   choosing_subject — выбирает предмет (фильтр по subjects_with_mode)
+    # Существующий situational flow:
+    #   choosing_section — Раздел I/II/III/IV для ОПМ
+    #   answering        — open-text ответ на ситуационный вопрос
+    # MCQ flow (v0.7 #13):
+    #   answering_mcq    — пользователь тапает inline-кнопки с вариантами
+    choosing_mode = State()
+    choosing_subject = State()
     choosing_section = State()
     answering = State()
+    answering_mcq = State()
 
 class SetupStates(StatesGroup):
     choosing_path = State()
@@ -309,12 +320,33 @@ def get_timer_active_keyboard() -> ReplyKeyboardMarkup:
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-def get_quiz_keyboard() -> ReplyKeyboardMarkup:
+def get_mode_keyboard() -> ReplyKeyboardMarkup:
+    """Mode-picker: показывает только режимы с непустым контентом."""
     builder = ReplyKeyboardBuilder()
-    builder.button(text="🏭 Основы производственного менеджмента")
+    for _, label in available_modes_global():
+        builder.button(text=label)
     builder.button(text="⬅️ Назад к учебе")
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
+
+
+def get_subject_keyboard_for_mode(mode_id: str) -> ReplyKeyboardMarkup:
+    """Subject-picker для конкретного режима: только предметы с контентом."""
+    builder = ReplyKeyboardBuilder()
+    for _, label in subjects_with_mode(mode_id):
+        builder.button(text=label)
+    builder.button(text="⬅️ Назад к режимам")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_mcq_active_keyboard() -> ReplyKeyboardMarkup:
+    """Активная MCQ-сессия: только кнопка выхода (выбор вариантов — inline)."""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🛑 Завершить")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
 
 QUIZ_SECTIONS = [
     ("Раздел I", "i"),
@@ -430,6 +462,20 @@ def available_subjects() -> list[tuple[str, str]]:
     return [(sid, label) for sid, label in SUBJECTS if available_modes(sid)]
 
 
+def subjects_with_mode(mode_id: str) -> list[tuple[str, str]]:
+    """Предметы, у которых есть контент для конкретного режима."""
+    return [
+        (sid, label)
+        for sid, label in SUBJECTS
+        if any(m[0] == mode_id for m in available_modes(sid))
+    ]
+
+
+def available_modes_global() -> list[tuple[str, str]]:
+    """Режимы, у которых есть контент хотя бы для одного предмета."""
+    return [(mid, label) for mid, label in STUDY_MODES if subjects_with_mode(mid)]
+
+
 # ------------------------------------------------------------
 # Вспомогательные функции для квизов
 # ------------------------------------------------------------
@@ -465,6 +511,32 @@ def load_quiz_section(section: str, subject_id: str = "industrial-management") -
             if len(parts) == 4:
                 terms.append(QuizTerm(*parts))
     return terms
+
+
+def load_mcq(subject_id: str) -> list[dict]:
+    """
+    Читает study_materials/<subject>/mcq.txt и возвращает список вопросов.
+    Формат строки: 'вопрос || правильный || неправ1 || неправ2 || неправ3'
+    Строки с # и пустые — игнорируются. Малформ-строки (< 5 частей) — пропускаются.
+    Возвращает list of dicts: {"question", "correct", "wrongs": [w1, w2, w3]}.
+    """
+    file_path = STUDY_MATERIALS_PATH / subject_id / "mcq.txt"
+    if not file_path.exists():
+        return []
+    questions = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("||")]
+            if len(parts) >= 5:
+                questions.append({
+                    "question": parts[0],
+                    "correct":  parts[1],
+                    "wrongs":   parts[2:5],
+                })
+    return questions
 
 def _word_matches_keyword(user_word: str, keyword: str) -> bool:
     """
@@ -1370,20 +1442,242 @@ async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
     )
 
 # ------------------------------------------------------------
-# Квизы
+# Квизы — общий flow: ❓ Квизы → mode picker → subject picker → режим
 # ------------------------------------------------------------
 @router.message(F.text == "❓ Квизы")
-async def handle_quiz_menu(message: Message):
-    await message.answer("📚 Выберите предмет:", reply_markup=get_quiz_keyboard())
-
-@router.message(F.text == "🏭 Основы производственного менеджмента")
-async def handle_production_management(message: Message, state: FSMContext):
+async def handle_quiz_menu(message: Message, state: FSMContext):
+    modes = available_modes_global()
+    if not modes:
+        await message.answer(
+            "🚧 Пока нет учебных материалов. Загляни позже!",
+            reply_markup=get_study_keyboard(),
+        )
+        return
+    await state.set_state(QuizStates.choosing_mode)
     await message.answer(
-        "📚 Курс «Основы производственного менеджмента»\nВыбери раздел:",
-        reply_markup=get_quiz_section_keyboard()
+        "📖 Выбери режим учёбы:",
+        reply_markup=get_mode_keyboard(),
     )
-    await state.set_state(QuizStates.choosing_section)
 
+
+@router.message(QuizStates.choosing_mode, F.text == "⬅️ Назад к учебе")
+async def handle_mode_back(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📖 Раздел учёбы:", reply_markup=get_study_keyboard())
+
+
+@router.message(QuizStates.choosing_mode, F.text.in_([label for _, label in STUDY_MODES]))
+async def handle_mode_picked(message: Message, state: FSMContext):
+    mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
+    if not mode_id:
+        return
+    # Stub-режимы (#14, #15) — пока без контента/реализации:
+    if mode_id == "flashcards":
+        await message.answer(
+            "🚧 Режим флэш-карт в разработке (v0.7 #15).\nВыбери другой режим:",
+            reply_markup=get_mode_keyboard(),
+        )
+        return
+    if mode_id == "tasks":
+        await message.answer(
+            "🚧 Режим задач с картинкой в разработке (v0.7 #14).\nВыбери другой режим:",
+            reply_markup=get_mode_keyboard(),
+        )
+        return
+
+    subjects = subjects_with_mode(mode_id)
+    if not subjects:
+        await message.answer(
+            f"🚧 «{message.text}» — пока нет контента ни для одного предмета.",
+            reply_markup=get_mode_keyboard(),
+        )
+        return
+    await state.update_data(mode_id=mode_id, mode_label=message.text)
+    await state.set_state(QuizStates.choosing_subject)
+    await message.answer(
+        f"{message.text}\nВыбери предмет:",
+        reply_markup=get_subject_keyboard_for_mode(mode_id),
+    )
+
+
+@router.message(QuizStates.choosing_subject, F.text == "⬅️ Назад к режимам")
+async def handle_subject_back(message: Message, state: FSMContext):
+    await state.set_state(QuizStates.choosing_mode)
+    await message.answer("📖 Выбери режим учёбы:", reply_markup=get_mode_keyboard())
+
+
+@router.message(QuizStates.choosing_subject, F.text.in_([label for _, label in SUBJECTS]))
+async def handle_subject_picked(message: Message, state: FSMContext):
+    subject_id = next((sid for sid, label in SUBJECTS if label == message.text), None)
+    if not subject_id:
+        return
+    data = await state.get_data()
+    mode_id = data.get("mode_id")
+    await state.update_data(subject_id=subject_id, subject_label=message.text)
+
+    if mode_id == "situational":
+        # Существующий flow: показать раздельный picker
+        await state.set_state(QuizStates.choosing_section)
+        await message.answer(
+            f"📚 {message.text}\nВыбери раздел:",
+            reply_markup=get_quiz_section_keyboard(),
+        )
+    elif mode_id == "mcq":
+        await start_mcq_session(message, state, subject_id, subject_label=message.text)
+    else:
+        # На всякий случай — не должно сюда попадать
+        await message.answer(
+            "Что-то пошло не так. Возвращаемся к режимам.",
+            reply_markup=get_mode_keyboard(),
+        )
+        await state.set_state(QuizStates.choosing_mode)
+
+
+# ============================================================
+# MCQ flow (Multiple Choice Quiz, #13)
+# ============================================================
+async def start_mcq_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
+    questions = load_mcq(subject_id)
+    if not questions:
+        # subjects_with_mode уже фильтрует; это страховка на случай гонки с файлами
+        await message.answer(
+            "🚧 Для этого предмета пока нет MCQ-вопросов.",
+            reply_markup=get_mode_keyboard(),
+        )
+        await state.set_state(QuizStates.choosing_mode)
+        return
+    random.shuffle(questions)
+    await state.update_data(
+        mcq_questions=questions,
+        mcq_index=0,
+        mcq_correct_count=0,
+        mcq_user_id=message.from_user.id,
+    )
+    await state.set_state(QuizStates.answering_mcq)
+    await message.answer(
+        f"📝 MCQ — {subject_label}\n"
+        f"Вопросов: {len(questions)}. За каждый правильный +1 🪙.",
+        reply_markup=get_mcq_active_keyboard(),
+    )
+    await _send_next_mcq_question(message.chat.id, state)
+
+
+async def _send_next_mcq_question(chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    questions = data.get("mcq_questions", [])
+    idx = data.get("mcq_index", 0)
+    if idx >= len(questions):
+        await _finish_mcq_session(chat_id, state)
+        return
+    q = questions[idx]
+    options = [q["correct"], *q["wrongs"]]
+    random.shuffle(options)
+    correct_idx = options.index(q["correct"])
+
+    kb = InlineKeyboardBuilder()
+    for i, opt in enumerate(options):
+        kb.button(text=opt, callback_data=f"mcq:{i}")
+    kb.adjust(1)
+
+    await state.update_data(
+        mcq_current_correct_idx=correct_idx,
+        mcq_current_correct_text=q["correct"],
+    )
+    await bot.send_message(
+        chat_id,
+        f"❓ Вопрос {idx + 1}/{len(questions)}\n\n{q['question']}",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _finish_mcq_session(chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    correct = data.get("mcq_correct_count", 0)
+    total = len(data.get("mcq_questions", []))
+    subject_label = data.get("subject_label", "")
+    logger.info(
+        "mcq.session.complete user_id=%s subject=%s correct=%s total=%s coins=%s",
+        data.get("mcq_user_id"), data.get("subject_id"), correct, total, correct,
+    )
+    await bot.send_message(
+        chat_id,
+        f"🎉 Готово! {subject_label}\n"
+        f"Правильных: {correct} из {total}\n"
+        f"🪙 Заработано: {correct} монет",
+        reply_markup=get_study_keyboard(),
+    )
+    await state.clear()
+
+
+@router.message(QuizStates.answering_mcq, F.text == "🛑 Завершить")
+async def handle_mcq_stop(message: Message, state: FSMContext):
+    data = await state.get_data()
+    correct = data.get("mcq_correct_count", 0)
+    answered = data.get("mcq_index", 0)
+    total = len(data.get("mcq_questions", []))
+    logger.info(
+        "mcq.session.stop user_id=%s subject=%s answered=%s/%s correct=%s",
+        message.from_user.id, data.get("subject_id"), answered, total, correct,
+    )
+    await message.answer(
+        f"⏹ MCQ остановлен.\n"
+        f"Отвечено: {answered}/{total} (правильных: {correct})\n"
+        f"🪙 Получено: {correct} монет",
+        reply_markup=get_study_keyboard(),
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("mcq:"))
+async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state != QuizStates.answering_mcq.state:
+        await callback.answer("Сессия завершена", show_alert=False)
+        return
+    try:
+        user_idx = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    correct_idx = data.get("mcq_current_correct_idx")
+    correct_text = data.get("mcq_current_correct_text", "")
+    if correct_idx is None:
+        # Не должно случиться: state без current_correct_idx
+        await callback.answer("Состояние повреждено", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    is_correct = (user_idx == correct_idx)
+    if is_correct:
+        await user_repo.add_coins(user_id, 1)
+        feedback = "✅ Верно! +1 🪙"
+        await state.update_data(mcq_correct_count=data.get("mcq_correct_count", 0) + 1)
+    else:
+        feedback = f"❌ Неверно.\nПравильный ответ: {correct_text}"
+
+    # Убираем inline-кнопки + дописываем feedback, чтобы повторный тап не сработал
+    try:
+        original = callback.message.text or ""
+        await callback.message.edit_text(
+            f"{original}\n\n{feedback}",
+            reply_markup=None,
+        )
+    except Exception as e:
+        logger.warning("mcq.edit_failed user_id=%s reason=%s", user_id, e)
+
+    await callback.answer()
+
+    # Переходим к следующему вопросу
+    await state.update_data(mcq_index=data.get("mcq_index", 0) + 1)
+    await asyncio.sleep(1.0)  # короткая пауза, чтобы фидбек был заметен
+    await _send_next_mcq_question(callback.message.chat.id, state)
+
+
+# ============================================================
+# Situational quiz flow (existing)
+# ============================================================
 @router.message(QuizStates.choosing_section, F.text.in_([label for label, _ in QUIZ_SECTIONS]))
 async def handle_quiz_section(message: Message, state: FSMContext):
     section_map = {label: key for label, key in QUIZ_SECTIONS}
