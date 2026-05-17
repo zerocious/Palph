@@ -38,3 +38,7 @@ Thumbs.db
 
 # --- Claude Code local session data ---
 .claude/
+
+# --- Temp files ---
+.git_commit_msg*
+_smoke_*.py
