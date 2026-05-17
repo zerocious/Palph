@@ -33,7 +33,10 @@ from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
 )
-from services import AchievementService, StudyService, StreakService, ReminderService, BackupService, sm2_update
+from services import (
+    AchievementService, StudyService, StreakService, ReminderService,
+    BackupService, AnalyticsService, sm2_update,
+)
 from tasks import streak_scheduler, reminder_scheduler
 
 # ------------------------------------------------------------
@@ -115,6 +118,7 @@ ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
 backup_service: BackupService = None
+analytics_service: AnalyticsService = None
 bot: Bot = None
 dp: Dispatcher = None
 
@@ -250,6 +254,7 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="reply", description="Ответ пользователю по ID"),
     BotCommand(command="broadcast", description="Рассылка всем"),
     BotCommand(command="notif_status", description="Диагностика уведомлений"),
+    BotCommand(command="cohort_stats", description="Retention D1/D7/D30 по когортам"),
     BotCommand(command="backup", description="Snapshot БД (главный админ)"),
     BotCommand(command="addadmin", description="Добавить админа (главный админ)"),
     BotCommand(command="rmadmin", description="Удалить админа (главный админ)"),
@@ -2915,6 +2920,59 @@ async def cmd_rmadmin(message: Message, command: CommandObject):
     await message.answer(f"✅ Пользователь <code>{rm_id}</code> удалён из админов.", parse_mode="HTML")
 
 
+def _format_pct(value: float | None) -> str:
+    """0.667 → '66.7%'; None → '—' (когда метрика недоступна)."""
+    if value is None:
+        return "—"
+    return f"{value * 100:.1f}%"
+
+
+def _render_cohort_table(data: dict) -> str:
+    """Plain-text ASCII-таблица retention'а. Заворачивается в <pre> для HTML."""
+    cohorts = data["cohorts"]
+    if not cohorts:
+        return "Пока нет данных — нет ни одного пользователя."
+    # Ширины колонок: статичные, чтобы выровнять
+    lines = []
+    lines.append(f"{'Cohort':<10} | {'Size':>4} | {'D1':>6} | {'D7':>6} | {'D30':>6}")
+    lines.append("-" * 46)
+    for c in cohorts:
+        lines.append(
+            f"{c['week']:<10} | "
+            f"{c['size']:>4} | "
+            f"{_format_pct(c['d1']):>6} | "
+            f"{_format_pct(c['d7']):>6} | "
+            f"{_format_pct(c['d30']):>6}"
+        )
+    lines.append("-" * 46)
+    lines.append(f"Total users: {data['total_users']}; today: {data['today']}")
+    return "\n".join(lines)
+
+
+@router.message(Command("cohort_stats"))
+async def cmd_cohort_stats(message: Message):
+    """
+    D1/D7/D30 retention по ISO-неделям регистрации.
+    Strict-definition: активен ровно в день signup+N.
+    Активность = любое событие в study_sessions/quiz_progress/flashcard_progress/
+    mcq_progress/task_progress/user_subject_stats.
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_cohort_retention()
+    table = _render_cohort_table(data)
+    note = (
+        "\n\n<i>D_N = % активных ровно в день (signup + N). "
+        "«—» = когорта моложе N дней, данных пока нет. "
+        "Активность = любое действие (Pomodoro / квиз / флэш / MCQ / задача).</i>"
+    )
+    await message.answer(
+        f"📊 <b>Retention по когортам</b>\n\n<pre>{table}</pre>{note}",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("backup"))
 async def cmd_backup(message: Message):
     """Принудительный snapshot БД. Только главный админ.
@@ -2971,6 +3029,7 @@ async def cmd_help(message: Message):
         "/reply <user_id> <текст> — ответ пользователю по ID\n"
         "/broadcast <текст> — рассылка всем зарегистрированным\n"
         "/notif_status — диагностика уведомлений (TZ, расписание, попадаешь ли ты в текущую выборку)\n"
+        "/cohort_stats — D1/D7/D30 retention по неделям регистрации (для PA-аналитики)\n"
         "/help — эта справка\n"
     )
     if is_main:
@@ -3163,7 +3222,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, analytics_service, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -3188,6 +3247,7 @@ async def main():
         backup_dir=os.getenv("BACKUP_DIR", "backups"),
         retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
     )
+    analytics_service = AnalyticsService(db)
 
     # Один раз: миграция admins.json → таблица admins. Файл переименовывается
     # в admins.json.migrated. Повторные запуски — no-op.

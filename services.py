@@ -371,6 +371,142 @@ class StreakService:
 
 
 # ------------------------------------------------------------
+# AnalyticsService — продуктовая аналитика для PA-портфолио.
+# Чистые SQL-агрегаты над существующими таблицами; никаких новых
+# таблиц не вводит. Возвращает structured dicts — UI/admin commands
+# их рендерят как text/CSV.
+# ------------------------------------------------------------
+class AnalyticsService:
+    """
+    Cohort retention, funnel, активность пользователей. Все методы
+    возвращают structured data — не строки. Это позволяет переиспользовать
+    из разных команд (text-render, CSV-export, JSON-dump).
+
+    Что считается «активностью» (для retention/DAU и т.п.):
+      UNION всех timestamp-полей из:
+        study_sessions.created_at        (Pomodoro-сессии)
+        user_subject_stats.last_activity (визит в предмет)
+        quiz_progress.last_attempt       (ответ на ситуац. квиз)
+        flashcard_progress.last_review   (просмотр карточки)
+        mcq_progress.last_attempt        (ответ на MCQ)
+        task_progress.last_attempt       (попытка задачи)
+    Все timestamp'ы — UTC (datetime('now') в SQLite), что упрощает
+    cross-TZ retention за счёт некоторой неточности на границах суток.
+    """
+
+    def __init__(self, db):
+        self.db = db
+
+    async def _all_activity_dates_per_user(self) -> dict[int, set]:
+        """Возвращает {user_id: set([date, date, ...])} по всем источникам."""
+        from collections import defaultdict
+        activity = defaultdict(set)
+        queries = [
+            "SELECT user_id, created_at AS ts FROM study_sessions",
+            "SELECT user_id, last_activity AS ts FROM user_subject_stats "
+            "WHERE last_activity IS NOT NULL",
+            "SELECT user_id, last_attempt AS ts FROM quiz_progress "
+            "WHERE last_attempt IS NOT NULL",
+            "SELECT user_id, last_review AS ts FROM flashcard_progress "
+            "WHERE last_review IS NOT NULL",
+            "SELECT user_id, last_attempt AS ts FROM mcq_progress "
+            "WHERE last_attempt IS NOT NULL",
+            "SELECT user_id, last_attempt AS ts FROM task_progress "
+            "WHERE last_attempt IS NOT NULL",
+        ]
+        for sql in queries:
+            async with self.db.execute(sql) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                ts_str = row["ts"]
+                if not ts_str:
+                    continue
+                try:
+                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError):
+                    continue
+                activity[row["user_id"]].add(ts.date())
+        return activity
+
+    async def compute_cohort_retention(self) -> dict:
+        """
+        D1/D7/D30 retention по ISO-неделям регистрации.
+
+        Definition (strict): D_N = % пользователей, активных на КАЛЕНДАРНУЮ
+        дату (signup_date + N дней). Пользователи, чей signup_date был
+        меньше N дней назад, не учитываются в знаменателе D_N (eligible=0).
+
+        Returns: {
+            "cohorts": [
+                {"week": "2026-W20", "size": 12,
+                 "d1": 0.67 | None, "d7": 0.25 | None, "d30": None},
+                ...
+            ],
+            "total_users": 25,
+            "today": "YYYY-MM-DD",
+        }
+        """
+        from collections import defaultdict
+        # Шаг 1: signup-даты
+        signups: dict[int, "datetime.date"] = {}
+        async with self.db.execute("SELECT user_id, created_at FROM users") as cursor:
+            for row in await cursor.fetchall():
+                try:
+                    dt = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+                    signups[row["user_id"]] = dt.date()
+                except (ValueError, TypeError):
+                    continue
+        if not signups:
+            return {"cohorts": [], "total_users": 0, "today": datetime.now().strftime("%Y-%m-%d")}
+
+        # Шаг 2: активность
+        activity = await self._all_activity_dates_per_user()
+
+        # Шаг 3: bucket по ISO-неделям + считаем eligible/active per D_N
+        today = datetime.now().date()
+        cohort_data: dict[str, dict] = defaultdict(
+            lambda: {
+                "size": 0,
+                "d1_eligible": 0, "d1_active": 0,
+                "d7_eligible": 0, "d7_active": 0,
+                "d30_eligible": 0, "d30_active": 0,
+            }
+        )
+        for user_id, signup_date in signups.items():
+            # Используем ISO-неделю в формате "YYYY-Www"
+            iso_year, iso_week, _ = signup_date.isocalendar()
+            week_key = f"{iso_year}-W{iso_week:02d}"
+            bucket = cohort_data[week_key]
+            bucket["size"] += 1
+            user_age = (today - signup_date).days
+            user_active_dates = activity.get(user_id, set())
+            for day_n in (1, 7, 30):
+                if user_age < day_n:
+                    continue  # too young — не в знаменателе
+                bucket[f"d{day_n}_eligible"] += 1
+                target = signup_date + timedelta(days=day_n)
+                if target in user_active_dates:
+                    bucket[f"d{day_n}_active"] += 1
+
+        # Шаг 4: % по каждой когорте
+        cohorts = []
+        for week in sorted(cohort_data.keys()):
+            d = cohort_data[week]
+            cohorts.append({
+                "week": week,
+                "size": d["size"],
+                "d1":  d["d1_active"]  / d["d1_eligible"]  if d["d1_eligible"]  else None,
+                "d7":  d["d7_active"]  / d["d7_eligible"]  if d["d7_eligible"]  else None,
+                "d30": d["d30_active"] / d["d30_eligible"] if d["d30_eligible"] else None,
+            })
+        return {
+            "cohorts": cohorts,
+            "total_users": len(signups),
+            "today": today.strftime("%Y-%m-%d"),
+        }
+
+
+# ------------------------------------------------------------
 # Backup service — ежедневный snapshot БД после обработки стриков.
 # Использует SQLite VACUUM INTO: атомарно, без WAL-мусора, минимум
 # места занимает. Dedup по server-local date — один backup на день,
