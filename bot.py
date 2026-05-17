@@ -33,7 +33,7 @@ from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
 )
-from services import AchievementService, StudyService, StreakService, ReminderService, sm2_update
+from services import AchievementService, StudyService, StreakService, ReminderService, BackupService, sm2_update
 from tasks import streak_scheduler, reminder_scheduler
 
 # ------------------------------------------------------------
@@ -114,6 +114,7 @@ subject_stats_repo: SubjectStatsRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
+backup_service: BackupService = None
 bot: Bot = None
 dp: Dispatcher = None
 
@@ -249,6 +250,7 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="reply", description="Ответ пользователю по ID"),
     BotCommand(command="broadcast", description="Рассылка всем"),
     BotCommand(command="notif_status", description="Диагностика уведомлений"),
+    BotCommand(command="backup", description="Snapshot БД (главный админ)"),
     BotCommand(command="addadmin", description="Добавить админа (главный админ)"),
     BotCommand(command="rmadmin", description="Удалить админа (главный админ)"),
     BotCommand(command="listadmins", description="Список админов (главный админ)"),
@@ -2788,6 +2790,27 @@ async def cmd_rmadmin(message: Message, command: CommandObject):
     await message.answer(f"✅ Пользователь <code>{rm_id}</code> удалён из админов.", parse_mode="HTML")
 
 
+@router.message(Command("backup"))
+async def cmd_backup(message: Message):
+    """Принудительный snapshot БД. Только главный админ.
+    Имя файла включает timestamp до секунд — не пересекается с daily-snapshot."""
+    if message.from_user.id != MAIN_ADMIN_ID:
+        await message.answer("❌ Только главный админ.")
+        return
+    await message.answer("💾 Делаю backup...")
+    path = await backup_service.force_backup()
+    if path is None:
+        await message.answer("❌ Backup failed — посмотри в логи.")
+        return
+    size_kb = path.stat().st_size / 1024
+    await message.answer(
+        f"✅ Backup создан: <code>{path.name}</code>\n"
+        f"Размер: {size_kb:.1f} KB\n"
+        f"Папка: <code>{path.parent}</code>",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("listadmins"))
 async def cmd_listadmins(message: Message):
     """Список админов. Только главный админ."""
@@ -2831,6 +2854,7 @@ async def cmd_help(message: Message):
             "/addadmin <user_id> — добавить нового админа\n"
             "/rmadmin <user_id> — удалить админа\n"
             "/listadmins — список всех админов\n"
+            "/backup — принудительный snapshot БД (daily backup автоматически после стриков)\n"
         )
     text += (
         "\n📚 Общие команды (доступны всем):\n"
@@ -3014,7 +3038,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -3031,6 +3055,14 @@ async def main():
     dp.include_router(router)
     streak_service = StreakService(user_repo, bot)
     reminder_service = ReminderService(user_repo, bot)
+    # Backup сервис: snapshot БД раз в сутки после streak processing.
+    # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;
+    # в Docker — указываются в docker-compose чтобы лежали на mounted /data.
+    backup_service = BackupService(
+        db_path=os.getenv("DB_PATH", "studybuddy.db"),
+        backup_dir=os.getenv("BACKUP_DIR", "backups"),
+        retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
+    )
 
     # Один раз: миграция admins.json → таблица admins. Файл переименовывается
     # в admins.json.migrated. Повторные запуски — no-op.
@@ -3066,7 +3098,7 @@ async def main():
 
     # Держим строгие ссылки на задачи, иначе их может собрать GC.
     background_tasks = [
-        asyncio.create_task(streak_scheduler(streak_service, user_repo)),
+        asyncio.create_task(streak_scheduler(streak_service, user_repo, backup_service)),
         asyncio.create_task(reminder_scheduler(reminder_service, user_repo)),
     ]
     logger.info(

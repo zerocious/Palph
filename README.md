@@ -91,6 +91,11 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
   - 📷 **Задачи с картинкой** — `task-NN.png` + JSON с принимаемыми
     ответами, 3 попытки → solution image; награды +3 / +2 / +1 / 0 🪙
+- **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
+  в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
+  retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
+  `./backups/` (Docker: `/data/backups/`). Главный админ может
+  принудительно snapshot через `/backup`.
 - **📊 Экран прогресса** (в профиле кнопка `📊 Прогресс по предметам`):
   10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
   «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
@@ -190,13 +195,15 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — 65 тестов: `sm2_update` (стандартный путь, fail-path, EF
+Покрытие — 77 тестов: `sm2_update` (стандартный путь, fail-path, EF
 floor, parametrized properties), `AchievementService` (все 9 ачивок +
 многократные выдачи + идемпотентность), `StreakService` (инкремент,
 сброс, бонусные +15🪙 со 2-го дня, мультипользовательская изоляция),
 **progress-репозитории** (MCQ counter accumulation, task best-attempts
-idempotency, subject_stats visits isolation между пользователями).
-Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
+idempotency, subject_stats visits isolation), **BackupService**
+(daily dedup, restart-survival через file-existence, retention cleanup
+без затрагивания manual snapshots, корректность SQLite-файла после
+VACUUM INTO). Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
 
 ### Прочие проверки

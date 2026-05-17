@@ -3,17 +3,26 @@ import logging
 import pytz
 from datetime import datetime
 from repository import UserRepository
-from services import ReminderService, StreakService
+from services import ReminderService, StreakService, BackupService
 
 
 logger = logging.getLogger("studybuddy_bot")
 
 
-async def streak_scheduler(streak_service: StreakService, user_repo: UserRepository):
+async def streak_scheduler(
+    streak_service: StreakService,
+    user_repo: UserRepository,
+    backup_service: BackupService | None = None,
+):
     """
     Раз в минуту проверяет, в каких часовых поясах сейчас 23:59,
     и запускает обработку стриков для пользователей этих TZ.
     Дедупликация: каждый TZ обрабатывается не чаще одного раза в сутки.
+
+    После обработки стриков для TZ — пытается сделать ежедневный backup БД.
+    BackupService сам дедуплицирует по server-local date, поэтому реальный
+    backup создаётся только один раз за глобальный день (первый TZ, который
+    хитает 23:59). backup_service опционален (None — пропускаем backup-шаг).
     """
     last_check_date: dict[str, str] = {}  # tz -> "YYYY-MM-DD" последней обработки
 
@@ -32,6 +41,10 @@ async def streak_scheduler(streak_service: StreakService, user_repo: UserReposit
                     if last_check_date.get(tz_name) != today:
                         await streak_service.process_users_in_timezone(tz_name)
                         last_check_date[tz_name] = today
+                        # Backup БД после streak processing. Dedupe внутри сервиса
+                        # — один файл на server-local день.
+                        if backup_service is not None:
+                            await backup_service.maybe_backup_for_today()
         except Exception as e:
             logger.error(f"streak_scheduler failed: {e}")
         await asyncio.sleep(60)

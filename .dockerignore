@@ -41,6 +41,7 @@ _verify_*.py
 
 # Host-only data and dev docs — не нужны в production-образе
 data/
+backups/
 archive/
 tests/
 README.md

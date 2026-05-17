@@ -18,10 +18,12 @@ services:
     env_file: .env
 
     # Переопределяем пути в контейнере, чтобы persistent state шёл в volume,
-    # а не в эфемерный слой образа.
+    # а не в эфемерный слой образа. Backup'ы тоже в /data — переживают rebuild.
     environment:
       DB_PATH: /data/studybuddy.db
       LOG_FILE: /data/bot.log
+      BACKUP_DIR: /data/backups
+      BACKUP_RETENTION_DAYS: "30"
 
     volumes:
       - ./data:/data

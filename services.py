@@ -1,7 +1,10 @@
 # services.py
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
 
+import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
 
 from repository import UserRepository, SessionRepository
@@ -365,3 +368,125 @@ class StreakService:
             "streak.batch tz=%s users=%s incremented=%s reset=%s bonuses=%s",
             tz, len(users), incremented, reset, bonuses_total,
         )
+
+
+# ------------------------------------------------------------
+# Backup service — ежедневный snapshot БД после обработки стриков.
+# Использует SQLite VACUUM INTO: атомарно, без WAL-мусора, минимум
+# места занимает. Dedup по server-local date — один backup на день,
+# даже если streak_scheduler кросает 23:59 в нескольких TZ.
+# ------------------------------------------------------------
+class BackupService:
+    """
+    Делает ежедневный snapshot БД в указанную папку. Хранит N дней,
+    удаляет старше.
+
+    Используется из streak_scheduler: после каждого process_users_in_timezone
+    вызывается maybe_backup_for_today() — фактический backup создаётся
+    только один раз в день (по server-local дате).
+
+    Также может быть вызван вручную через /backup admin-команду —
+    в этом случае используется force_backup() с отдельным timestamp'ом
+    в имени файла, чтобы не пересекаться с daily snapshot.
+    """
+
+    def __init__(self, db_path: str, backup_dir: str = "backups", retention_days: int = 30):
+        self.db_path = db_path
+        self.backup_dir = Path(backup_dir)
+        self.retention_days = retention_days
+        # In-memory dedup: server-local дата последнего сделанного backup'а.
+        # Файл-маркер тоже работает (если файл за сегодня уже есть — skip),
+        # но in-memory быстрее и не делает stat на каждый tick scheduler'а.
+        self._last_backup_date: str | None = None
+
+    async def maybe_backup_for_today(self) -> Path | None:
+        """
+        Создаёт snapshot если за сегодня (server-local date) ещё не было.
+        Возвращает Path к новому файлу или None если backup уже был.
+        Любая ошибка → лог, возврат None (не падаем — это side-effect).
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._last_backup_date == today:
+            return None
+        target = self.backup_dir / f"studybuddy-{today}.db"
+        # File-existence check на случай рестарта бота — после рестарта
+        # _last_backup_date снова None, но файл за сегодня уже может быть.
+        if target.exists():
+            self._last_backup_date = today
+            return None
+        try:
+            await self._vacuum_into(target)
+            self._last_backup_date = today
+            await self._cleanup_old()
+            return target
+        except Exception as e:
+            logger.error(
+                "backup.failed reason=%s detail=%s",
+                type(e).__name__, e,
+            )
+            return None
+
+    async def force_backup(self) -> Path | None:
+        """
+        Принудительный backup (для admin-команды /backup или critical moments).
+        Имя файла включает timestamp до секунд, чтобы не затереть daily.
+        """
+        now = datetime.now()
+        suffix = now.strftime("%Y-%m-%d-%H%M%S")
+        target = self.backup_dir / f"studybuddy-manual-{suffix}.db"
+        try:
+            await self._vacuum_into(target)
+            await self._cleanup_old()
+            return target
+        except Exception as e:
+            logger.error(
+                "backup.force_failed reason=%s detail=%s",
+                type(e).__name__, e,
+            )
+            return None
+
+    async def _vacuum_into(self, target_path: Path) -> None:
+        """
+        SQLite VACUUM INTO — атомарный snapshot. Открывает свой коннект,
+        чтобы не вмешиваться в транзакции основного приложения.
+        """
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        # VACUUM INTO не поддерживает параметризацию пути — приходится
+        # инлайнить. Эскейпим одинарные кавычки на всякий случай.
+        # На Windows backslashes в путях работают для SQLite OK.
+        safe_path = str(target_path).replace("'", "''")
+        t0 = datetime.now()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(f"VACUUM INTO '{safe_path}'")
+        duration_ms = int((datetime.now() - t0).total_seconds() * 1000)
+        size = target_path.stat().st_size if target_path.exists() else 0
+        logger.info(
+            "backup.created path=%s size=%s duration_ms=%s",
+            target_path.name, size, duration_ms,
+        )
+
+    async def _cleanup_old(self) -> None:
+        """Удаляет daily-backup-файлы старше retention_days. Manual не трогаем."""
+        if not self.backup_dir.exists():
+            return
+        cutoff = (datetime.now() - timedelta(days=self.retention_days)).date()
+        removed = 0
+        for f in self.backup_dir.glob("studybuddy-*.db"):
+            # Trim daily backups ("studybuddy-YYYY-MM-DD.db") по дате из имени;
+            # manual ("studybuddy-manual-...") сохраняем — это intentional snapshots.
+            name = f.stem  # без .db
+            if name.startswith("studybuddy-manual-"):
+                continue
+            date_str = name.replace("studybuddy-", "")
+            try:
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError as e:
+                    logger.warning("backup.cleanup_skip file=%s reason=%s", f.name, e)
+        if removed > 0:
+            logger.info("backup.cleanup removed=%s retention_days=%s", removed, self.retention_days)

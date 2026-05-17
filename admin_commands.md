@@ -173,6 +173,29 @@ return user_id in ADMINS or user_id == MAIN_ADMIN_ID
 
 ---
 
+### `/backup` 👑 главный админ
+
+Принудительный snapshot БД через SQLite `VACUUM INTO` — атомарно,
+без WAL-мусора. Имя файла: `studybuddy-manual-YYYY-MM-DD-HHMMSS.db`.
+
+**Когда использовать:**
+- Перед опасной миграцией / разворотом схемы
+- Перед массовой админ-операцией (broadcast, очистка)
+- Для скачивания снимка на локал (через scp с VPS / docker cp)
+
+**Daily backup** работает автоматически — раз в день после streak processing
+(один файл `studybuddy-YYYY-MM-DD.db` на глобальный день). Retention —
+30 дней (`BACKUP_RETENTION_DAYS` env, можно увеличить). Manual snapshot'ы
+**не подпадают** под daily-retention — хранятся до явного удаления.
+
+**Где лежат:** `BACKUP_DIR` env (default `./backups/`; в Docker — `/data/backups/`).
+
+**Поведение:**
+- ✅ → `Backup создан: studybuddy-manual-... ; Размер: N KB`
+- ❌ → `Backup failed — посмотри в логи` (см. событие `backup.force_failed`)
+
+---
+
 ## Что админ видит без команд
 
 ### Пересылка обращений в поддержку

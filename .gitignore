@@ -46,3 +46,6 @@ _verify_*.py
 
 # --- Docker persistent state (mounted volume) ---
 data/
+
+# --- Database backups (locally) ---
+backups/
