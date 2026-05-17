@@ -45,11 +45,6 @@ Example:
 Готовность: get_pet_emotion учитывает has_studied_today (или дату last_session); если сегодня сессий не было — питомец грустный, даже при ненулевом стрике  
 Приоритет: Should
 
-4) [Инфра] Dockerfile + базовые тесты (ротация логов ✅ done 2026-05-16)  
-Ценность: упрощает деплой на VPS, восстановление после падений, отладку  
-Готовность: Dockerfile + docker-compose.yml с persistent volume для studybuddy.db; pytest с тестами на AchievementService и StreakService. ~~Ротация bot.log~~ — сделано: RotatingFileHandler 5MB × 5 файлов, env LOG_LEVEL, шум aiogram/aiohttp/aiosqlite заглушен  
-Приоритет: Could (после первого деплоя)
-
 5) [Алгоритм] SM-2 для **ситуационных** квизов (для флэш-карт ✅ сделано в v0.7 2026-05-17 — см. session_notes)  
 Ценность: бриф упоминает SM-2; сейчас фиксированные интервалы [1,2,4,7] не адаптируются под сложность термина для конкретного пользователя  
 Готовность: в `quiz_progress` добавляются `ease_factor`, `interval_days`, `repetitions`; переиспользуется чистая функция `services.sm2_update()` (уже написана); **блокер**: keyword-matching grader даёт почти бинарный сигнал (есть 2+ ключевых слов или нет), а SM-2 требует градиент 0–5. Сначала нужен лучший grader (semantic similarity, или промежуточный «частично знал»), иначе SM-2 деградирует до того же бинарного поведения  

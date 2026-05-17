@@ -50,9 +50,21 @@ LOG_LEVEL=INFO
 
 ### 4. Запуск
 
+**Локально:**
+
 ```bash
 python bot.py
 ```
+
+**В Docker:**
+
+```bash
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+`docker-compose.yml` монтирует `./data/` на хосте в `/data` в контейнере —
+SQLite-БД, логи и `admins.json.migrated` живут там, переживают rebuild.
 
 При первом запуске:
 - создаётся `studybuddy.db` (SQLite, WAL-режим)
@@ -138,11 +150,44 @@ study_materials/    # Учебные материалы — data-driven дере
 | [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
 
+## Файлы инфраструктуры
+
+| Файл | Назначение |
+|------|------------|
+| [Dockerfile](Dockerfile) | Python 3.12-slim образ; non-root user; `/data` для persistent state |
+| [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
+| [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
+| [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
+| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
+| [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
+| [tests/](tests/) | Юнит-тесты (49 штук: SM-2, AchievementService, StreakService) |
+
 ---
 
 ## Полезное при разработке
 
-### Проверки
+### Тесты
+
+```bash
+# Один раз — установить dev-зависимости (pytest + pytest-asyncio)
+pip install -r requirements-dev.txt
+
+# Запустить весь suite
+pytest -v
+
+# Только SM-2 или конкретный сервис
+pytest tests/test_sm2.py
+pytest tests/test_streak_service.py -v
+```
+
+Покрытие — 49 тестов: `sm2_update` (стандартный путь, fail-path, EF
+floor, parametrized properties), `AchievementService` (все 9 ачивок +
+многократные выдачи + идемпотентность), `StreakService` (инкремент,
+сброс, бонусные +15🪙 со 2-го дня, мультипользовательская изоляция).
+Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
+параллелятся без collisions.
+
+### Прочие проверки
 
 ```bash
 # Синтаксис

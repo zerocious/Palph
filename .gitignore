@@ -42,3 +42,7 @@ Thumbs.db
 # --- Temp files ---
 .git_commit_msg*
 _smoke_*.py
+_verify_*.py
+
+# --- Docker persistent state (mounted volume) ---
+data/

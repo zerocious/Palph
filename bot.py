@@ -70,8 +70,11 @@ def setup_logger():
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
+    # LOG_FILE можно переопределить в env — в Docker мы пишем в `/data/bot.log`
+    # (на mounted volume), локально по умолчанию остаётся `./bot.log`.
+    log_file = os.getenv("LOG_FILE", "bot.log")
     file_handler = RotatingFileHandler(
-        "bot.log",
+        log_file,
         maxBytes=5 * 1024 * 1024,  # 5 МБ
         backupCount=5,             # bot.log + bot.log.1..5
         encoding="utf-8",

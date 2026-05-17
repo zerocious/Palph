@@ -1,0 +1,55 @@
+# Secrets / runtime state — мы их монтируем через volume, в образ они не нужны
+.env
+.env.*
+!.env.example
+credentials.json
+*.db
+*.db-*
+admins.json*
+messages.json
+messages.log
+bot.log*
+
+# Git / project meta
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude / temp / smoke
+.claude/
+.git_commit_msg*
+_smoke_*.py
+_verify_*.py
+
+# Host-only data and dev docs — не нужны в production-образе
+data/
+archive/
+tests/
+README.md
+TODO.md
+BACKLOG.md
+session_notes.md
+admin_commands.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+requirements-dev.txt
+pytest.ini

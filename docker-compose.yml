@@ -1,0 +1,35 @@
+# StudyBuddy Telegram bot — single-service compose.
+# Запуск:   docker compose up -d --build
+# Логи:     docker compose logs -f bot
+# Статус:   docker compose ps
+# Стоп:     docker compose down
+#
+# Persistent state (БД, логи, мигрированный admins.json) живёт в ./data
+# на хосте — переживает rebuild контейнера.
+
+services:
+  bot:
+    build: .
+    container_name: studybuddy-bot
+    restart: unless-stopped
+
+    # BOT_TOKEN + MAIN_ADMIN_ID + опционально SERVER_TIMEZONE / LOG_LEVEL
+    # читаются из .env на хосте.
+    env_file: .env
+
+    # Переопределяем пути в контейнере, чтобы persistent state шёл в volume,
+    # а не в эфемерный слой образа.
+    environment:
+      DB_PATH: /data/studybuddy.db
+      LOG_FILE: /data/bot.log
+
+    volumes:
+      - ./data:/data
+
+    # Лог-драйвер Docker'а ловит stdout — `docker compose logs` работает.
+    # Файл-логи всё равно остаются в /data для post-mortem.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
