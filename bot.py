@@ -13,7 +13,7 @@ from pathlib import Path
 import pytz
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
@@ -35,7 +35,7 @@ from repository import (
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
-    BackupService, AnalyticsService, sm2_update,
+    BackupService, AnalyticsService, UserRateLimiter, sm2_update,
 )
 from tasks import streak_scheduler, reminder_scheduler
 
@@ -126,6 +126,60 @@ dp: Dispatcher = None
 # Держим строгие ссылки, чтобы задачи не были собраны GC,
 # и чтобы их можно было отменить при остановке/перезапуске.
 active_timers: dict[int, asyncio.Task] = {}
+
+# Rate limiter — защита от спама/abuse'а на уровне приложения.
+# Initialize in main(); attached to dispatcher как middleware.
+rate_limiter: UserRateLimiter = None
+
+
+class RateLimitMiddleware(BaseMiddleware):
+    """
+    Sliding-window rate-limit на каждое Message/CallbackQuery.
+    Админы exempt — у них доверенный доступ + им нужны broadcast/прочее.
+
+    Telegram event extraction: aiogram middleware data dict содержит
+    `event_from_user` (User объект) для любого type'а — Message,
+    CallbackQuery, и т.д. Так что один middleware для обоих.
+    """
+
+    def __init__(self, limiter: UserRateLimiter):
+        self.limiter = limiter
+        super().__init__()
+
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user is None:
+            return await handler(event, data)
+        # Админы не лимитятся — у них broadcast и прочее, false-positives
+        # болезненны. Также главный админ может вручную нагрузить /backup
+        # подряд для тестов.
+        if is_admin(user.id):
+            return await handler(event, data)
+
+        status = self.limiter.check(user.id)
+        if status == "block":
+            logger.info("ratelimit.blocked user_id=%s", user.id)
+            return None  # silently drop, handler не вызывается
+
+        if status == "warn":
+            logger.info("ratelimit.warned user_id=%s", user.id)
+            try:
+                if isinstance(event, Message):
+                    await event.answer(
+                        "⏸ Слишком быстро! Подожди немного и продолжи."
+                    )
+                elif isinstance(event, CallbackQuery):
+                    await event.answer(
+                        "⏸ Слишком быстро — подожди немного.",
+                        show_alert=False,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "ratelimit.warn_send_failed user_id=%s reason=%s",
+                    user.id, type(e).__name__,
+                )
+
+        return await handler(event, data)
 
 # ------------------------------------------------------------
 # Состояния FSM
@@ -3627,7 +3681,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, analytics_service, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -3641,6 +3695,14 @@ async def main():
     study_service = StudyService(user_repo, session_repo, ach_service)
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=SQLiteStorage(db))
+    # Rate-limit middleware: тротлим не-админских пользователей
+    # ≥ 30 actions / 60 секунд (warn на 70%, hard block на 100%).
+    # Регистрируем ДО include_router, чтобы middleware применялся
+    # ко всем хендлерам в роутере.
+    rate_limiter = UserRateLimiter(max_actions=30, window_seconds=60)
+    rl_middleware = RateLimitMiddleware(rate_limiter)
+    dp.message.middleware(rl_middleware)
+    dp.callback_query.middleware(rl_middleware)
     dp.include_router(router)
     streak_service = StreakService(user_repo, bot)
     reminder_service = ReminderService(user_repo, bot)

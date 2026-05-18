@@ -1,0 +1,85 @@
+#!/bin/bash
+# StudyBuddy — offsite encrypted backup.
+#
+# WHAT: encrypts /data/backups/studybuddy-YYYY-MM-DD.db with GPG and
+#       uploads to S3/B2/etc. via rclone. Runs daily after the bot's
+#       internal BackupService produces its snapshot.
+#
+# WHY: BackupService stores backups on the same VPS — if the VPS is
+#      compromised or destroyed, backups die with it. Offsite copy
+#      is the actual disaster-recovery layer.
+#
+# SETUP (one-time, host side):
+#   1. Install rclone:  https://rclone.org/install/
+#   2. Configure remote:  rclone config
+#        (recommend B2 for cheap storage, or S3-compatible)
+#   3. Generate GPG key:
+#        gpg --batch --gen-key <<EOF
+#        %no-protection
+#        Key-Type: RSA
+#        Key-Length: 4096
+#        Name-Real: StudyBuddy Backup
+#        Name-Email: backup@studybuddy.local
+#        Expire-Date: 0
+#        EOF
+#      Export public key for encryption only; keep private key OFF the VPS:
+#        gpg --export backup@studybuddy.local > backup-public.gpg
+#        gpg --export-secret-key backup@studybuddy.local > backup-private.gpg
+#        (save backup-private.gpg in a password manager / hardware key /
+#         second machine — NEVER on the same VPS being backed up)
+#   4. Copy this file to /usr/local/bin/backup_offsite.sh, chmod +x.
+#   5. Edit the CONFIG block below.
+#   6. Add to crontab (`crontab -e`):
+#        # Run 5 minutes after midnight UTC (after BackupService writes daily snapshot)
+#        5 0 * * * /usr/local/bin/backup_offsite.sh >> /var/log/backup-offsite.log 2>&1
+#
+# RESTORE:
+#   1. rclone copy <remote>:studybuddy-backups/<DATE>.db.gpg .
+#   2. gpg --decrypt <DATE>.db.gpg > restored.db
+#   3. sqlite3 restored.db ".tables"  # verify
+#   4. Stop the bot, replace studybuddy.db with restored.db, restart.
+#
+# Test the restore path at least once. Backups you never tested are
+# Schrödinger's backups.
+
+set -euo pipefail
+
+# ============================================================
+# CONFIG — edit these
+# ============================================================
+BACKUP_DIR="/data/backups"
+REMOTE_NAME="b2"                              # rclone remote name from `rclone config`
+REMOTE_PATH="studybuddy-backups"              # bucket/prefix on remote
+GPG_RECIPIENT="backup@studybuddy.local"       # GPG key UID
+KEEP_REMOTE_DAYS=90                           # delete remote files older than N days
+# ============================================================
+
+TODAY=$(date +%F)
+LATEST="${BACKUP_DIR}/studybuddy-${TODAY}.db"
+
+if [ ! -f "$LATEST" ]; then
+    echo "[$(date -Iseconds)] ERROR: no backup file at $LATEST"
+    exit 1
+fi
+
+# Encrypt locally → /tmp (avoid leaving plaintext on disk longer than needed)
+ENCRYPTED="/tmp/studybuddy-${TODAY}.db.gpg"
+gpg --batch --yes --trust-model always \
+    --output "$ENCRYPTED" \
+    --encrypt --recipient "$GPG_RECIPIENT" \
+    "$LATEST"
+
+# Upload to remote
+rclone copy --progress "$ENCRYPTED" "${REMOTE_NAME}:${REMOTE_PATH}/"
+SIZE=$(stat -c%s "$ENCRYPTED")
+echo "[$(date -Iseconds)] uploaded studybuddy-${TODAY}.db.gpg (${SIZE} bytes)"
+
+# Clean up local encrypted copy
+rm -f "$ENCRYPTED"
+
+# Cleanup old remote backups (retention)
+rclone delete --min-age "${KEEP_REMOTE_DAYS}d" \
+    "${REMOTE_NAME}:${REMOTE_PATH}/" \
+    --include "studybuddy-*.db.gpg"
+
+echo "[$(date -Iseconds)] backup_offsite.sh: done"

@@ -98,7 +98,15 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
   retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
   `./backups/` (Docker: `/data/backups/`). Главный админ может
-  принудительно snapshot через `/backup`.
+  принудительно snapshot через `/backup`. Для disaster-recovery —
+  template script `scripts/backup_offsite.sh.example` (GPG-шифрование +
+  rclone upload в S3/B2; ручная настройка на хосте).
+- **🛡 Rate limiting** — sliding-window in-memory лимитер per user
+  (30 actions / 60 sec, warn на 70%, hard block на 100%). Применяется
+  как aiogram middleware ко всем Message + CallbackQuery. Админы
+  exempt. Защита от спама/abuse'а — не DDoS (бот через polling, нет
+  публичного endpoint'а). См. план cybersecurity в
+  [.claude/plans/make-a-new-session-merry-castle.md](.claude/plans/).
 - **📊 Экран прогресса** (в профиле кнопка `📊 Прогресс по предметам`):
   10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
   «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
@@ -148,7 +156,8 @@ repository.py       # UserRepository, SessionRepository, AdminRepository,
                     # TaskProgressRepository, SubjectStatsRepository
                     # (только CRUD, без бизнес-логики)
 services.py         # AchievementService, StudyService, StreakService,
-                    # ReminderService, BackupService, AnalyticsService
+                    # ReminderService, BackupService, AnalyticsService,
+                    # UserRateLimiter
                     # + чистая функция sm2_update() для SM-2
 tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
                     # утро/вечер раз в минуту)
@@ -198,7 +207,9 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (106 штук: SM-2, services, progress repos, BackupService, AnalyticsService) |
+| [tests/](tests/) | Юнит-тесты (121 штука: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter) |
+| [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
+| [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
 
 ---
 
@@ -218,7 +229,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **106 тестов** (~10 сек):
+Покрытие — **121 тест** (~14 сек):
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
@@ -228,6 +239,7 @@ pytest tests/test_streak_service.py -v
 | `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
 | `test_analytics_service.py` | 29 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, CSV export edge cases |
+| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.

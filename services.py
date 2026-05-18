@@ -1,8 +1,10 @@
 # services.py
 import logging
 import os
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 
 import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
@@ -10,6 +12,86 @@ from aiogram.exceptions import TelegramForbiddenError
 from repository import UserRepository, SessionRepository
 
 logger = logging.getLogger("studybuddy_bot")
+
+
+# ------------------------------------------------------------
+# UserRateLimiter — in-memory sliding-window лимитер per user_id.
+# Защита от спама / abuse'а пользователями (которые проходят
+# Telegram'овский global throttle, но всё ещё могут флудить
+# бота сообщениями/тапами).
+#
+# Что НЕ покрывает:
+#   - DDoS (для polling-бота нет публичного endpoint'а, attacker
+#     не может туда добраться)
+#   - Глобальный API-лимит Telegram'а (30 msg/s — мы туда не упрёмся
+#     при разумных условиях)
+# ------------------------------------------------------------
+class UserRateLimiter:
+    """
+    Sliding-window rate-limit per user. Бакет = deque timestamps;
+    при каждой проверке выкидываются протухшие. Не персистится —
+    после рестарта бота все бакеты пусты, что для abuse-защиты
+    приемлемо (атака начнётся заново и снова поймается).
+
+    Trade-off threshold (default 30 actions / 60s):
+      - Активный флэш-сеанс: ~1 тап / 5-10s = 6-12/мин ← OK
+      - Спам / автоматика: 50+ actions/min ← блок
+
+    Возвращает строковый статус:
+      "ok"    — под threshold, action разрешён
+      "warn"  — пользователь приближается к лимиту, отправить
+                вежливое предупреждение (но action всё ещё разрешён)
+      "block" — over hard limit, silently drop event
+    """
+
+    def __init__(
+        self,
+        max_actions: int = 30,
+        window_seconds: int = 60,
+        warn_threshold: float = 0.7,
+        warn_cooldown_seconds: int = 30,
+    ):
+        self.max_actions = max_actions
+        self.window_seconds = window_seconds
+        self.warn_threshold = warn_threshold
+        self.warn_cooldown_seconds = warn_cooldown_seconds
+        # user_id → deque of monotonic timestamps
+        self._buckets: dict[int, deque] = defaultdict(deque)
+        # user_id → last warning sent (чтобы не спамить warnings)
+        self._warned_at: dict[int, float] = {}
+
+    def check(self, user_id: int) -> str:
+        """Регистрирует event и возвращает ok/warn/block."""
+        now = monotonic()
+        cutoff = now - self.window_seconds
+        bucket = self._buckets[user_id]
+        # Чистим протухшие timestamps
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        current_count = len(bucket)
+
+        if current_count >= self.max_actions:
+            return "block"
+
+        # Регистрируем новый event
+        bucket.append(now)
+        new_count = current_count + 1
+
+        # Warn-зона: [warn_at, max_actions). Если warn_threshold=1.0, диапазон
+        # пустой → warn'и выключены (для unit-тестов и тонкого тюнинга).
+        warn_at = int(self.max_actions * self.warn_threshold)
+        if warn_at <= new_count < self.max_actions:
+            last_warn = self._warned_at.get(user_id, 0.0)
+            if now - last_warn >= self.warn_cooldown_seconds:
+                self._warned_at[user_id] = now
+                return "warn"
+
+        return "ok"
+
+    def reset(self, user_id: int) -> None:
+        """Сбросить state для пользователя (для тестов / админ-команд)."""
+        self._buckets.pop(user_id, None)
+        self._warned_at.pop(user_id, None)
 
 
 # ------------------------------------------------------------
