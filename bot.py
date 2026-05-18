@@ -316,6 +316,7 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="dau", description="DAU/WAU/MAU + stickiness"),
     BotCommand(command="feature_usage", description="% adoption per feature"),
     BotCommand(command="export", description="Export table as CSV"),
+    BotCommand(command="parse_logs", description="bot.log → events CSV (ETL)"),
     BotCommand(command="backup", description="Snapshot БД (главный админ)"),
     BotCommand(command="addadmin", description="Добавить админа (главный админ)"),
     BotCommand(command="rmadmin", description="Удалить админа (главный админ)"),
@@ -3487,6 +3488,66 @@ async def cmd_cohort_stats(message: Message):
     )
 
 
+@router.message(Command("parse_logs"))
+async def cmd_parse_logs(message: Message):
+    """
+    Парсит bot.log + ротированные bot.log.* в CSV, шлёт как Telegram-документ.
+    Поднимает «прошлые» события (до того, как мы начали писать в events table).
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Только для админов.")
+        return
+    from parse_logs import parse_log_file, to_csv_bytes
+
+    log_file_path = Path(os.getenv("LOG_FILE", "bot.log"))
+    log_paths: list[Path] = []
+    if log_file_path.exists():
+        log_paths.append(log_file_path)
+    # Rotated copies: bot.log.1, .2, ..., до 9 (RotatingFileHandler даёт max 5,
+    # но проверяем больше для запаса).
+    for i in range(1, 10):
+        p = log_file_path.with_suffix(log_file_path.suffix + f".{i}")
+        if p.exists():
+            log_paths.append(p)
+
+    if not log_paths:
+        await message.answer(
+            f"❌ Не найдено лог-файлов рядом с <code>{log_file_path}</code>.",
+            parse_mode="HTML",
+        )
+        return
+
+    all_rows: list[dict] = []
+    for path in log_paths:
+        try:
+            rows = parse_log_file(path)
+            all_rows.extend(rows)
+        except Exception as e:
+            logger.warning("parse_logs.file_failed file=%s reason=%s", path.name, e)
+    all_rows.sort(key=lambda r: r["timestamp"])
+
+    if not all_rows:
+        await message.answer("📜 Файлы найдены, но парсинг дал 0 строк.")
+        return
+
+    csv_bytes = to_csv_bytes(all_rows)
+    filename = f"events_from_logs-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    size_kb = len(csv_bytes) / 1024
+    logger.info(
+        "parse_logs.done files=%s rows=%s size_kb=%.1f",
+        len(log_paths), len(all_rows), size_kb,
+    )
+    await message.answer_document(
+        BufferedInputFile(csv_bytes, filename),
+        caption=(
+            f"📜 <b>Events from logs</b>\n"
+            f"Files: {len(log_paths)} · Rows: {len(all_rows)} · {size_kb:.1f} KB\n\n"
+            f"Колонки: timestamp, level, event_name, user_id, properties (JSON), raw_text"
+        ),
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("backup"))
 async def cmd_backup(message: Message):
     """Принудительный snapshot БД. Только главный админ.
@@ -3550,6 +3611,7 @@ async def cmd_help(message: Message):
         "/dau — DAU/WAU/MAU + stickiness ratio\n"
         "/feature_usage — % adoption per feature\n"
         "/export <table> — CSV-дамп таблицы как Telegram-документ\n"
+        "/parse_logs — bot.log + rotated → events CSV (для historical analysis)\n"
         "/help — эта справка\n"
     )
     if is_main:

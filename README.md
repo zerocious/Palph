@@ -212,7 +212,8 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (136 штук: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository) |
+| [tests/](tests/) | Юнит-тесты (156 штук: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser) |
+| [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
 
@@ -234,7 +235,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **136 тестов** (~12 сек):
+Покрытие — **156 тестов** (~12 сек):
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
@@ -246,6 +247,7 @@ pytest tests/test_streak_service.py -v
 | `test_analytics_service.py` | 29 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, CSV export edge cases |
 | `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
 | `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
+| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values (next=YYYY-MM-DD HH:MM:SS) / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
@@ -315,6 +317,11 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 3. **Events table** — append-only лог каждого значимого действия с
    timestamp и JSON-properties. Foundation для funnel/cohort/path/
    retention анализа. Каждое действие пользователя → одна строка.
+4. **`/parse_logs`** (или CLI `python parse_logs.py`) — ETL для исторических
+   данных: парсит `bot.log` + ротированные `bot.log.1..5` в CSV. Спасает
+   когда нужны события до того, как `events` table начала писаться (события
+   уже есть в логе структурированно — нужен только parser). Колонки:
+   `timestamp, level, event_name, user_id, properties (JSON), raw_text`.
 
 После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
 с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).
