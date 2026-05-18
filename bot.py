@@ -2664,8 +2664,15 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = callback.from_user.id
 
-    # Текущее состояние карты в БД (или дефолты для новой)
+    # Текущее состояние карты в БД (или дефолты для новой).
+    # is_new_card фиксируется ЗДЕСЬ (до upsert_progress), потому что
+    # `reps_before == 0` в логе события неоднозначен: 0 может означать
+    # либо «карту впервые видим», либо «строка есть, но сбросилась
+    # после неверного ответа». Для leaderboard-scoring (LEADERBOARD.md §4:
+    # +3 pts за новую, +5 за review) нужна точная семантика «нет строки
+    # на момент ответа = new».
     progress = await flashcard_repo.get_progress(user_id, card_hash)
+    is_new_card = progress is None
     if progress:
         ef = float(progress["ease_factor"])
         reps = int(progress["repetitions"])
@@ -2691,6 +2698,7 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
         "subject_id": data.get("flash_subject_id"),
         "card_hash": card_hash,
         "quality": quality,
+        "is_new": is_new_card,
         "reps_before": reps, "reps_after": new_reps,
         "ef_before": round(ef, 3), "ef_after": round(new_ef, 3),
         "interval_before": interval, "interval_after": new_interval,

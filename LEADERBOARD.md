@@ -150,32 +150,34 @@ can plan a week against it.
 
 These guide the build, not the design. Subject to revision as we ship.
 
-### Phase 0 — Event property audit (required before Phase 1)
+### Phase 0 — Event property audit (DONE 2026-05-18)
 
-The backtest notebook needs to reconstruct historical scores from the
-existing `events` table. Each scoring-relevant event must carry enough
-properties to do that without joining mutable progress tables.
+Audited all `event_repo.log()` call sites in `bot.py`. Result: only
+`flashcard_reviewed` required a patch; everything else already carries
+the properties the backtest needs.
 
-Audit task: grep every `event_repo.log()` call site in `bot.py` (~14
-hooks) and confirm the following properties exist on the relevant events:
+| Event | Properties on log | Needed for backtest | Status |
+|---|---|---|:---:|
+| `session_completed` | `duration`, `coins`, `bonus_coins`, `source`, ... | `duration` for time pts | ✅ |
+| `quiz_answered` | `is_correct`, `subject_id`, `term_hash`, `streak_after` | `is_correct` | ✅ |
+| `mcq_answered` | `is_correct`, `subject_id`, `question_hash`, ... | `is_correct` (MCQ = quiz) | ✅ |
+| `task_attempted` | `succeeded`, `task_id`, `attempts_used`, `coins` | `succeeded` (≡ correct for tasks) | ✅ |
+| `flashcard_reviewed` | `quality`, `reps_*`, `ef_*`, `interval_*`, **`is_new`** (added) | `is_new` + `quality ≥ 3` for correct | ⚠️→✅ |
 
-| Event | Required properties |
-|---|---|
-| `session.complete` | `duration` (minutes) |
-| `quiz.answered` | `correct: bool` |
-| `mcq.answered` | `correct: bool` |
-| `task.answered` | `correct: bool` |
-| `flashcard.reviewed` | `is_new: bool`, `correct: bool` (or `quality: int`) |
+The `flashcard_reviewed` gap: at the rate-handler call site, the existing
+`reps_before` was ambiguous (`0` could mean "first encounter" OR "reset
+after wrong answer"). Patched to capture `is_new = (progress is None)`
+*before* `upsert_progress` writes the row, and added `is_new` to the
+event properties.
 
-Missing properties get patched at the log site — ~1 line per hook, ~15
-lines of edit total. Historical events before this patch are partially
-reconstructable by joining `quiz_progress` / `task_progress` /
-`flashcard_progress`, but new events from the patch date forward have
-clean backtest semantics.
+Historical events before this patch are partially reconstructable for
+flashcards by joining `flashcard_progress` and inferring "new = first
+ever `flashcard_reviewed` event for this `(user_id, card_hash)`."
+Events from this patch forward have clean backtest semantics directly.
 
 ### Phasing
 
-- **Phase 0** — Event property audit (~0.25 session)
+- **Phase 0** — Event property audit ✅ done
 - **Phase 1** — Score data layer (4 new tables, repository, scoring hooks,
   backtest notebook, tests) — ~1 session
 - **Phase 2** — User-facing `/leaderboard` + Monday rollover scheduler +
