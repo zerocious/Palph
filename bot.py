@@ -32,7 +32,7 @@ from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
-    EventRepository,
+    EventRepository, PetRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -4187,7 +4187,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4198,8 +4198,9 @@ async def main():
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)
     event_repo = EventRepository(db)
+    pet_repo = PetRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
-    study_service = StudyService(user_repo, session_repo, ach_service)
+    study_service = StudyService(user_repo, session_repo, ach_service, pet_repo)
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей

@@ -9,7 +9,7 @@ from time import monotonic
 import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
 
-from repository import UserRepository, SessionRepository
+from repository import UserRepository, SessionRepository, PetRepository
 
 logger = logging.getLogger("studybuddy_bot")
 
@@ -271,11 +271,68 @@ class AchievementService:
         )
         await self.user_repo.db.commit()
 
+# ------------------------------------------------------------
+# derive_emotion — pure function для отображаемой эмоции питомца.
+#
+# Эмоция НЕ хранится в БД; каждый render-call перевычисляет её из
+# текущего состояния пользователя. См. TODO #16:
+# "5 эмоций выводятся из состояния пользователя в момент рендера
+# (не хранятся)".
+#
+# Caller-обязательства:
+#   - is_studying:        True, если у пользователя активный таймер
+#                         (например, FSM state == TimerStates.running)
+#   - recently_excited:   True, если pet.last_excited_at установлен и
+#                         (now - last_excited_at) < timedelta(minutes=5)
+#                         — caller сам читает таблицу и считает дельту
+#   - has_studied_today:  булев users.has_studied_today (1/0 → True/False)
+#   - now_local:          текущее время в локальном TZ пользователя
+#                         (services уже умеет TZ-aware, см. ReminderService)
+# ------------------------------------------------------------
+def derive_emotion(
+    *,
+    is_studying: bool,
+    recently_excited: bool,
+    has_studied_today: bool,
+    now_local: datetime,
+) -> str:
+    """
+    Возвращает одну из 5 эмоций (priority по убыванию):
+        1. "studying" — активный учебный таймер
+        2. "excited"  — level-up или ачивка ≤ 5 минут назад
+        3. "sad"      — пользователь сегодня ещё не учился
+        4. "sleepy"   — локальное время в окне [22:00, 06:00)
+                        (22:00 включительно, 06:00 исключительно)
+        5. "happy"    — дефолт
+
+    Все аргументы keyword-only: каждый caller-сайт обязан явно
+    назвать что подаёт, чтобы не было перепутанных bool-аргументов.
+    """
+    if is_studying:
+        return "studying"
+    if recently_excited:
+        return "excited"
+    if not has_studied_today:
+        return "sad"
+    if now_local.hour >= 22 or now_local.hour < 6:
+        return "sleepy"
+    return "happy"
+
+
 class StudyService:
-    def __init__(self, user_repo: UserRepository, session_repo: SessionRepository, achievement_service: AchievementService):
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        session_repo: SessionRepository,
+        achievement_service: AchievementService,
+        pet_repo: PetRepository | None = None,
+    ):
         self.user_repo = user_repo
         self.session_repo = session_repo
         self.achievement_service = achievement_service
+        # pet_repo опционален: тесты вне pet-флоу могут не передавать —
+        # тогда XP-grant просто skip'ается. В production bot.py всегда даёт.
+        self.pet_repo = pet_repo
 
     async def complete_session(self, user_id: int, duration: int) -> tuple[list, int, int]:
         """
@@ -303,6 +360,16 @@ class StudyService:
             await self.user_repo.increment_sessions(user_id)
             await self.user_repo.add_coins(user_id, base_coins + bonus)
             session_id = await self.session_repo.add_session(user_id, duration, base_coins, bonus)
+
+            # Pet XP-grant (v0.7 TODO #16). 1 XP / минута учёбы.
+            # add_xp auto-создаёт pet при первой сессии и сам пометит
+            # last_excited_at при level-up. Если ачивки были — тоже
+            # пометим excited (вторая ветка приоритета derive_emotion).
+            # Lock уже взят выше — pet_repo.add_xp его не берёт повторно.
+            if self.pet_repo is not None:
+                await self.pet_repo.add_xp(user_id, duration)
+                if earned:
+                    await self.pet_repo.mark_excited(user_id)
 
         return earned, bonus, session_id
     
