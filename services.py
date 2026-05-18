@@ -761,6 +761,51 @@ class AnalyticsService:
             writer.writerow([row[c] for c in cols])
         return buf.getvalue().encode("utf-8"), len(rows)
 
+    async def export_all_tables_zip(self, schema_version: str = "v0.7") -> tuple[bytes, dict]:
+        """
+        Bundles all 10 exportable tables + metadata.json into a ZIP archive.
+
+        Returns: (zip_bytes, metadata_dict).
+
+        metadata.json schema:
+            {
+                "exported_at": "ISO-8601 UTC timestamp",
+                "schema_version": "v0.7",
+                "row_counts": {table_name: int, ...},
+                "tables": [list of table_names in zip],
+            }
+
+        Used by /export all admin command — позволяет одной командой выгрузить
+        весь analytics-dataset для внешнего Jupyter/pandas анализа.
+        Воспроизводимость: metadata.json фиксирует timestamp и row-counts.
+        """
+        import io
+        import json
+        import zipfile
+        from datetime import datetime, timezone
+
+        metadata = {
+            "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "schema_version": schema_version,
+            "row_counts": {},
+            "tables": [],
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for alias, table_name in self.EXPORTABLE_TABLES.items():
+                csv_bytes, row_count = await self.export_table_csv(alias)
+                zf.writestr(f"{table_name}.csv", csv_bytes)
+                metadata["row_counts"][table_name] = row_count
+                metadata["tables"].append(table_name)
+            # metadata.json последним — содержит итоговые row_counts
+            zf.writestr(
+                "metadata.json",
+                json.dumps(metadata, indent=2, ensure_ascii=False),
+            )
+
+        return buf.getvalue(), metadata
+
 
 # ------------------------------------------------------------
 # Backup service — ежедневный snapshot БД после обработки стриков.

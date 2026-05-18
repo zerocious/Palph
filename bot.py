@@ -3201,11 +3201,45 @@ async def cmd_feature_usage(message: Message):
     )
 
 
+async def _send_all_tables_zip(reply_target) -> None:
+    """
+    Хелпер: собирает ZIP всех таблиц + metadata.json и шлёт пользователю.
+    reply_target должен иметь .answer + .answer_document (Message или callback.message).
+    """
+    try:
+        zip_bytes, metadata = await analytics_service.export_all_tables_zip()
+    except Exception as e:
+        logger.error("export.all_failed reason=%s detail=%s", type(e).__name__, e)
+        await reply_target.answer(f"❌ Export-all failed: {type(e).__name__}: {e}")
+        return
+    filename = f"studybuddy-export-{datetime.now().strftime('%Y-%m-%d')}.zip"
+    size_kb = len(zip_bytes) / 1024
+    total_rows = sum(metadata["row_counts"].values())
+    logger.info(
+        "export.all_done tables=%s rows=%s size_kb=%.1f",
+        len(metadata["tables"]), total_rows, size_kb,
+    )
+    top_5 = sorted(metadata["row_counts"].items(), key=lambda kv: -kv[1])[:5]
+    breakdown = "\n".join(f"  • {t}: {n}" for t, n in top_5)
+    await reply_target.answer_document(
+        BufferedInputFile(zip_bytes, filename),
+        caption=(
+            f"📦 <b>Full dataset export</b>\n"
+            f"Tables: {len(metadata['tables'])} · Rows: {total_rows} · {size_kb:.1f} KB\n"
+            f"+ metadata.json со schema_version и timestamp\n\n"
+            f"<b>Top tables by row count:</b>\n{breakdown}"
+        ),
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("export"))
 async def cmd_export(message: Message, command: CommandObject):
     """
     Экспорт таблицы как CSV-файл (Telegram document).
-    Использование: /export <table_alias>
+    Использование:
+      /export <table_alias>  — одну таблицу как CSV
+      /export all            — все таблицы + metadata.json как ZIP
     """
     if not is_admin(message.from_user.id):
         await message.answer("❌ Команда только для админов.")
@@ -3215,16 +3249,22 @@ async def cmd_export(message: Message, command: CommandObject):
     if not arg:
         aliases_str = "\n".join(f"  • <code>{a}</code>" for a in aliases)
         await message.answer(
-            "📦 Экспорт таблицы как CSV — для анализа в Jupyter / pandas.\n\n"
-            "Использование: <code>/export &lt;alias&gt;</code>\n\n"
+            "📦 Экспорт таблиц для анализа в Jupyter / pandas.\n\n"
+            "Использование:\n"
+            "  <code>/export &lt;alias&gt;</code> — одна таблица как CSV\n"
+            "  <code>/export all</code> — все таблицы + metadata.json как ZIP\n\n"
             f"Доступные алиасы:\n{aliases_str}",
             parse_mode="HTML",
         )
         return
+    # Special: /export all → ZIP всех таблиц
+    if arg == "all":
+        await _send_all_tables_zip(message)
+        return
     if arg not in AnalyticsService.EXPORTABLE_TABLES:
         await message.answer(
             f"❌ Неизвестная таблица: <code>{arg}</code>\n"
-            f"Доступно: {', '.join(aliases)}",
+            f"Доступно: {', '.join(aliases)} (или <code>all</code> для ZIP всех)",
             parse_mode="HTML",
         )
         return
@@ -3283,14 +3323,17 @@ def _build_analytics_back_keyboard() -> InlineKeyboardMarkup:
 
 
 def _build_analytics_export_menu_keyboard() -> InlineKeyboardMarkup:
-    """Подменю экспорта: 9 таблиц по 2 в ряд + back."""
+    """Подменю экспорта: «all» сверху отдельной строкой, потом таблицы по 2 в ряд + back."""
     kb = InlineKeyboardBuilder()
+    # «All» одной кнопкой сверху — это «main path» для Jupyter-анализа.
+    kb.button(text="📦📦 ALL tables (ZIP + metadata)", callback_data="anlt:export:all")
     # AnalyticsService.EXPORTABLE_TABLES — class attribute; не зависит от того,
     # инициализирован ли global analytics_service (важно для импорта в тестах).
     for alias in sorted(AnalyticsService.EXPORTABLE_TABLES.keys()):
         kb.button(text=f"📦 {alias}", callback_data=f"anlt:export:{alias}")
     kb.button(text="◀️ К аналитике", callback_data="anlt:back")
-    kb.adjust(2)  # 2 колонки автоматически + back на отдельной строке (последний)
+    # 1-кнопочная строка для «all», потом по 2 на ряд, потом 1 для back
+    kb.adjust(1, 2, 2, 2, 2, 2, 1)
     return kb.as_markup()
 
 
@@ -3412,6 +3455,11 @@ async def handle_anlt_export_table(callback: CallbackQuery):
     if not await _anlt_check_admin(callback):
         return
     alias = callback.data.split(":", 2)[2]
+    # Special: "all" → ZIP всех таблиц + metadata.json
+    if alias == "all":
+        await _send_all_tables_zip(callback.message)
+        await callback.answer("📦 ZIP sent")
+        return
     if alias not in AnalyticsService.EXPORTABLE_TABLES:
         await callback.answer("Неизвестная таблица", show_alert=True)
         return

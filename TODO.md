@@ -63,15 +63,24 @@ Example:
 
 ### ✅ Ship'нуто (доступно прямо сейчас через админ-команды)
 
+**Aggregate-метрики:**
 - `/cohort_stats` — D1/D7/D30 retention по ISO-неделям регистрации
 - `/funnel` — activation funnel (6 шагов: registered → started → 5+ sessions → 10+ sessions → 3-day streak → 7-day streak); % от total registered
 - `/dau` — DAU / WAU / MAU + stickiness ratio (DAU/MAU) + новые пользователи сегодня
 - `/feature_usage` — % adoption per feature: 4 учебных режима + Pomodoro + custom timezone + disabled notifications + custom reminder time
-- `/export <alias>` — CSV-дамп таблицы как Telegram-документ (9 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings). **Killer feature** для портфолио — превращает бот в data source для pandas/Jupyter.
+- `/analytics` — единый dashboard с inline-меню по всем 5 разделам (рекомендуется для удобства)
 
-Реализация: `services.AnalyticsService` (purely SQL aggregates над existing tables, новых таблиц не вводит). 29 pytest-тестов покрывают edge cases (empty DB, single user, multi-source activity, eligibility filters, stickiness math, CSV header correctness, unknown alias raises).
+**Data export:**
+- `/export <alias>` — CSV-дамп одной таблицы как Telegram-документ (10 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings, events)
+- `/export all` — ZIP всех 10 таблиц + `metadata.json` (exported_at, schema_version, row_counts). **Killer feature** для Jupyter-анализа: одной командой получаешь reproducible dataset
+- `/parse_logs` — ETL `bot.log + bot.log.1..N` → CSV (timestamp/level/event_name/user_id/properties JSON/raw_text). Покрывает historical backfill до того как events table начала писаться
 
-### 🟡 Расширения (приоритет Could, после первых деплоев)
+**Event-tracking layer:**
+- `events` table — append-only лог каждого значимого действия (14 hook'ов в bot.py); JSON-properties для event-specific полей. Foundation для funnel/cohort/path/time-to-action анализа в pandas.
+
+Реализация: `services.AnalyticsService` + `repository.EventRepository` + `parse_logs.py`. **77 pytest-тестов** покрывают всю PA-инфраструктуру (cohort math, funnel шаги, stickiness, CSV export edge cases, ZIP roundtrip, event log serialization, parser edge cases).
+
+### 🟡 Будущие расширения (приоритет Could, после первых деплоев)
 
 A) [PA] `/segments` — user segmentation  
 Ценность: фундаментальная PA-практика; помогает писать insights вида «power users используют флэш-карты в 3× чаще остальных»  
@@ -85,17 +94,12 @@ B) [PA] `/content_stats` — какой контент работает
 
 C) [PA] `/event_timeline` — последние N важных событий  
 Ценность: «что произошло пока меня не было»; полезно для отслеживания живого использования  
-Готовность: лента registrations / sessions / achievements за 24-48 часов с timestamps; формат «HH:MM user_id event detail»  
+Готовность: лента registrations / sessions / achievements за 24-48 часов с timestamps из `events` table  
 Приоритет: Could
 
-D) [PA] `/parse_logs` — bot.log → CSV  
-Ценность: bot.log хранит structured events (session.complete source=natural duration=25 ...) — парсер превращает append-only лог в analytics-ready dataset; **это уже data engineering** — большой плюс к резюме (event-tracking, ETL опыт)  
-Готовность: парсер regex'ом или re.findall'ом разбирает каждую строку лога; экспорт как `events.csv` (timestamp, level, event_name, properties dict в JSON-колонке)  
-Приоритет: Could
-
-E) [PA] `/heatmap` — почасовая активность  
+D) [PA] `/heatmap` — почасовая активность  
 Ценность: actionable insight «когда юзеры реально занимаются» → может определить времена для reminder'ов  
-Готовность: ASCII-heatmap по часам × дням недели (7×24), bins нормализованы; данные из study_sessions + activity timestamps  
+Готовность: ASCII-heatmap по часам × дням недели (7×24), bins нормализованы; данные из `events` или `study_sessions.created_at`  
 Приоритет: Could
 
 ### 🎯 Главный портфолио-asset (внешняя аналитика)

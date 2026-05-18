@@ -212,7 +212,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (156 штук: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser) |
+| [tests/](tests/) | Юнит-тесты (163 штуки: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
@@ -235,7 +235,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **156 тестов** (~12 сек):
+Покрытие — **163 теста** (~12 сек):
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
@@ -244,7 +244,7 @@ pytest tests/test_streak_service.py -v
 | `test_streak_service.py` | 11 | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation |
 | `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
-| `test_analytics_service.py` | 29 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, CSV export edge cases |
+| `test_analytics_service.py` | 36 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, single-CSV export, **ZIP export-all** (valid zip, all tables present, metadata schema, row_counts match data, individual=zipped CSV bytes-equal, JSON parseable, empty-DB still valid) |
 | `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
 | `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
 | `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values (next=YYYY-MM-DD HH:MM:SS) / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
@@ -309,15 +309,17 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 
 1. **В чате** — `/analytics` показывает все ключевые метрики (cohort retention,
    funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
-2. **Снаружи** — `/export <alias>` шлёт CSV-файл любой таблицы, который
-   можно открыть в pandas/Jupyter и построить настоящие визуализации
-   (cohort heatmaps, funnel waterfalls, etc.). 10 экспортируемых таблиц:
-   `users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
-   `tasks`, `subject_stats`, `settings`, **`events`** (append-only event log).
-3. **Events table** — append-only лог каждого значимого действия с
+2. **Снаружи (single table)** — `/export <alias>` шлёт CSV-файл любой
+   таблицы. 10 алиасов: `users`, `sessions`, `achievements`, `quiz`,
+   `flashcards`, `mcq`, `tasks`, `subject_stats`, `settings`, **`events`**.
+3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 10 таблиц +
+   `metadata.json`** одним сообщением. metadata содержит `exported_at`
+   (UTC ISO-8601), `schema_version`, `row_counts` по каждой таблице.
+   Reproducible export для Jupyter — открывай и сразу анализируй.
+4. **Events table** — append-only лог каждого значимого действия с
    timestamp и JSON-properties. Foundation для funnel/cohort/path/
    retention анализа. Каждое действие пользователя → одна строка.
-4. **`/parse_logs`** (или CLI `python parse_logs.py`) — ETL для исторических
+5. **`/parse_logs`** (или CLI `python parse_logs.py`) — ETL для исторических
    данных: парсит `bot.log` + ротированные `bot.log.1..5` в CSV. Спасает
    когда нужны события до того, как `events` table начала писаться (события
    уже есть в логе структурированно — нужен только parser). Колонки:

@@ -346,3 +346,84 @@ class TestExport:
             await _create_user_with_signup(db, 100 + i, days_ago=i)
         csv_bytes, row_count = await analytics.export_table_csv("users")
         assert row_count == 5
+
+
+class TestExportAllTablesZip:
+    async def test_returns_valid_zip(self, analytics):
+        import zipfile
+        import io
+
+        zip_bytes, metadata = await analytics.export_all_tables_zip()
+        # Must be a valid ZIP
+        assert zipfile.is_zipfile(io.BytesIO(zip_bytes))
+
+    async def test_contains_all_tables_plus_metadata(self, analytics):
+        import zipfile
+        import io
+        from services import AnalyticsService
+
+        zip_bytes, _ = await analytics.export_all_tables_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = set(zf.namelist())
+        # Каждой таблице из whitelist — соответствует CSV
+        expected_csvs = {
+            f"{table_name}.csv"
+            for table_name in AnalyticsService.EXPORTABLE_TABLES.values()
+        }
+        assert expected_csvs.issubset(names)
+        # И metadata.json
+        assert "metadata.json" in names
+
+    async def test_metadata_schema(self, analytics):
+        zip_bytes, metadata = await analytics.export_all_tables_zip()
+        assert "exported_at" in metadata
+        assert metadata["exported_at"].endswith("Z")  # UTC suffix
+        assert "schema_version" in metadata
+        assert "row_counts" in metadata
+        assert "tables" in metadata
+        # row_counts has entry for each table
+        assert set(metadata["row_counts"].keys()) == set(metadata["tables"])
+
+    async def test_metadata_row_counts_match_data(self, db, analytics, created_user):
+        """Если в users одна запись, metadata.row_counts.users == 1."""
+        # created_user fixture создаёт user_id=42
+        zip_bytes, metadata = await analytics.export_all_tables_zip()
+        assert metadata["row_counts"]["users"] == 1
+
+    async def test_zip_csvs_match_individual_export(self, db, analytics, created_user):
+        """ZIP'нутый CSV для users должен совпадать с /export users."""
+        import zipfile
+        import io
+
+        individual_csv, _ = await analytics.export_table_csv("users")
+        zip_bytes, _ = await analytics.export_all_tables_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            with zf.open("users.csv") as f:
+                from_zip = f.read()
+        assert individual_csv == from_zip
+
+    async def test_metadata_json_inside_zip_parseable(self, analytics):
+        import zipfile
+        import io
+        import json
+
+        zip_bytes, _ = await analytics.export_all_tables_zip()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            with zf.open("metadata.json") as f:
+                parsed = json.loads(f.read().decode("utf-8"))
+        assert "exported_at" in parsed
+        assert isinstance(parsed["row_counts"], dict)
+
+    async def test_empty_db_still_produces_valid_zip(self, analytics):
+        """Empty DB — каждый CSV содержит только header; metadata: все counts=0."""
+        import zipfile
+        import io
+
+        zip_bytes, metadata = await analytics.export_all_tables_zip()
+        # Все row_counts должны быть 0
+        assert all(n == 0 for n in metadata["row_counts"].values())
+        # CSVs всё ещё парсятся (header-only)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            users_csv = zf.open("users.csv").read().decode("utf-8")
+        # Header-line presents
+        assert "user_id" in users_csv
