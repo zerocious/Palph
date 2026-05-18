@@ -315,6 +315,10 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="funnel", description="Activation funnel"),
     BotCommand(command="dau", description="DAU/WAU/MAU + stickiness"),
     BotCommand(command="feature_usage", description="% adoption per feature"),
+    BotCommand(command="segments", description="User segmentation (power/active/...)"),
+    BotCommand(command="content_stats", description="Hardest terms / popular MCQ / EF dist"),
+    BotCommand(command="event_timeline", description="Last N events timeline"),
+    BotCommand(command="heatmap", description="Activity heatmap (hours × weekdays)"),
     BotCommand(command="export", description="Export table as CSV"),
     BotCommand(command="parse_logs", description="bot.log → events CSV (ETL)"),
     BotCommand(command="backup", description="Snapshot БД (главный админ)"),
@@ -3107,6 +3111,150 @@ def _render_cohort_table(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_segments(data: dict) -> str:
+    total = data["total_users"]
+    if total == 0:
+        return "Пока нет пользователей."
+    max_name = max(len(s["name"]) for s in data["segments"])
+    lines = []
+    for s in data["segments"]:
+        bar_count = int(s["pct"] * 10)
+        bar = "█" * bar_count + "░" * (10 - bar_count)
+        lines.append(
+            f"{s['name']:<{max_name}} {bar} {s['pct']*100:5.1f}% ({s['count']})"
+        )
+    lines.append("─" * (max_name + 25))
+    lines.append(f"{'Total':<{max_name}} {'─' * 10}        ({total})")
+    return "\n".join(lines)
+
+
+def _build_hash_to_text_maps() -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Строит мапы для обогащения analytics-результатов текстом:
+      - situational term_hash → term_text (все секции, все subjects)
+      - mcq question_hash → question_text
+    Лимит на длину текста: 60 символов с обрезкой.
+    """
+    term_map: dict[str, str] = {}
+    mcq_map: dict[str, str] = {}
+    for sid, _label in SUBJECTS:
+        # Situational terms из всех секций
+        for _section_label, section_key in available_quiz_sections(sid):
+            for term in load_quiz_section(section_key, sid):
+                term_map[term.hash] = term.term
+        # MCQ
+        for q in load_mcq(sid):
+            mcq_map[_mcq_hash(q["question"])] = q["question"]
+    return term_map, mcq_map
+
+
+def _render_content_stats(data: dict) -> str:
+    """Рендерит content stats; enriches хеши именами через _build_hash_to_text_maps."""
+    term_map, mcq_map = _build_hash_to_text_maps()
+    lines = []
+
+    # Hardest situational
+    lines.append("🎯 <b>Hardest situational terms</b> (low accuracy first):")
+    if not data["hardest_situational"]:
+        lines.append("  <i>нет данных — никто ещё не отвечал</i>")
+    else:
+        for item in data["hardest_situational"]:
+            h = item["term_hash"]
+            text = term_map.get(h, f"<unknown:{h}>")[:50]
+            acc = (item["accuracy"] or 0.0) * 100
+            lines.append(f"  • {text} — {acc:.0f}% accuracy ({item['attempts']} attempts)")
+    lines.append("")
+
+    # Most-attempted MCQ
+    lines.append("❓ <b>Most-attempted MCQ</b> (high volume first):")
+    if not data["most_attempted_mcq"]:
+        lines.append("  <i>нет данных — никто ещё не отвечал</i>")
+    else:
+        for item in data["most_attempted_mcq"]:
+            h = item["question_hash"]
+            text = mcq_map.get(h, f"<unknown:{h}>")[:50]
+            attempts = item["attempts"] or 0
+            acc = (item["accuracy"] or 0.0) * 100
+            lines.append(f"  • {text}... — {attempts} attempts, {acc:.0f}% accuracy")
+    lines.append("")
+
+    # Progress coverage
+    pc = data["progress_coverage"]
+    lines.append("📚 <b>Progress coverage</b> (unique items touched):")
+    lines.append(f"  • Situational terms attempted:    {pc['situational_terms_attempted']}")
+    lines.append(f"  • Flashcards reviewed:            {pc['flashcards_reviewed']}")
+    lines.append(f"  • MCQ questions seen:             {pc['mcq_questions_seen']}")
+    lines.append(f"  • Tasks attempted:                {pc['tasks_attempted']}")
+    lines.append("")
+
+    # EF distribution
+    ef = data["flashcard_ef_distribution"]
+    total = ef["total"]
+    lines.append("🃏 <b>Flashcard EF distribution</b>:")
+    if total == 0:
+        lines.append("  <i>нет данных — никто не оценивал карточки</i>")
+    else:
+        def pct(n): return f"{n/total*100:.1f}%" if total else "—"
+        lines.append(f"  • EF < 1.5  (трудные):  {ef['lt_1_5']:>3} ({pct(ef['lt_1_5'])})")
+        lines.append(f"  • 1.5–2.0:              {ef['1_5_to_2']:>3} ({pct(ef['1_5_to_2'])})")
+        lines.append(f"  • 2.0–2.5:              {ef['2_to_2_5']:>3} ({pct(ef['2_to_2_5'])})")
+        lines.append(f"  • EF ≥ 2.5 (лёгкие):    {ef['gte_2_5']:>3} ({pct(ef['gte_2_5'])})")
+        lines.append(f"  <i>Чем ниже EF — тем сложнее карта пользователю по SM-2.</i>")
+    return "\n".join(lines)
+
+
+def _render_event_timeline(events: list[dict], hours: int) -> str:
+    if not events:
+        return f"<i>Нет событий за последние {hours} часов.</i>"
+    # Формат: HH:MM user=ID event_name key1=v1 key2=v2 (max 2 keys для компактности)
+    lines = []
+    for e in events:
+        # HH:MM из created_at
+        try:
+            hhmm = e["created_at"][11:16]
+        except (TypeError, IndexError):
+            hhmm = "??:??"
+        uid_part = f"u={e['user_id']}" if e["user_id"] else "u=—"
+        # Top 2 properties для компактности
+        props = e["properties"]
+        prop_str = ""
+        if isinstance(props, dict) and props:
+            top_props = list(props.items())[:2]
+            prop_str = " " + " ".join(f"{k}={v}" for k, v in top_props)
+            if len(prop_str) > 50:
+                prop_str = prop_str[:47] + "..."
+        lines.append(f"{hhmm} {uid_part:<14} {e['event_name']}{prop_str}")
+    return "\n".join(lines)
+
+
+def _render_heatmap(data: dict) -> str:
+    """
+    7×8 grid с intensity blocks (· ▁ ▃ ▅ ▇ █). Lookup по % от peak.
+    """
+    grid = data["grid"]
+    total = data["total_events"]
+    if total == 0:
+        return "<i>Нет событий за период.</i>"
+    peak = max(max(row) for row in grid) or 1
+    chars = " ·▁▃▅▆▇█"  # 8 уровней intensity (включая 0 = пробел/пусто)
+    lines = []
+    # Header: hour labels
+    header = "      " + " ".join(f"{h}" for h in data["hour_labels"])
+    lines.append(header)
+    for wd_idx, row in enumerate(grid):
+        label = data["weekday_labels"][wd_idx]
+        cells = []
+        for count in row:
+            if count == 0:
+                cells.append(" ·")
+            else:
+                # Map 1..peak to 1..7 (indices into chars)
+                level = min(7, max(1, int(count / peak * 7 + 0.5)))
+                cells.append(f" {chars[level]}")
+        lines.append(f"{label}: {''.join(cells)}")
+    return "\n".join(lines)
+
+
 def _render_funnel(steps: list[dict]) -> str:
     if not steps:
         return "Пока нет пользователей."
@@ -3197,6 +3345,92 @@ async def cmd_feature_usage(message: Message):
     body = _render_feature_usage(data)
     await message.answer(
         f"🎮 <b>Feature adoption</b>\n\n<pre>{body}</pre>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("segments"))
+async def cmd_segments(message: Message):
+    """User segmentation: never_started / tried / active / power / churned."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_segments()
+    body = _render_segments(data)
+    note = (
+        f"\n\n<i>Churned = последняя активность > {data['churned_days_threshold']} дн. назад. "
+        f"Активность ≠ только Pomodoro: учитывается любое событие в progress-таблицах.</i>"
+    )
+    await message.answer(
+        f"👥 <b>User segmentation</b>\n\n<pre>{body}</pre>{note}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("content_stats"))
+async def cmd_content_stats(message: Message):
+    """Content effectiveness: hardest terms, popular MCQ, coverage, EF distribution."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_content_stats()
+    body = _render_content_stats(data)
+    await message.answer(
+        f"📚 <b>Content stats</b>\n\n{body}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("event_timeline"))
+async def cmd_event_timeline(message: Message, command: CommandObject):
+    """
+    Лента последних событий из events table.
+    Использование: /event_timeline [hours]   # default 24
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    hours = 24
+    if command.args:
+        try:
+            hours = int(command.args.strip())
+            hours = max(1, min(168, hours))  # clamp [1, 168=7 days]
+        except ValueError:
+            pass
+    events = await analytics_service.compute_event_timeline(hours=hours, limit=50)
+    body = _render_event_timeline(events, hours)
+    await message.answer(
+        f"📜 <b>Event timeline</b> (last {hours}h, top {len(events)})\n\n<pre>{body}</pre>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("heatmap"))
+async def cmd_heatmap(message: Message, command: CommandObject):
+    """
+    Activity heatmap — события по часам × дням недели.
+    Использование: /heatmap [days]   # default 30
+    """
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    days = 30
+    if command.args:
+        try:
+            days = int(command.args.strip())
+            days = max(1, min(365, days))
+        except ValueError:
+            pass
+    data = await analytics_service.compute_heatmap(days=days)
+    body = _render_heatmap(data)
+    note_parts = [f"Total events: {data['total_events']} over {days} days"]
+    if data["peak"]:
+        p = data["peak"]
+        note_parts.append(f"Peak: {p['weekday']} {p['hour_range']} ({p['count']} events)")
+    note = "\n".join(note_parts)
+    await message.answer(
+        f"📅 <b>Activity heatmap</b>\n\n<pre>{body}\n\n{note}</pre>\n\n"
+        f"<i>3-часовые бакеты × 7 дней недели. Server time.</i>",
         parse_mode="HTML",
     )
 
@@ -3309,6 +3543,10 @@ def _build_analytics_menu_keyboard() -> InlineKeyboardMarkup:
     kb.button(text="🎯 Activation funnel",               callback_data="anlt:funnel")
     kb.button(text="👥 Active users (DAU/WAU/MAU)",      callback_data="anlt:dau")
     kb.button(text="🎮 Feature adoption",                callback_data="anlt:features")
+    kb.button(text="🧑‍🤝‍🧑 User segments",                callback_data="anlt:segments")
+    kb.button(text="📚 Content stats",                   callback_data="anlt:content")
+    kb.button(text="📜 Event timeline (24h)",            callback_data="anlt:timeline")
+    kb.button(text="📅 Activity heatmap (30d)",          callback_data="anlt:heatmap")
     kb.button(text="📦 Export CSV →",                    callback_data="anlt:export_menu")
     kb.button(text="✖️ Закрыть",                          callback_data="anlt:close")
     kb.adjust(1)
@@ -3430,6 +3668,84 @@ async def handle_anlt_features(callback: CallbackQuery):
         )
     except Exception as e:
         logger.warning("anlt.edit_failed view=features reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:segments")
+async def handle_anlt_segments(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_segments()
+    body = _render_segments(data)
+    text = (
+        f"👥 <b>User segments</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>Churned = последняя активность > {data['churned_days_threshold']} дн. назад.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=segments reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:content")
+async def handle_anlt_content(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_content_stats()
+    body = _render_content_stats(data)
+    text = f"📚 <b>Content stats</b>\n\n{body}"
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=content reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:timeline")
+async def handle_anlt_timeline(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    events = await analytics_service.compute_event_timeline(hours=24, limit=50)
+    body = _render_event_timeline(events, 24)
+    text = (
+        f"📜 <b>Event timeline</b> (last 24h, top {len(events)})\n\n<pre>{body}</pre>\n\n"
+        f"<i>Для другого окна: <code>/event_timeline 48</code> (часы 1..168).</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=timeline reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:heatmap")
+async def handle_anlt_heatmap(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_heatmap(days=30)
+    body = _render_heatmap(data)
+    note_parts = [f"Total events: {data['total_events']} over {data['days']} days"]
+    if data["peak"]:
+        p = data["peak"]
+        note_parts.append(f"Peak: {p['weekday']} {p['hour_range']} ({p['count']} events)")
+    text = (
+        f"📅 <b>Activity heatmap</b>\n\n<pre>{body}\n\n{chr(10).join(note_parts)}</pre>\n\n"
+        f"<i>3-часовые бакеты × 7 дней. Server time. "
+        f"Для другого окна: <code>/heatmap 7</code> (дни 1..365).</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=heatmap reason=%s", e)
     await callback.answer()
 
 
@@ -3664,6 +3980,10 @@ async def cmd_help(message: Message):
         "/funnel — activation funnel (% от регистраций)\n"
         "/dau — DAU / WAU / MAU + stickiness ratio\n"
         "/feature_usage — % adoption per feature\n"
+        "/segments — user segmentation (power / active / tried / churned / never_started)\n"
+        "/content_stats — hardest terms, popular MCQ, EF distribution\n"
+        "/event_timeline [hours] — лента событий за последние N часов (default 24)\n"
+        "/heatmap [days] — heatmap активности (часы × дни недели, default 30 дней)\n"
         "/export &lt;alias&gt; — CSV-дамп одной таблицы\n"
         "/export all — ZIP всех 10 таблиц + metadata.json (для Jupyter)\n"
         "/parse_logs — bot.log + rotated → events CSV (historical backfill)\n"

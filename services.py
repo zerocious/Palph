@@ -761,6 +761,262 @@ class AnalyticsService:
             writer.writerow([row[c] for c in cols])
         return buf.getvalue().encode("utf-8"), len(rows)
 
+    async def compute_segments(self, churned_days: int = 14) -> dict:
+        """
+        User segmentation на 5 cohort'ов по уровню вовлечённости.
+
+        Логика приоритезации (first match wins):
+          - never_started: total_sessions == 0
+          - churned: last_activity > churned_days назад (любая категория ниже,
+            кроме never_started, может стать churned)
+          - power: total_sessions ≥ 10
+          - active: total_sessions 3-9
+          - tried: total_sessions 1-2
+
+        churned приоритетнее категории по sessions — это actionable
+        retention-сигнал. Активный пользователь, не заходивший 2 недели,
+        важнее чем «он active по числу сессий» для re-engagement.
+
+        Returns: {
+            "total_users": int,
+            "segments": [
+                {"name": str, "count": int, "pct": float},
+                ...
+            ],
+            "churned_days_threshold": int,
+        }
+        """
+        total = await self._count("SELECT COUNT(*) FROM users")
+        if total == 0:
+            return {"total_users": 0, "segments": [], "churned_days_threshold": churned_days}
+
+        # last_activity per user из union всех progress-таблиц
+        activity = await self._all_activity_dates_per_user()
+        today = datetime.now().date()
+        cutoff = today - timedelta(days=churned_days)
+
+        # users + total_sessions
+        async with self.db.execute("SELECT user_id, total_sessions FROM users") as cursor:
+            user_rows = await cursor.fetchall()
+
+        segments = {"never_started": 0, "tried": 0, "active": 0, "power": 0, "churned": 0}
+        for row in user_rows:
+            uid = row["user_id"]
+            sessions = row["total_sessions"] or 0
+            if sessions == 0:
+                segments["never_started"] += 1
+                continue
+            # User is in tried/active/power based on sessions
+            tentative = "power" if sessions >= 10 else "active" if sessions >= 3 else "tried"
+            # Check churn (only matters if user had activity at all)
+            user_dates = activity.get(uid, set())
+            if user_dates:
+                last_seen = max(user_dates)
+                if last_seen < cutoff:
+                    segments["churned"] += 1
+                    continue
+            # No activity recorded → still tentative (registered + did Pomodoro but no progress events)
+            segments[tentative] += 1
+
+        # Stable display order
+        order = [
+            ("never_started", "Never started (0 sessions)"),
+            ("tried",         "Tried (1-2 sessions)"),
+            ("active",        "Active (3-9 sessions)"),
+            ("power",         "Power (≥10 sessions)"),
+            ("churned",       f"Churned (>{churned_days}d inactive)"),
+        ]
+        return {
+            "total_users": total,
+            "segments": [
+                {"name": label, "count": segments[key], "pct": segments[key] / total}
+                for key, label in order
+            ],
+            "churned_days_threshold": churned_days,
+        }
+
+    async def compute_content_stats(self, top_n: int = 5) -> dict:
+        """
+        Content effectiveness statistics:
+          - hardest_situational: terms с самым низким avg_accuracy (was_correct)
+          - most_attempted_mcq: questions с максимальным total_count
+          - unused_counts: сколько items не имеют записи в соответствующей progress-таблице
+          - flashcard_ef_distribution: гистограмма ease_factor по бакетам
+
+        Hash → text mapping ДЕЛАЕТ caller (bot.py знает про content files).
+        Здесь только pure SQL.
+        """
+        # 1. Hardest situational: avg is_correct ascending. Нужны как minimum 2 попытки чтобы был сигнал.
+        async with self.db.execute(
+            "SELECT term_hash, "
+            "       COUNT(*) AS attempts, "
+            "       AVG(CAST(is_correct AS REAL)) AS accuracy "
+            "FROM quiz_progress "
+            "GROUP BY term_hash "
+            "HAVING COUNT(*) >= 1 "
+            "ORDER BY accuracy ASC, attempts DESC "
+            "LIMIT ?",
+            (top_n,),
+        ) as cursor:
+            hardest = [
+                {"term_hash": r["term_hash"], "attempts": r["attempts"], "accuracy": r["accuracy"]}
+                for r in await cursor.fetchall()
+            ]
+
+        # 2. Most-attempted MCQ
+        async with self.db.execute(
+            "SELECT question_hash, "
+            "       SUM(total_count) AS attempts, "
+            "       CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy "
+            "FROM mcq_progress "
+            "GROUP BY question_hash "
+            "ORDER BY attempts DESC "
+            "LIMIT ?",
+            (top_n,),
+        ) as cursor:
+            popular_mcq = [
+                {"question_hash": r["question_hash"], "attempts": r["attempts"], "accuracy": r["accuracy"]}
+                for r in await cursor.fetchall()
+            ]
+
+        # 3. Counts of users-with-progress per mode (для оценки unused). Конкретные «unused items»
+        # требуют знания контента — делается в render слое.
+        unused_counts = {
+            "situational_terms_attempted": await self._count(
+                "SELECT COUNT(DISTINCT term_hash) FROM quiz_progress"
+            ),
+            "flashcards_reviewed": await self._count(
+                "SELECT COUNT(DISTINCT card_hash) FROM flashcard_progress"
+            ),
+            "mcq_questions_seen": await self._count(
+                "SELECT COUNT(DISTINCT question_hash) FROM mcq_progress"
+            ),
+            "tasks_attempted": await self._count(
+                "SELECT COUNT(DISTINCT task_id) FROM task_progress"
+            ),
+        }
+
+        # 4. EF distribution в flashcards: бакеты [1.3-1.5], [1.5-2.0], [2.0-2.5], [≥2.5]
+        async with self.db.execute(
+            "SELECT "
+            "  SUM(CASE WHEN ease_factor < 1.5 THEN 1 ELSE 0 END) AS low, "
+            "  SUM(CASE WHEN ease_factor >= 1.5 AND ease_factor < 2.0 THEN 1 ELSE 0 END) AS medlow, "
+            "  SUM(CASE WHEN ease_factor >= 2.0 AND ease_factor < 2.5 THEN 1 ELSE 0 END) AS medhigh, "
+            "  SUM(CASE WHEN ease_factor >= 2.5 THEN 1 ELSE 0 END) AS high, "
+            "  COUNT(*) AS total "
+            "FROM flashcard_progress"
+        ) as cursor:
+            row = await cursor.fetchone()
+            ef_dist = {
+                "lt_1_5":   row["low"] or 0,
+                "1_5_to_2": row["medlow"] or 0,
+                "2_to_2_5": row["medhigh"] or 0,
+                "gte_2_5":  row["high"] or 0,
+                "total":    row["total"] or 0,
+            }
+
+        return {
+            "hardest_situational": hardest,
+            "most_attempted_mcq": popular_mcq,
+            "progress_coverage": unused_counts,
+            "flashcard_ef_distribution": ef_dist,
+        }
+
+    async def compute_event_timeline(self, hours: int = 24, limit: int = 50) -> list[dict]:
+        """
+        Последние N events из events table за последние `hours` часов.
+        Returns list of dicts ordered by created_at DESC.
+        """
+        import json
+        cutoff = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.db.execute(
+            "SELECT id, user_id, event_name, properties, created_at "
+            "FROM events "
+            "WHERE created_at >= ? "
+            "ORDER BY created_at DESC "
+            "LIMIT ?",
+            (cutoff, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            try:
+                props = json.loads(r["properties"]) if r["properties"] else {}
+            except (json.JSONDecodeError, TypeError):
+                props = {}
+            result.append({
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "event_name": r["event_name"],
+                "properties": props,
+                "created_at": r["created_at"],
+            })
+        return result
+
+    async def compute_heatmap(self, days: int = 30) -> dict:
+        """
+        Activity heatmap: events bucketed by (weekday, hour_bucket) за последние N дней.
+
+        Использует 3-часовые бакеты: 8 колонок × 7 строк (weekdays). Подходит для
+        Telegram <pre> отображения на мобиле без переноса строк.
+
+        Returns: {
+            "grid": [[int, int, ...], ...],     # 7 rows × 8 cols
+            "weekday_labels": ["Mon", ..., "Sun"],
+            "hour_labels": ["00", "03", ..., "21"],
+            "total_events": int,
+            "days": int,
+            "peak": {"weekday": str, "hour_bucket": int, "count": int} | None,
+        }
+        """
+        from collections import defaultdict
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.db.execute(
+            "SELECT created_at FROM events WHERE created_at >= ?",
+            (cutoff,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        # 7 × 8 grid (weekday × 3-hour bucket)
+        grid = [[0] * 8 for _ in range(7)]
+        weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        hour_labels = [f"{h:02d}" for h in range(0, 24, 3)]
+
+        for row in rows:
+            try:
+                ts = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+            wd = ts.weekday()           # 0=Mon ... 6=Sun
+            hb = ts.hour // 3           # 0..7
+            grid[wd][hb] += 1
+
+        total = sum(sum(row) for row in grid)
+        peak = None
+        if total > 0:
+            peak_count = max(max(row) for row in grid)
+            for wd_idx, row in enumerate(grid):
+                for hb, c in enumerate(row):
+                    if c == peak_count:
+                        peak = {
+                            "weekday": weekday_labels[wd_idx],
+                            "hour_bucket": hb,
+                            "hour_range": f"{hour_labels[hb]}:00-{(hb*3 + 3) % 24:02d}:59",
+                            "count": peak_count,
+                        }
+                        break
+                if peak:
+                    break
+
+        return {
+            "grid": grid,
+            "weekday_labels": weekday_labels,
+            "hour_labels": hour_labels,
+            "total_events": total,
+            "days": days,
+            "peak": peak,
+        }
+
     async def export_all_tables_zip(self, schema_version: str = "v0.7") -> tuple[bytes, dict]:
         """
         Bundles all 10 exportable tables + metadata.json into a ZIP archive.

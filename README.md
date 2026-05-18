@@ -212,7 +212,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (163 штуки: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser) |
+| [tests/](tests/) | Юнит-тесты (185 штук: SM-2, services, progress repos, BackupService, AnalyticsService (включая segments/content_stats/event_timeline/heatmap), RateLimiter, EventRepository, log parser) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
@@ -235,7 +235,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **163 теста** (~12 сек):
+Покрытие — **185 тестов** (~13 сек):
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
@@ -244,7 +244,7 @@ pytest tests/test_streak_service.py -v
 | `test_streak_service.py` | 11 | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation |
 | `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
-| `test_analytics_service.py` | 36 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, single-CSV export, **ZIP export-all** (valid zip, all tables present, metadata schema, row_counts match data, individual=zipped CSV bytes-equal, JSON parseable, empty-DB still valid) |
+| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments (5 buckets + churn-priority over active), content stats (hardest terms, popular MCQ, EF distribution), event timeline (filter + limit + malformed JSON), heatmap (7×8 grid, bucket math, peak detection), single-CSV + ZIP export-all |
 | `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
 | `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
 | `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values (next=YYYY-MM-DD HH:MM:SS) / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |

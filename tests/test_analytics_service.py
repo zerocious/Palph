@@ -427,3 +427,255 @@ class TestExportAllTablesZip:
             users_csv = zf.open("users.csv").read().decode("utf-8")
         # Header-line presents
         assert "user_id" in users_csv
+
+
+class TestSegments:
+    async def test_empty_db(self, analytics):
+        data = await analytics.compute_segments()
+        assert data["total_users"] == 0
+        assert data["segments"] == []
+
+    async def test_never_started(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        # total_sessions defaults to 0
+        data = await analytics.compute_segments()
+        ns = next(s for s in data["segments"] if "Never" in s["name"])
+        assert ns["count"] == 1
+
+    async def test_tried_segment(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await db.execute("UPDATE users SET total_sessions = 2 WHERE user_id = 1")
+        await _add_activity(db, 1, days_ago=0, source="study_sessions")
+        await db.commit()
+        data = await analytics.compute_segments()
+        tried = next(s for s in data["segments"] if "Tried" in s["name"])
+        assert tried["count"] == 1
+
+    async def test_active_segment(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await db.execute("UPDATE users SET total_sessions = 5 WHERE user_id = 1")
+        await _add_activity(db, 1, days_ago=0, source="study_sessions")
+        await db.commit()
+        data = await analytics.compute_segments()
+        active = next(s for s in data["segments"] if "Active" in s["name"])
+        assert active["count"] == 1
+
+    async def test_power_segment(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=10)
+        await db.execute("UPDATE users SET total_sessions = 15 WHERE user_id = 1")
+        await _add_activity(db, 1, days_ago=1, source="study_sessions")
+        await db.commit()
+        data = await analytics.compute_segments()
+        power = next(s for s in data["segments"] if "Power" in s["name"])
+        assert power["count"] == 1
+
+    async def test_churned_takes_priority_over_active(self, db, analytics):
+        """Active user не заходивший 20 дней — должен быть в Churned, не в Active."""
+        await _create_user_with_signup(db, 1, days_ago=30)
+        await db.execute("UPDATE users SET total_sessions = 5 WHERE user_id = 1")
+        # Last activity was 20 days ago — past churn threshold (default 14)
+        await _add_activity(db, 1, days_ago=20, source="study_sessions")
+        await db.commit()
+        data = await analytics.compute_segments()
+        churned = next(s for s in data["segments"] if "Churned" in s["name"])
+        active = next(s for s in data["segments"] if "Active" in s["name"])
+        assert churned["count"] == 1
+        assert active["count"] == 0
+
+    async def test_never_started_not_marked_churned(self, db, analytics):
+        """User with 0 sessions and no activity stays in never_started, not churned."""
+        await _create_user_with_signup(db, 1, days_ago=30)
+        # total_sessions=0, нет activity events
+        data = await analytics.compute_segments()
+        ns = next(s for s in data["segments"] if "Never" in s["name"])
+        churned = next(s for s in data["segments"] if "Churned" in s["name"])
+        assert ns["count"] == 1
+        assert churned["count"] == 0
+
+    async def test_pcts_sum_to_1(self, db, analytics):
+        for uid, sessions, days_ago in [
+            (1, 0, 1),    # never
+            (2, 1, 1),    # tried
+            (3, 5, 1),    # active
+            (4, 15, 1),   # power
+        ]:
+            await _create_user_with_signup(db, uid, days_ago=days_ago)
+            await db.execute(
+                "UPDATE users SET total_sessions = ? WHERE user_id = ?",
+                (sessions, uid),
+            )
+            if sessions > 0:
+                await _add_activity(db, uid, days_ago=0, source="study_sessions")
+        await db.commit()
+        data = await analytics.compute_segments()
+        total_pct = sum(s["pct"] for s in data["segments"])
+        assert total_pct == pytest.approx(1.0, abs=0.001)
+
+
+class TestContentStats:
+    async def test_empty_db_returns_empty_lists(self, analytics):
+        data = await analytics.compute_content_stats()
+        assert data["hardest_situational"] == []
+        assert data["most_attempted_mcq"] == []
+        assert data["progress_coverage"]["situational_terms_attempted"] == 0
+        assert data["flashcard_ef_distribution"]["total"] == 0
+
+    async def test_hardest_situational_sorts_by_accuracy(self, db, analytics, created_user):
+        # 3 terms: hash_easy (always correct), hash_med (50%), hash_hard (always wrong)
+        await db.execute(
+            "INSERT INTO quiz_progress (user_id, term_hash, is_correct, streak) "
+            "VALUES (?, 'easy0001', 1, 1)",
+            (created_user,),
+        )
+        await db.execute(
+            "INSERT INTO quiz_progress (user_id, term_hash, is_correct, streak) "
+            "VALUES (?, 'hard0001', 0, 0)",
+            (created_user,),
+        )
+        await db.commit()
+        data = await analytics.compute_content_stats()
+        # hardest должно идти первым (accuracy=0)
+        assert data["hardest_situational"][0]["term_hash"] == "hard0001"
+        assert data["hardest_situational"][0]["accuracy"] == 0.0
+
+    async def test_most_attempted_mcq_sorts_by_attempts(self, db, analytics, created_user):
+        await db.execute(
+            "INSERT INTO mcq_progress (user_id, question_hash, correct_count, total_count) "
+            "VALUES (?, 'popular1', 3, 10)",
+            (created_user,),
+        )
+        await db.execute(
+            "INSERT INTO mcq_progress (user_id, question_hash, correct_count, total_count) "
+            "VALUES (?, 'rare0001', 1, 1)",
+            (created_user,),
+        )
+        await db.commit()
+        data = await analytics.compute_content_stats()
+        assert data["most_attempted_mcq"][0]["question_hash"] == "popular1"
+        assert data["most_attempted_mcq"][0]["attempts"] == 10
+
+    async def test_ef_distribution_buckets(self, db, analytics, created_user):
+        # 4 карты — по одной в каждом бакете
+        for i, ef in enumerate([1.4, 1.7, 2.2, 2.7]):
+            await db.execute(
+                "INSERT INTO flashcard_progress "
+                "(user_id, card_hash, ease_factor, interval_days, repetitions) "
+                "VALUES (?, ?, ?, 1, 1)",
+                (created_user, f"card{i:04d}", ef),
+            )
+        await db.commit()
+        data = await analytics.compute_content_stats()
+        ef = data["flashcard_ef_distribution"]
+        assert ef["lt_1_5"] == 1
+        assert ef["1_5_to_2"] == 1
+        assert ef["2_to_2_5"] == 1
+        assert ef["gte_2_5"] == 1
+        assert ef["total"] == 4
+
+
+class TestEventTimeline:
+    async def test_empty_db_returns_empty_list(self, analytics):
+        events = await analytics.compute_event_timeline(hours=24)
+        assert events == []
+
+    async def test_recent_event_appears(self, db, analytics):
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (?, ?, ?, datetime('now'))",
+            (42, "test_event", '{"a": "b"}'),
+        )
+        await db.commit()
+        events = await analytics.compute_event_timeline(hours=24)
+        assert len(events) == 1
+        assert events[0]["event_name"] == "test_event"
+        assert events[0]["properties"] == {"a": "b"}
+
+    async def test_old_events_filtered_out(self, db, analytics):
+        # Event from 48 hours ago
+        old_ts = (datetime.now() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (42, "old_event", "{}", old_ts),
+        )
+        await db.commit()
+        events = await analytics.compute_event_timeline(hours=24)
+        assert events == []
+
+    async def test_limit_enforced(self, db, analytics):
+        for i in range(10):
+            await db.execute(
+                "INSERT INTO events (user_id, event_name, properties, created_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (i, "evt", "{}"),
+            )
+        await db.commit()
+        events = await analytics.compute_event_timeline(hours=24, limit=3)
+        assert len(events) == 3
+
+    async def test_malformed_properties_become_empty_dict(self, db, analytics):
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (?, ?, ?, datetime('now'))",
+            (42, "bad", "not-valid-json"),
+        )
+        await db.commit()
+        events = await analytics.compute_event_timeline(hours=24)
+        assert events[0]["properties"] == {}
+
+
+class TestHeatmap:
+    async def test_empty_db_grid_all_zeros(self, analytics):
+        data = await analytics.compute_heatmap(days=30)
+        assert data["total_events"] == 0
+        assert all(all(c == 0 for c in row) for row in data["grid"])
+        assert data["peak"] is None
+
+    async def test_grid_dimensions_correct(self, analytics):
+        data = await analytics.compute_heatmap(days=30)
+        assert len(data["grid"]) == 7  # 7 weekdays
+        assert all(len(row) == 8 for row in data["grid"])  # 8 hour buckets
+        assert len(data["weekday_labels"]) == 7
+        assert len(data["hour_labels"]) == 8
+
+    async def test_event_bucketed_correctly(self, db, analytics):
+        # Event at known time: Monday 14:30 → weekday=0, hour_bucket=4 (12-15)
+        # Use a known Monday afternoon timestamp
+        # 2026-05-18 was a Monday at 14:30 → weekday=0, hour=14 → bucket=14//3=4
+        ts = "2026-05-18 14:30:00"
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (42, "x", "{}", ts),
+        )
+        await db.commit()
+        # Use very wide window to include this event regardless of "now"
+        data = await analytics.compute_heatmap(days=10000)
+        assert data["total_events"] == 1
+        # Monday=0, bucket=4
+        assert data["grid"][0][4] == 1
+
+    async def test_peak_identified(self, db, analytics):
+        # 3 events in same bucket
+        for _ in range(3):
+            await db.execute(
+                "INSERT INTO events (user_id, event_name, properties, created_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (42, "x", "{}"),
+            )
+        await db.commit()
+        data = await analytics.compute_heatmap(days=1)
+        assert data["peak"] is not None
+        assert data["peak"]["count"] == 3
+        assert data["peak"]["weekday"] in data["weekday_labels"]
+
+    async def test_old_events_outside_window_excluded(self, db, analytics):
+        old_ts = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (42, "x", "{}", old_ts),
+        )
+        await db.commit()
+        data = await analytics.compute_heatmap(days=30)
+        assert data["total_events"] == 0

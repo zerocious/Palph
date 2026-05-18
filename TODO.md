@@ -68,7 +68,11 @@ Example:
 - `/funnel` — activation funnel (6 шагов: registered → started → 5+ sessions → 10+ sessions → 3-day streak → 7-day streak); % от total registered
 - `/dau` — DAU / WAU / MAU + stickiness ratio (DAU/MAU) + новые пользователи сегодня
 - `/feature_usage` — % adoption per feature: 4 учебных режима + Pomodoro + custom timezone + disabled notifications + custom reminder time
-- `/analytics` — единый dashboard с inline-меню по всем 5 разделам (рекомендуется для удобства)
+- `/segments` — user segmentation (5 сегментов: never_started / tried / active / power / churned), churned приоритетнее за счёт re-engagement actionable-сигнала
+- `/content_stats` — hardest situational terms (low accuracy), most-attempted MCQ, progress coverage, flashcard EF distribution в 4 бакетах
+- `/event_timeline [hours]` — лента последних N событий из events table (default 24h, clamp [1, 168])
+- `/heatmap [days]` — ASCII-heatmap активности 7×8 (weekday × 3-hour buckets), default 30 дней, peak detection
+- `/analytics` — единый dashboard с inline-меню по всем разделам (рекомендуется для удобства)
 
 **Data export:**
 - `/export <alias>` — CSV-дамп одной таблицы как Telegram-документ (10 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings, events)
@@ -78,29 +82,11 @@ Example:
 **Event-tracking layer:**
 - `events` table — append-only лог каждого значимого действия (14 hook'ов в bot.py); JSON-properties для event-specific полей. Foundation для funnel/cohort/path/time-to-action анализа в pandas.
 
-Реализация: `services.AnalyticsService` + `repository.EventRepository` + `parse_logs.py`. **77 pytest-тестов** покрывают всю PA-инфраструктуру (cohort math, funnel шаги, stickiness, CSV export edge cases, ZIP roundtrip, event log serialization, parser edge cases).
+Реализация: `services.AnalyticsService` + `repository.EventRepository` + `parse_logs.py`. **99 pytest-тестов** в `test_analytics_service.py` (58) + `test_event_repository.py` (15) + `test_log_parser.py` (20) + extras покрывают всю PA-инфраструктуру.
 
-### 🟡 Будущие расширения (приоритет Could, после первых деплоев)
+### 🟡 Будущие расширения
 
-A) [PA] `/segments` — user segmentation  
-Ценность: фундаментальная PA-практика; помогает писать insights вида «power users используют флэш-карты в 3× чаще остальных»  
-Готовность: 5 сегментов с порогами — power (≥10 сессий), active (3-9), tried (1-2), never-started (0), churned (last activity >14d ago); admin-команда выводит counts + %  
-Приоритет: Could
-
-B) [PA] `/content_stats` — какой контент работает  
-Ценность: actionable — «эту карточку либо переформулируй, либо она хороший diagnostic»; пища для итераций над контентом  
-Готовность: hardest terms (по % неверных ответов в situational), most-attempted в MCQ, unused items (никто не видел), EF distribution в flashcards (сколько «трудных» карт у среднего пользователя)  
-Приоритет: Could
-
-C) [PA] `/event_timeline` — последние N важных событий  
-Ценность: «что произошло пока меня не было»; полезно для отслеживания живого использования  
-Готовность: лента registrations / sessions / achievements за 24-48 часов с timestamps из `events` table  
-Приоритет: Could
-
-D) [PA] `/heatmap` — почасовая активность  
-Ценность: actionable insight «когда юзеры реально занимаются» → может определить времена для reminder'ов  
-Готовность: ASCII-heatmap по часам × дням недели (7×24), bins нормализованы; данные из `events` или `study_sessions.created_at`  
-Приоритет: Could
+(Сейчас секция пуста — все идеи из изначального плана уже ship'нуты. Новые идеи накапливаются в [BACKLOG.md](BACKLOG.md), оттуда переезжают сюда при формализации.)
 
 ### 🎯 Главный портфолио-asset (внешняя аналитика)
 
