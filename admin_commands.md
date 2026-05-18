@@ -294,7 +294,59 @@ registered с bar:
 ⏰ Изменил время напоминаний          █░░░░░░░░░  11.1% (2)
 ```
 
-### `/export <alias>` — CSV-дамп таблицы
+### `/segments` — user segmentation
+
+5-уровневая сегментация по вовлечённости:
+
+```
+Never started (0 sessions)    ██░░░░░░░░  22.2% (4)
+Tried (1-2 sessions)           ███░░░░░░░  33.3% (6)
+Active (3-9 sessions)          ███░░░░░░░  27.8% (5)
+Power (≥10 sessions)           █░░░░░░░░░   5.6% (1)
+Churned (>14d inactive)        █░░░░░░░░░  11.1% (2)
+```
+
+**Логика приоритезации**: `churned` приоритетнее категории по сессиям. Active user, не заходивший >14 дней — попадает в `churned` (re-engagement actionable важнее статичной метрики). `never_started` exempt — нечего re-engage без истории.
+
+### `/content_stats` — что в контенте работает / не работает
+
+4 sub-view'а в одном сообщении:
+
+- 🎯 **Hardest situational terms** — top-5 терминов с самой низкой accuracy (`AVG(is_correct) ASC`). Enriched текстом из `study_materials/`.
+- ❓ **Most-attempted MCQ** — top-5 вопросов по `SUM(total_count) DESC`.
+- 📚 **Progress coverage** — счётчики `COUNT(DISTINCT item)` per mode.
+- 🃏 **Flashcard EF distribution** — 4 бакета (`<1.5` / `1.5-2.0` / `2.0-2.5` / `≥2.5`). Чем ниже EF — тем сложнее карта пользователю по SM-2.
+
+Используется для итераций над контентом: «эту карточку либо переформулируй, либо она — хороший diagnostic».
+
+### `/event_timeline [hours]` — лента последних событий
+
+Источник: `events` table. Использование:
+
+```
+/event_timeline           → последние 24 часа (default)
+/event_timeline 48        → последние 48 часов
+/event_timeline 168       → неделя (clamp max)
+```
+
+Limit: 50 событий. Формат строки: `HH:MM u=<user_id> event_name key1=v1 key2=v2`. Длинные values обрезаются.
+
+### `/heatmap [days]` — heatmap активности
+
+ASCII-сетка 7×8 (weekday × 3-часовые бакеты), intensity через Unicode block characters:
+
+```
+      00 03 06 09 12 15 18 21
+Mon:  ·  ·  ▁  ▃  ▅  █  ▅  ▂
+Tue:  ·  ·  ▂  ▄  ▆  █  ▆  ▃
+...
+Total events: 1247 over 30 days
+Peak: Mon 15:00-17:59 (78 events)
+```
+
+Default 30 дней, clamp [1, 365]. Server time. Использует events table → не сработает для исторических дней без events (нужен `/parse_logs` для backfill).
+
+### `/export <alias>` — CSV-дамп одной таблицы
 
 Отправляет CSV-файл как Telegram-документ. Использование:
 
@@ -302,18 +354,35 @@ registered с bar:
 /export users        → users-2026-05-18.csv
 /export sessions     → study_sessions-2026-05-18.csv
 /export flashcards   → flashcard_progress-2026-05-18.csv
+/export events       → events-2026-05-18.csv
 ```
 
 `/export` без аргумента → список доступных алиасов.
 
-**Все 9 алиасов:**
+**Все 10 алиасов:**
 `users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
-`tasks`, `subject_stats`, `settings`.
+`tasks`, `subject_stats`, `settings`, `events`.
 
-**Killer feature для PA-портфолио:** скачиваешь CSV → анализируешь в
-pandas/Jupyter → строишь cohort heatmap / funnel waterfall / etc. →
-коммитишь Jupyter-ноутбук в репо. См. план в
-[TODO.md](TODO.md) → секция PA-аналитика.
+### `/export all` — ZIP всего dataset'а + metadata.json
+
+Bundle всех 10 таблиц + `metadata.json` одной командой:
+
+```
+studybuddy-export-2026-05-18.zip
+├── users.csv
+├── study_sessions.csv
+├── ... (все 10 таблиц)
+├── events.csv
+└── metadata.json   {exported_at, schema_version, row_counts, tables}
+```
+
+**Killer feature для PA-портфолио:** `unzip` + `pd.read_csv(...)` × N → анализируй любую корреляцию между таблицами в Jupyter одним loop'ом. `metadata.json` фиксирует timestamp и row-counts для воспроизводимости.
+
+### `/parse_logs` — ETL bot.log → events CSV
+
+Парсит `bot.log` + ротированные `bot.log.1..N` в CSV с колонками `timestamp, level, event_name, user_id, properties (JSON), raw_text`. Используется когда нужны события **до** того как `events` table начала писаться — данные уже есть в логах структурированно (`logger.info("session.complete user_id=X ...")`), нужен только парсер.
+
+Также доступен как CLI: `python parse_logs.py [logs...] -o output.csv`.
 
 ---
 
