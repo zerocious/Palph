@@ -738,6 +738,7 @@ class AnalyticsService:
         "tasks": "task_progress",
         "subject_stats": "user_subject_stats",
         "settings": "notification_settings",
+        "events": "events",  # append-only event log для PA-аналитики
     }
 
     async def export_table_csv(self, table_alias: str) -> tuple[bytes, int]:

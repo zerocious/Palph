@@ -494,6 +494,53 @@ class SubjectStatsRepository:
             return dict(row) if row else None
 
 
+class EventRepository:
+    """
+    Append-only event log для PA-аналитики.
+
+    Каждый significant user action → одна INSERT. Никаких UPDATE/DELETE —
+    данные историчны. Properties — JSON-словарь произвольной формы для
+    event-specific полей (не нужно schema migrations при добавлении новых
+    типов событий).
+
+    Все методы swallow exceptions с логом — event-logging не должен ломать
+    основной flow бота. Худшее что может случиться — потерянная аналитика.
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        # Import inside __init__ to avoid circular: services imports repository
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    async def log(
+        self,
+        user_id: int | None,
+        event_name: str,
+        properties: dict | None = None,
+    ) -> None:
+        """
+        Регистрирует event. Не raises — failure тихо логируется в bot.log,
+        чтобы analytics-issues не валили бизнес-логику бота.
+
+        properties сериализуется в JSON. None → '{}' (пустой dict).
+        """
+        import json
+        try:
+            props_json = json.dumps(properties or {}, ensure_ascii=False)
+            await self.db.execute(
+                "INSERT INTO events (user_id, event_name, properties) "
+                "VALUES (?, ?, ?)",
+                (user_id, event_name, props_json),
+            )
+            await self.db.commit()
+        except Exception as e:
+            self._logger.warning(
+                "events.log_failed event=%s user_id=%s reason=%s detail=%s",
+                event_name, user_id, type(e).__name__, e,
+            )
+
+
 class AdminRepository:
     """
     Работа с таблицей admins. Источник истины — БД; `bot.py` держит

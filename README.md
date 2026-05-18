@@ -183,6 +183,11 @@ study_materials/    # Учебные материалы — data-driven дере
 - `mcq_progress` — per-question статистика MCQ: correct_count, total_count
 - `task_progress` — per-task: attempts_used, succeeded
 - `user_subject_stats` — per-subject visits + last_activity (для экрана прогресса)
+- `events` — append-only event log для PA-аналитики (одна строка на каждое
+  значимое действие: registration / session_started/completed / mode_picked /
+  subject_picked / quiz_answered / mcq_answered / task_attempted /
+  flashcard_reviewed / achievement_unlocked). `properties` — JSON-словарь.
+  Foundation для funnel/cohort/path-анализа.
 - `admins` — список админов (источник истины; in-memory кеш для is_admin())
 - `fsm_storage` — постоянное FSM хранилище для aiogram
 
@@ -207,7 +212,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (121 штука: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter) |
+| [tests/](tests/) | Юнит-тесты (136 штук: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
 
@@ -229,7 +234,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **121 тест** (~14 сек):
+Покрытие — **136 тестов** (~12 сек):
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
@@ -240,6 +245,7 @@ pytest tests/test_streak_service.py -v
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
 | `test_analytics_service.py` | 29 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, CSV export edge cases |
 | `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
+| `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
@@ -303,9 +309,12 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
    funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
 2. **Снаружи** — `/export <alias>` шлёт CSV-файл любой таблицы, который
    можно открыть в pandas/Jupyter и построить настоящие визуализации
-   (cohort heatmaps, funnel waterfalls, etc.). 9 экспортируемых таблиц:
+   (cohort heatmaps, funnel waterfalls, etc.). 10 экспортируемых таблиц:
    `users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
-   `tasks`, `subject_stats`, `settings`.
+   `tasks`, `subject_stats`, `settings`, **`events`** (append-only event log).
+3. **Events table** — append-only лог каждого значимого действия с
+   timestamp и JSON-properties. Foundation для funnel/cohort/path/
+   retention анализа. Каждое действие пользователя → одна строка.
 
 После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
 с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).

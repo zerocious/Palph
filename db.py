@@ -137,6 +137,25 @@ async def init_db(db: aiosqlite.Connection):
             PRIMARY KEY (user_id, subject_id)
         );
 
+        -- Append-only event log для PA-аналитики.
+        -- Одна строка на каждое значимое действие пользователя; properties
+        -- — JSON-словарь со event-specific полями. Используется внешними
+        -- инструментами (Jupyter/pandas через /export events) для funnel,
+        -- cohort, path, time-to-action анализа.
+        -- user_id nullable: некоторые события могут быть system-level
+        -- (хотя сейчас всё логируется per-user).
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_name TEXT NOT NULL,
+            properties TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_user_time
+            ON events(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_name_time
+            ON events(event_name, created_at);
+
         -- Администраторы бота
         CREATE TABLE IF NOT EXISTS admins (
             user_id INTEGER PRIMARY KEY

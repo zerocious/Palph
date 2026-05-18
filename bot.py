@@ -32,6 +32,7 @@ from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
+    EventRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -114,6 +115,7 @@ flashcard_repo: FlashcardRepository = None
 mcq_repo: McqProgressRepository = None
 task_repo: TaskProgressRepository = None
 subject_stats_repo: SubjectStatsRepository = None
+event_repo: EventRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -839,6 +841,9 @@ async def cmd_start(message: Message, state: FSMContext):
     if not await user_repo.user_exists(user_id):
         await user_repo.create_user(user_id)
         logger.info("user.registered user_id=%s", user_id)
+        await event_repo.log(user_id, "user_registered", {
+            "language_code": message.from_user.language_code,
+        })
         keyboard = ReplyKeyboardBuilder()
         keyboard.button(text="🔧 Настроить сейчас")
         keyboard.button(text="🚀 Начать сразу")
@@ -1792,6 +1797,13 @@ async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration
                 "session.complete user_id=%s duration=%s coins=%s bonus=%s session_id=%s achievements=%s source=natural",
                 user_id, duration, duration, bonus, session_id, len(earned),
             )
+            await event_repo.log(user_id, "session_completed", {
+                "duration": duration, "coins": duration, "bonus_coins": bonus,
+                "session_id": session_id, "achievements_earned": len(earned),
+                "source": "natural",
+            })
+            for ach_id in earned:
+                await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
             user = await user_repo.get_user(user_id)
             response = (
                 f"🎉 Таймер завершён!\n"
@@ -1884,6 +1896,7 @@ async def handle_standard_timer(message: Message, state: FSMContext):
         f"Ваш питомец ждёт вашего возвращения 🐾",
         reply_markup=get_timer_active_keyboard()
     )
+    await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "standard"})
     start_timer(message.chat.id, state, user_id, duration)
 
 @router.message(F.text == "⏱️ Кастомный таймер")
@@ -1927,6 +1940,7 @@ async def process_duration(message: Message, state: FSMContext):
         f"Ваш питомец ждёт вашего возвращения 🐾",
         reply_markup=get_timer_active_keyboard()
     )
+    await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "custom"})
     start_timer(message.chat.id, state, user_id, duration)
 
 async def stop_active_timer(message: Message, state: FSMContext) -> bool:
@@ -1962,6 +1976,13 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
         "session.complete user_id=%s duration=%s coins=%s bonus=%s session_id=%s achievements=%s source=stop",
         user_id, actual, actual, bonus, session_id, len(earned),
     )
+    await event_repo.log(user_id, "session_completed", {
+        "duration": actual, "coins": actual, "bonus_coins": bonus,
+        "session_id": session_id, "achievements_earned": len(earned),
+        "source": "stop",
+    })
+    for ach_id in earned:
+        await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
     user = await user_repo.get_user(user_id)
     response = f"⏹️ Таймер остановлен!\n⏱️ Фактическая сессия: {actual} мин\n🪙 Получено: {actual} монет"
     if bonus > 0:
@@ -2035,6 +2056,7 @@ async def handle_mode_picked(message: Message, state: FSMContext):
         )
         return
     await state.update_data(mode_id=mode_id, mode_label=message.text)
+    await event_repo.log(message.from_user.id, "mode_picked", {"mode_id": mode_id})
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
         f"{message.text}\nВыбери предмет:",
@@ -2056,6 +2078,9 @@ async def handle_subject_picked(message: Message, state: FSMContext):
     data = await state.get_data()
     mode_id = data.get("mode_id")
     await state.update_data(subject_id=subject_id, subject_label=message.text)
+    await event_repo.log(message.from_user.id, "subject_picked", {
+        "mode_id": mode_id, "subject_id": subject_id,
+    })
 
     if mode_id == "situational":
         # Существующий flow: показать раздельный picker
@@ -2203,6 +2228,12 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
     if 0 <= cur_idx < len(questions):
         q_hash = _mcq_hash(questions[cur_idx]["question"])
         await mcq_repo.record_attempt(user_id, q_hash, is_correct)
+        await event_repo.log(user_id, "mcq_answered", {
+            "subject_id": data.get("subject_id"),
+            "question_hash": q_hash,
+            "is_correct": is_correct,
+            "question_index": cur_idx,
+        })
     if is_correct:
         await user_repo.add_coins(user_id, 1)
         feedback = "✅ Верно! +1 🪙"
@@ -2377,6 +2408,13 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await task_repo.record_attempt(
             user_id, task["id"], attempts_used=attempts + 1, succeeded=True
         )
+        await event_repo.log(user_id, "task_attempted", {
+            "subject_id": data.get("task_subject_id"),
+            "task_id": task["id"],
+            "attempts_used": attempts + 1,
+            "succeeded": True,
+            "coins": coins_for_this,
+        })
         await state.update_data(
             task_correct_count=data.get("task_correct_count", 0) + 1,
             task_coins_earned=data.get("task_coins_earned", 0) + coins_for_this,
@@ -2414,6 +2452,13 @@ async def handle_task_answer(message: Message, state: FSMContext):
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
     )
+    await event_repo.log(user_id, "task_attempted", {
+        "subject_id": subject_id,
+        "task_id": task["id"],
+        "attempts_used": new_attempts,
+        "succeeded": False,
+        "coins": 0,
+    })
     logger.info(
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
@@ -2637,6 +2682,15 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
         next_review=next_review,
     )
     await user_repo.add_coins(user_id, FLASH_COINS_PER_CARD)
+    await event_repo.log(user_id, "flashcard_reviewed", {
+        "subject_id": data.get("flash_subject_id"),
+        "card_hash": card_hash,
+        "quality": quality,
+        "reps_before": reps, "reps_after": new_reps,
+        "ef_before": round(ef, 3), "ef_after": round(new_ef, 3),
+        "interval_before": interval, "interval_after": new_interval,
+        "next_review": next_review,
+    })
 
     logger.info(
         "flash.rated user_id=%s hash=%s quality=%s reps=%s->%s ef=%.2f->%.2f interval=%s->%s next=%s",
@@ -2731,6 +2785,13 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
     else:
         streak = 0
     await update_quiz_progress(user_id, term["hash"], is_correct, streak)
+    await event_repo.log(user_id, "quiz_answered", {
+        "subject_id": data.get("subject_id", "industrial-management"),
+        "section": data.get("section"),
+        "term_hash": term["hash"],
+        "is_correct": is_correct,
+        "streak_after": streak,
+    })
     await message.answer(feedback)
     await asyncio.sleep(1.5)
 
@@ -3614,6 +3675,13 @@ async def reconcile_stale_timers():
                     "session.complete user_id=%s duration=%s coins=%s bonus=%s session_id=%s achievements=%s source=reconcile",
                     user_id, duration, duration, bonus, _session_id, len(earned),
                 )
+                await event_repo.log(user_id, "session_completed", {
+                    "duration": duration, "coins": duration, "bonus_coins": bonus,
+                    "session_id": _session_id, "achievements_earned": len(earned),
+                    "source": "reconcile",
+                })
+                for ach_id in earned:
+                    await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
                 try:
                     user = await user_repo.get_user(user_id)
                     msg = (
@@ -3681,7 +3749,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -3691,6 +3759,7 @@ async def main():
     mcq_repo = McqProgressRepository(db)
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)
+    event_repo = EventRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service)
     bot = Bot(token=BOT_TOKEN)
