@@ -3648,37 +3648,45 @@ async def cmd_help(message: Message):
         return
     is_main = message.from_user.id == MAIN_ADMIN_ID
     text = (
-        "🛠 Админские команды:\n"
-        "/reply <user_id> <текст> — ответ пользователю по ID\n"
-        "/broadcast <текст> — рассылка всем зарегистрированным\n"
-        "/notif_status — диагностика уведомлений (TZ, расписание, попадаешь ли ты в текущую выборку)\n"
-        "\n📊 Аналитика (для PA-портфолио):\n"
+        "🛠 <b>Админские команды</b>\n"
+        "\n"
+        "<b>Общение с пользователями:</b>\n"
+        "/reply &lt;user_id&gt; &lt;текст&gt; — ответ пользователю по ID\n"
+        "/broadcast &lt;текст&gt; — рассылка всем зарегистрированным\n"
+        "\n"
+        "<b>Диагностика:</b>\n"
+        "/notif_status — TZ, расписание, попадаешь ли ты в текущую выборку\n"
+        "/help — эта справка\n"
+        "\n"
+        "<b>📊 PA-аналитика</b> (data collection для портфолио):\n"
         "/analytics — 🎯 единый dashboard со всеми разделами (рекомендую)\n"
         "/cohort_stats — D1/D7/D30 retention по неделям регистрации\n"
         "/funnel — activation funnel (% от регистраций)\n"
-        "/dau — DAU/WAU/MAU + stickiness ratio\n"
+        "/dau — DAU / WAU / MAU + stickiness ratio\n"
         "/feature_usage — % adoption per feature\n"
-        "/export <table> — CSV-дамп таблицы как Telegram-документ\n"
-        "/parse_logs — bot.log + rotated → events CSV (для historical analysis)\n"
-        "/help — эта справка\n"
+        "/export &lt;alias&gt; — CSV-дамп одной таблицы\n"
+        "/export all — ZIP всех 10 таблиц + metadata.json (для Jupyter)\n"
+        "/parse_logs — bot.log + rotated → events CSV (historical backfill)\n"
     )
     if is_main:
         text += (
-            "\n👑 Команды главного админа:\n"
-            "/addadmin <user_id> — добавить нового админа\n"
-            "/rmadmin <user_id> — удалить админа\n"
+            "\n"
+            "👑 <b>Только главный админ:</b>\n"
+            "/addadmin &lt;user_id&gt; — добавить нового админа\n"
+            "/rmadmin &lt;user_id&gt; — удалить админа\n"
             "/listadmins — список всех админов\n"
             "/backup — принудительный snapshot БД (daily backup автоматически после стриков)\n"
         )
     text += (
-        "\n📚 Общие команды (доступны всем):\n"
+        "\n"
+        "📚 <b>Общие команды</b> (доступны всем):\n"
         "/start — регистрация / возврат в главное меню\n"
         "/stop — остановить активный таймер досрочно\n"
         "/cancel — отменить ввод (например, времени напоминания)\n"
         "/skip — пропустить шаг в мастере настройки уведомлений\n\n"
         "ℹ️ Кнопки главного меню: 📚 Учеба, ❓ FAQ, 📊 Мой профиль, 📢 Новости"
     )
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(F.text.in_(["📚 Учеба", "⬅️ Назад к учебе"]))
