@@ -45,6 +45,9 @@ BOT_TOKEN=<токен от @BotFather>
 MAIN_ADMIN_ID=<свой Telegram user-id (число)>
 SERVER_TIMEZONE=Europe/Moscow
 DB_PATH=studybuddy.db
+LOG_FILE=bot.log
+BACKUP_DIR=backups
+BACKUP_RETENTION_DAYS=30
 LOG_LEVEL=INFO
 ```
 
@@ -107,10 +110,27 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   переработка с эмоциями/кастомизацией/уровнями — в v0.7 #16)
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user
-- **FAQ + техподдержка**: пользователь пишет в чат → forward всем админам;
-  ответ через `/reply <user_id> <текст>`
-- **Админ-инструменты**: `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
-  `/rmadmin`, `/listadmins`. Подробно — в [admin_commands.md](admin_commands.md).
+- **❓ FAQ** — интерактивное меню с 9 вопросами + кнопка техподдержки.
+  Каждый вопрос как отдельная inline-кнопка → message edit показывает
+  ответ + `[◀️ К списку]`. Вопросы: миссия проекта, эффективность,
+  питомец, монеты (earn/spend), SM-2, интервальное повторение, active
+  recall, гарантия результатов.
+- **🛠 Техподдержка**: пользователь пишет в чат → forward всем админам;
+  ответ через `/reply <user_id> <текст>` (или через FAQ → «Связаться с
+  техподдержкой»).
+- **Админ-инструменты:** `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
+  `/rmadmin`, `/listadmins`, `/backup`. Подробно — в
+  [admin_commands.md](admin_commands.md).
+- **📊 PA-аналитика для портфолио** — отдельный dashboard `/analytics`
+  с inline-меню по 5 разделам:
+  - 🔁 **Cohort retention** (D1/D7/D30 по ISO-неделям регистрации)
+  - 🎯 **Activation funnel** (6 шагов от registered до 7-day streak)
+  - 👥 **Active users** (DAU / WAU / MAU + stickiness ratio)
+  - 🎮 **Feature adoption** (% пользователей по каждой фиче / режиму)
+  - 📦 **Export CSV →** (9 таблиц, каждая как Telegram-документ)
+
+  Каждый раздел также доступен отдельной командой (`/cohort_stats`,
+  `/funnel`, `/dau`, `/feature_usage`, `/export <alias>`).
 
 ---
 
@@ -124,9 +144,12 @@ bot.py              # Хендлеры aiogram, FSM-состояния, клав
                     # 4 учебных режима, main()
 db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
 repository.py       # UserRepository, SessionRepository, AdminRepository,
-                    # FlashcardRepository (только CRUD, без бизнес-логики)
+                    # FlashcardRepository, McqProgressRepository,
+                    # TaskProgressRepository, SubjectStatsRepository
+                    # (только CRUD, без бизнес-логики)
 services.py         # AchievementService, StudyService, StreakService,
-                    # ReminderService + чистая функция sm2_update() для SM-2
+                    # ReminderService, BackupService, AnalyticsService
+                    # + чистая функция sm2_update() для SM-2
 tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
                     # утро/вечер раз в минуту)
 fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
@@ -175,7 +198,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (49 штук: SM-2, AchievementService, StreakService) |
+| [tests/](tests/) | Юнит-тесты (106 штук: SM-2, services, progress repos, BackupService, AnalyticsService) |
 
 ---
 
@@ -195,15 +218,18 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — 77 тестов: `sm2_update` (стандартный путь, fail-path, EF
-floor, parametrized properties), `AchievementService` (все 9 ачивок +
-многократные выдачи + идемпотентность), `StreakService` (инкремент,
-сброс, бонусные +15🪙 со 2-го дня, мультипользовательская изоляция),
-**progress-репозитории** (MCQ counter accumulation, task best-attempts
-idempotency, subject_stats visits isolation), **BackupService**
-(daily dedup, restart-survival через file-existence, retention cleanup
-без затрагивания manual snapshots, корректность SQLite-файла после
-VACUUM INTO). Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
+Покрытие — **106 тестов** (~10 сек):
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_sm2.py` | 24 | SM-2: стандартные переходы, fail-path, EF floor, parametrized properties |
+| `test_achievement_service.py` | 14 | Все 9 ачивок, multi-award, идемпотентность |
+| `test_streak_service.py` | 11 | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation |
+| `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
+| `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
+| `test_analytics_service.py` | 29 | Cohort retention (D1/D7/D30), funnel шаги, DAU/WAU/MAU stickiness, feature adoption, CSV export edge cases |
+
+Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
 
 ### Прочие проверки
@@ -238,8 +264,9 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 ### Логи
 
 `bot.log` — ротация 5 МБ × 5 файлов (~25 МБ потолок). Уровень регулируется
-через `LOG_LEVEL` в `.env`. Шум сторонних библиотек (aiogram, aiohttp,
-aiosqlite) глушится до WARNING.
+через `LOG_LEVEL` в `.env`. Путь — через `LOG_FILE` (default `bot.log`;
+в Docker → `/data/bot.log` на mounted volume). Шум сторонних библиотек
+(aiogram, aiohttp, aiosqlite) глушится до WARNING.
 
 Бизнес-события идут как структурированные строки `event.tag key=value`:
 - `app.start`, `app.shutdown`
@@ -252,7 +279,24 @@ aiosqlite) глушится до WARNING.
 - `flash.session.complete user_id=X subject=Y reviewed=N coins=M`
 - `admin.added`/`admin.removed user_id=X by=Y`
 - `broadcast.start`/`broadcast.done delivered=X failed=Y`
+- `backup.created path=X size=Y duration_ms=Z`, `backup.cleanup removed=N`
+- `anlt.export.done alias=X rows=N size_kb=M`
 - `streak.batch`, `reminder.morning.dispatched`
+
+### PA-аналитика для портфолио
+
+Бот спроектирован как **источник реальных данных для product-analyst анализа**:
+
+1. **В чате** — `/analytics` показывает все ключевые метрики (cohort retention,
+   funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
+2. **Снаружи** — `/export <alias>` шлёт CSV-файл любой таблицы, который
+   можно открыть в pandas/Jupyter и построить настоящие визуализации
+   (cohort heatmaps, funnel waterfalls, etc.). 9 экспортируемых таблиц:
+   `users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
+   `tasks`, `subject_stats`, `settings`.
+
+После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
+с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).
 
 ---
 

@@ -196,6 +196,127 @@ return user_id in ADMINS or user_id == MAIN_ADMIN_ID
 
 ---
 
+## 📊 PA-аналитика
+
+Все аналитические команды доступны любому админу (не только главному).
+
+### `/analytics` — единый dashboard (рекомендуется)
+
+Открывает interactive-меню с inline-кнопками. Удобнее, чем помнить
+5 отдельных команд.
+
+**Главный экран:**
+```
+📊 PA-аналитика
+
+Today: 2026-05-18
+👥 Всего: N · DAU: M · Stickiness: X%
+
+Выбери раздел:
+[🔁 Cohort retention]
+[🎯 Activation funnel]
+[👥 Active users (DAU/WAU/MAU)]
+[🎮 Feature adoption]
+[📦 Export CSV →]
+[✖️ Закрыть]
+```
+
+Тап на раздел → message edits к подробному виду + `[◀️ К аналитике]`.
+Закрыть → бот удаляет message (или редактирует в «закрыто», если delete
+недоступен).
+
+**📦 Export CSV →** открывает подменю с 9 таблицами. Тап на таблицу
+шлёт CSV-файл отдельным сообщением — можно скачать несколько таблиц
+подряд, не возвращаясь.
+
+### `/cohort_stats` — retention D1/D7/D30 по когортам
+
+ASCII-таблица retention по ISO-неделям регистрации:
+
+```
+Cohort     | Size | D1     | D7     | D30
+2026-W18   |    1 | 100.0% | 100.0% |   0.0%
+2026-W19   |    4 |  75.0% |  50.0% |     —
+2026-W20   |    8 |  87.5% |     — |     —
+```
+
+«—» = когорта моложе N дней (нет данных). D_N = strict: ровно в день
+`signup + N`. Активность определяется как любое событие в study_sessions /
+user_subject_stats / quiz_progress / flashcard_progress / mcq_progress /
+task_progress.
+
+### `/funnel` — activation funnel
+
+6 шагов от регистрации до 7-day streak, % считается от total registered
+(не от предыдущего шага). С ASCII bar-визуализацией:
+
+```
+Registered                          ██████████ 100.0% (18)
+Started studying (≥1 session)       ████████░░  77.8% (14)
+Reached 5+ sessions                 █████░░░░░  44.4% (8)
+Reached 10+ sessions                ███░░░░░░░  16.7% (3)
+Earned 3-day streak achievement     ████░░░░░░  27.8% (5)
+Earned 7-day streak achievement     █░░░░░░░░░   5.6% (1)
+```
+
+Шаги — не strict-subsets (3-day streak ≠ subset 10+ sessions),
+поэтому пропорции могут не убывать монотонно. Это intentionally honest.
+
+### `/dau` — DAU / WAU / MAU + stickiness
+
+Engagement metrics с benchmark'ом:
+
+```
+Today:                  2026-05-18
+New users today:        1
+DAU:                    3
+WAU (last 7 days):      12
+MAU (last 30 days):     18
+Stickiness (DAU/MAU):   16.7%
+Total registered:       25
+```
+
+Stickiness ≥20% — типичный benchmark для consumer apps.
+
+### `/feature_usage` — % adoption per feature
+
+8 фич (4 учебных режима + Pomodoro + 3 настройки), процент от total
+registered с bar:
+
+```
+🎯 Situational quizzes (≥1 ответ)    ████░░░░░░  44.4% (8)
+🃏 Flashcards (≥1 ревью)             ███░░░░░░░  33.3% (6)
+❓ MCQ (≥1 ответ)                    ██░░░░░░░░  22.2% (4)
+📷 Photo tasks (≥1 попытка)          █░░░░░░░░░  11.1% (2)
+⏱️ Pomodoro (≥1 сессия)              ████████░░  77.8% (14)
+🌍 Изменил часовой пояс              ██░░░░░░░░  22.2% (4)
+🔕 Отключил уведомление              █░░░░░░░░░  11.1% (2)
+⏰ Изменил время напоминаний          █░░░░░░░░░  11.1% (2)
+```
+
+### `/export <alias>` — CSV-дамп таблицы
+
+Отправляет CSV-файл как Telegram-документ. Использование:
+
+```
+/export users        → users-2026-05-18.csv
+/export sessions     → study_sessions-2026-05-18.csv
+/export flashcards   → flashcard_progress-2026-05-18.csv
+```
+
+`/export` без аргумента → список доступных алиасов.
+
+**Все 9 алиасов:**
+`users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
+`tasks`, `subject_stats`, `settings`.
+
+**Killer feature для PA-портфолио:** скачиваешь CSV → анализируешь в
+pandas/Jupyter → строишь cohort heatmap / funnel waterfall / etc. →
+коммитишь Jupyter-ноутбук в репо. См. план в
+[TODO.md](TODO.md) → секция PA-аналитика.
+
+---
+
 ## Что админ видит без команд
 
 ### Пересылка обращений в поддержку
