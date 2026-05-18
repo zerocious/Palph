@@ -4,6 +4,49 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-18
+
+Goal: data layer slice of TODO #16 (полноценный питомец) — schema +
+`PetRepository` + `derive_emotion` + XP-grant в `complete_session` + тесты.
+UI / assets / `render_pet` / Pillow-build script — отдельный трек, в этой
+сессии не трогаем.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Schema | Две новые таблицы в `init_db` executescript (`IF NOT EXISTS`): `user_pet` (user_id PK, name, color, accessory, level, xp, last_excited_at, created_at) и `user_pet_inventory` (composite PK user_id+item_type+item_value, purchased_at). Обе с `ON DELETE CASCADE` от users. Эмоция не хранится — выводится в `derive_emotion`. | [db.py](db.py) |
+| 2 | Repo | Новый `PetRepository` с каталогами `COLOR_CATALOG`/`ACCESSORY_CATALOG` (цены по формуле спеки) и методами `create_pet_with_defaults`, `get_pet`, `get_inventory`, `add_xp` (auto-creates pet + auto-marks excited при level-up), `purchase_item` (атомарная под `self.db.lock` — re-read coins/level/ownership/deduct/insert/auto-equip, возвращает status-строку), `equip` (с ownership check), `rename`, `mark_excited`. | [repository.py](repository.py) |
+| 3 | Service | Module-level pure function `derive_emotion(*, is_studying, recently_excited, has_studied_today, now_local) -> str`. Priority: studying > excited > sad > sleepy > happy. Sleepy = `[22:00, 06:00)` — полуоткрытый интервал. Все аргументы keyword-only. | [services.py](services.py) |
+| 4 | Service | `StudyService.__init__` принимает `pet_repo: PetRepository \| None = None`. В `complete_session` после `add_coins` (всё ещё под `db.lock`): `pet_repo.add_xp(user_id, duration)`; если `earned` non-empty — `mark_excited`. Level-up отмечает excited сам внутри `add_xp`. | [services.py](services.py) |
+| 5 | Wiring | bot.py: добавлен `PetRepository` в imports, `pet_repo = PetRepository(db)` в `main()`, передан в `StudyService(...)`, добавлен в `global`-декларацию. | [bot.py](bot.py) |
+| 6 | Tests | `tests/test_pet_repository.py` — 32 теста: create defaults + idempotency + custom name, get_pet/inventory None-paths, add_xp auto-create + xp-приращение + 8 параметризованных значений xp→level + level-up marks excited + no-op на 0/-N минутах, purchase happy path + insufficient coins/level + already_owned + unknown_item + no_pet, equip ownership/invalid type, rename existing/nonexistent, mark_excited. | [tests/test_pet_repository.py](tests/test_pet_repository.py) |
+| 7 | Tests | `tests/test_derive_emotion.py` — 15 тестов: 5 priority-order сценариев + 10 параметризованных hour-boundary (21/22/23/0/3/5/6/7/12/18). | [tests/test_derive_emotion.py](tests/test_derive_emotion.py) |
+
+### Design decisions
+
+- **Pure function для эмоции** с примитивами в input'е (без db-доступа внутри): caller сам считает `recently_excited` из `pet.last_excited_at`. Так `derive_emotion` тривиально тестируется без БД, и сам цикл «прочитал → посчитал → render» остаётся прозрачным.
+- **`last_excited_at` на user_pet, а не отдельный счётчик ачивок**: и level-up, и ачивка пишут в одно поле — derive_emotion смотрит одну колонку и одно дельта `< 5 min`. Если оба события за минуту — пишется второе, эффект тот же.
+- **Auto-create pet в `add_xp`** (а не явный шаг при `/start`): data layer self-contained. Первая учебная сессия сама создаёт питомца с дефолтным именем «Питомец». UI-слой потом сможет дать кнопку «Переименовать», не заботясь о том, существует ли уже row.
+- **Caller-holds-lock паттерн** для всех методов кроме `purchase_item`: по образцу `UserRepository.add_coins`. `complete_session` уже держит `db.lock` на всю композитную операцию, а `purchase_item` запускается standalone и спека явно требует transactional re-read под локом.
+- **Sleepy boundary `[22:00, 06:00)`** — полуоткрытый интервал. 22:00 уже sleepy, 06:00 уже нет. Просто и тестируемо одним условием `hour >= 22 or hour < 6`.
+
+### Verification
+
+- `python -m py_compile db.py repository.py services.py bot.py` — все 4 syntax OK
+- `python -m pytest tests/` — **232 passed in 16.19s** (185 предыдущих + 47 новых, ничего не сломалось)
+
+### Deferred (для следующих сессий по #16)
+
+- `render_pet(user_pet, emotion, *, animated=False) -> FSInputFile` — функция-сборщик путей к PNG/GIF
+- Pillow build-script `scripts/build_pet_assets.py` — 5 поз × 5 цветов × 5 аксессуаров → 125 PNG + 5 GIF
+- Placeholder-ассеты для code-track-разработки UI до того, как арт-трек закончит
+- UI-flow кастомизации в `bot.py`: профиль с превью питомца, 4-state picker (⭐ / ✓ / 💰 / 🔒), confirm-dialog на покупку, FSM для rename
+- Level-up notification — два сообщения (excited.gif + список разблокированных предметов с ценой)
+- Sad-pet reminder hook — использовать `derive_emotion` в утреннем/вечернем напоминании ReminderService
+
+---
+
 ## Session — 2026-05-17
 
 Goal: ship v0.7 — expand study (subjects + SM-2 flashcards + MCQ +

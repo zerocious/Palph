@@ -168,6 +168,38 @@ async def init_db(db: aiosqlite.Connection):
             state TEXT,
             data TEXT NOT NULL DEFAULT '{}'
         );
+
+        -- Цифровой питомец пользователя (v0.7 TODO #16).
+        -- Один питомец на user, один общий дизайн — поэтому species не хранится.
+        -- Эмоция (studying/excited/sad/sleepy/happy) выводится из состояния
+        -- пользователя в момент рендера через services.derive_emotion() —
+        -- здесь её НЕ храним.
+        -- color/accessory всегда NOT NULL; sentinel-значение "none" для аксессуара
+        -- (вместо nullable) — упрощает рендер и инвентарь.
+        -- last_excited_at — timestamp последнего level-up или достижения;
+        -- используется derive_emotion для приоритета "excited" в окне 5 минут.
+        CREATE TABLE IF NOT EXISTS user_pet (
+            user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            name TEXT NOT NULL DEFAULT 'Питомец',
+            color TEXT NOT NULL DEFAULT 'orange',
+            accessory TEXT NOT NULL DEFAULT 'none',
+            level INTEGER NOT NULL DEFAULT 1,
+            xp INTEGER NOT NULL DEFAULT 0,
+            last_excited_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Инвентарь купленных предметов (color/accessory). Composite PK
+        -- гарантирует идемпотентность INSERT OR IGNORE при покупке.
+        -- На создании питомца сидится двумя бесплатными дефолтами:
+        -- (color, orange) и (accessory, none).
+        CREATE TABLE IF NOT EXISTS user_pet_inventory (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            item_type TEXT NOT NULL,  -- 'color' | 'accessory'
+            item_value TEXT NOT NULL, -- 'orange', 'hat', 'none', ...
+            purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, item_type, item_value)
+        );
     """)
     await db.commit()
 

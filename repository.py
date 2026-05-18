@@ -1,4 +1,6 @@
 # repository.py
+import math
+
 import aiosqlite
 from typing import Optional, Dict, Any
 
@@ -586,3 +588,309 @@ class AdminRepository:
             row = await cursor.fetchone()
             return row is not None
 
+
+class PetRepository:
+    """
+    Цифровой питомец (v0.7 TODO #16): единственный дизайн с derived-эмоциями
+    (см. services.derive_emotion). Репозиторий хранит только данные —
+    имя, цвет, аксессуар, уровень, xp, метку last_excited_at.
+
+    Атомарность: большинство методов assume что caller держит self.db.lock
+    (тот же паттерн, что UserRepository.add_coins). Исключение —
+    purchase_item: спека требует transactional re-read баланса/уровня
+    под локом, поэтому метод сам берёт self.db.lock.
+    """
+
+    # Каталог предметов: name → (unlock_level, price_coins).
+    # Формулы из спеки: color = unlock_level × 20, accessory = unlock_level × 30
+    # (с явными бесплатными дефолтами для orange/none).
+    COLOR_CATALOG: Dict[str, tuple] = {
+        "orange": (1, 0),    # ★ free default
+        "grey":   (1, 20),
+        "blue":   (2, 40),
+        "green":  (2, 40),
+        "pink":   (4, 80),
+    }
+    ACCESSORY_CATALOG: Dict[str, tuple] = {
+        "none":    (1, 0),   # ★ free default
+        "hat":     (1, 30),
+        "glasses": (3, 90),
+        "scarf":   (5, 150),
+        "crown":   (8, 240),
+    }
+
+    @staticmethod
+    def xp_to_level(xp: int) -> int:
+        """Уровень питомца: floor(sqrt(xp / 10)) + 1, минимум 1."""
+        if xp < 0:
+            xp = 0
+        return math.isqrt(xp // 10) + 1
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    # ------------------------------------------------------------
+    # 1. Создание питомца с дефолтами
+    # ------------------------------------------------------------
+    async def create_pet_with_defaults(
+        self, user_id: int, name: str = "Питомец"
+    ) -> bool:
+        """
+        Создаёт user_pet (если ещё нет) + сидит инвентарь двумя бесплатными
+        дефолтами: (color, orange), (accessory, none). Идемпотентно.
+
+        Возвращает True, если pet был создан этой операцией, False — уже был.
+        """
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet (user_id, name) VALUES (?, ?)",
+            (user_id, name),
+        )
+        created = cursor.rowcount > 0
+        # Сидим инвентарь дефолтами (INSERT OR IGNORE — идемпотентно даже
+        # если pet существовал, но инвентарь почему-то пустой).
+        await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet_inventory "
+            "(user_id, item_type, item_value) VALUES (?, 'color', 'orange')",
+            (user_id,),
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet_inventory "
+            "(user_id, item_type, item_value) VALUES (?, 'accessory', 'none')",
+            (user_id,),
+        )
+        await self.db.commit()
+        return created
+
+    # ------------------------------------------------------------
+    # 2. Чтение
+    # ------------------------------------------------------------
+    async def get_pet(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Возвращает dict с pet-полями или None, если pet не создан."""
+        async with self.db.execute(
+            "SELECT * FROM user_pet WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_inventory(self, user_id: int) -> list:
+        """
+        Возвращает список купленных предметов:
+        [{item_type, item_value, purchased_at}, ...]
+        Пустой список, если пользователь без pet.
+        """
+        async with self.db.execute(
+            "SELECT item_type, item_value, purchased_at FROM user_pet_inventory "
+            "WHERE user_id = ? ORDER BY purchased_at ASC",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------
+    # 3. XP / level — auto-creates pet при первом обращении
+    # ------------------------------------------------------------
+    async def add_xp(self, user_id: int, minutes: int) -> tuple:
+        """
+        Начисляет `minutes` XP. Auto-создаёт pet с дефолтами, если его нет —
+        так data layer self-contained: первая учебная сессия сама создаёт
+        питомца, без явного шага в UI.
+
+        Возвращает (old_level, new_level). Если new_level > old_level —
+        last_excited_at обновляется тут же (level-up = excited).
+
+        НЕ берёт self.db.lock — caller должен уже его держать (см.
+        StudyService.complete_session, которая держит db.lock на всю
+        composite-операцию).
+
+        minutes <= 0 → no-op, возвращает (0, 0). Defensive.
+        """
+        if minutes <= 0:
+            return (0, 0)
+
+        # Auto-create user_pet + дефолтный инвентарь. INSERT OR IGNORE —
+        # если pet уже есть, ничего не происходит.
+        await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet (user_id) VALUES (?)",
+            (user_id,),
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet_inventory "
+            "(user_id, item_type, item_value) VALUES (?, 'color', 'orange')",
+            (user_id,),
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO user_pet_inventory "
+            "(user_id, item_type, item_value) VALUES (?, 'accessory', 'none')",
+            (user_id,),
+        )
+
+        # Read-modify-write xp/level
+        async with self.db.execute(
+            "SELECT xp, level FROM user_pet WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        old_level = row["level"]
+        new_xp = row["xp"] + minutes
+        new_level = self.xp_to_level(new_xp)
+
+        if new_level > old_level:
+            await self.db.execute(
+                "UPDATE user_pet SET xp = ?, level = ?, "
+                "last_excited_at = datetime('now') WHERE user_id = ?",
+                (new_xp, new_level, user_id),
+            )
+            self._logger.info(
+                "pet.levelup user_id=%s old_level=%s new_level=%s xp=%s",
+                user_id, old_level, new_level, new_xp,
+            )
+        else:
+            await self.db.execute(
+                "UPDATE user_pet SET xp = ? WHERE user_id = ?",
+                (new_xp, user_id),
+            )
+        await self.db.commit()
+        return (old_level, new_level)
+
+    # ------------------------------------------------------------
+    # 4. Покупка предмета — атомарная под self.db.lock
+    # ------------------------------------------------------------
+    async def purchase_item(
+        self, user_id: int, item_type: str, item_value: str
+    ) -> str:
+        """
+        Атомарная покупка: re-read coins/level/ownership, deduct, INSERT
+        inventory, auto-equip. Сам берёт self.db.lock (спека TODO #16).
+
+        Возвращает один из статусов (для UI-feedback):
+        - "purchased"          — успешная покупка + auto-equip
+        - "already_owned"      — предмет уже в инвентаре (idempotent)
+        - "unknown_item"       — item_type/item_value не в каталоге
+        - "insufficient_level" — level пользователя ниже unlock_level
+        - "insufficient_coins" — не хватает total_coins
+        - "no_pet"             — у пользователя нет user_pet
+                                 (defensive — add_xp создаёт pet
+                                 при первой сессии)
+        """
+        catalog = (
+            self.COLOR_CATALOG if item_type == "color"
+            else self.ACCESSORY_CATALOG if item_type == "accessory"
+            else None
+        )
+        if catalog is None or item_value not in catalog:
+            return "unknown_item"
+        unlock_level, price = catalog[item_value]
+
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT level FROM user_pet WHERE user_id = ?", (user_id,)
+            ) as c:
+                pet = await c.fetchone()
+            if pet is None:
+                return "no_pet"
+
+            # Ownership check (idempotent return)
+            async with self.db.execute(
+                "SELECT 1 FROM user_pet_inventory "
+                "WHERE user_id = ? AND item_type = ? AND item_value = ?",
+                (user_id, item_type, item_value),
+            ) as c:
+                owned_row = await c.fetchone()
+            if owned_row is not None:
+                return "already_owned"
+
+            if pet["level"] < unlock_level:
+                return "insufficient_level"
+
+            async with self.db.execute(
+                "SELECT total_coins FROM users WHERE user_id = ?", (user_id,)
+            ) as c:
+                user_row = await c.fetchone()
+            balance = user_row["total_coins"] if user_row else 0
+            if balance < price:
+                return "insufficient_coins"
+
+            # Атомарно: deduct, insert inventory, auto-equip
+            if price > 0:
+                await self.db.execute(
+                    "UPDATE users SET total_coins = total_coins - ? "
+                    "WHERE user_id = ?",
+                    (price, user_id),
+                )
+            await self.db.execute(
+                "INSERT OR IGNORE INTO user_pet_inventory "
+                "(user_id, item_type, item_value) VALUES (?, ?, ?)",
+                (user_id, item_type, item_value),
+            )
+            col = "color" if item_type == "color" else "accessory"
+            await self.db.execute(
+                f"UPDATE user_pet SET {col} = ? WHERE user_id = ?",
+                (item_value, user_id),
+            )
+            await self.db.commit()
+
+            self._logger.info(
+                "pet.purchase user_id=%s type=%s value=%s "
+                "price=%s balance_after=%s",
+                user_id, item_type, item_value, price, balance - price,
+            )
+            return "purchased"
+
+    # ------------------------------------------------------------
+    # 5. Equip уже купленного предмета (без покупки)
+    # ------------------------------------------------------------
+    async def equip(self, user_id: int, item_type: str, item_value: str) -> bool:
+        """
+        Надеть уже купленный предмет. Проверяет ownership в инвентаре.
+        Возвращает True если equipped, False — если не в инвентаре или
+        item_type не 'color'/'accessory'.
+        """
+        if item_type not in ("color", "accessory"):
+            return False
+        async with self.db.execute(
+            "SELECT 1 FROM user_pet_inventory "
+            "WHERE user_id = ? AND item_type = ? AND item_value = ?",
+            (user_id, item_type, item_value),
+        ) as c:
+            row = await c.fetchone()
+        if row is None:
+            return False
+        col = "color" if item_type == "color" else "accessory"
+        await self.db.execute(
+            f"UPDATE user_pet SET {col} = ? WHERE user_id = ?",
+            (item_value, user_id),
+        )
+        await self.db.commit()
+        return True
+
+    # ------------------------------------------------------------
+    # 6. Rename
+    # ------------------------------------------------------------
+    async def rename(self, user_id: int, new_name: str) -> bool:
+        """
+        Переименовать питомца. True если pet существует и имя обновлено,
+        False — если pet ещё не создан.
+        """
+        cursor = await self.db.execute(
+            "UPDATE user_pet SET name = ? WHERE user_id = ?",
+            (new_name, user_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    # ------------------------------------------------------------
+    # 7. Mark excited (level-up / achievement)
+    # ------------------------------------------------------------
+    async def mark_excited(self, user_id: int) -> None:
+        """
+        Помечает last_excited_at = now. Используется derive_emotion для
+        приоритета 'excited' в течение ~5 минут после ачивки или level-up.
+        Тихий no-op, если pet ещё не создан.
+        """
+        await self.db.execute(
+            "UPDATE user_pet SET last_excited_at = datetime('now') "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+        await self.db.commit()
