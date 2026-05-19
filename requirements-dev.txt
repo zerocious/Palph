@@ -3,3 +3,7 @@
 -r requirements.txt
 pytest>=8.0,<9
 pytest-asyncio>=0.23,<1
+# Analysis notebooks (analysis/*.ipynb).
+pandas>=2.0,<3
+matplotlib>=3.8,<4
+jupyter>=1.0,<2

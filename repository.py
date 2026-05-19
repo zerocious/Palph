@@ -894,3 +894,282 @@ class PetRepository:
             (user_id,),
         )
         await self.db.commit()
+
+
+class LeaderboardRepository:
+    """
+    Score-инкременты для weekly leaderboard (LEADERBOARD.md Phase 1).
+
+    Все grant_-методы lock-free. Безопасность к гонкам обеспечивается
+    атомарностью самих UPDATE-выражений ("UPDATE … WHERE quiz_count < 25"
+    + проверка rowcount). Для grant_time_pts реальный read-modify-write
+    остаётся, но практически невозможна одновременная отметка двух
+    session_completed для одного user'а — таймер пользователя один.
+
+    Helper'ы из services.py (piecewise_time_pts, user_calendar_keys)
+    импортируются лениво внутри методов, чтобы не создавать circular
+    dependency (services уже импортирует repository).
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    # ------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------
+    async def _now_local_for_user(self, user_id: int):
+        """
+        datetime.now() в локальном TZ пользователя (из users.timezone).
+        Fallback: Europe/Moscow при отсутствии user'а или неизвестном TZ.
+        Используется grant_-методами, когда caller не передал now_local
+        явно. Тесты обычно передают свой now_local для детерминизма.
+        """
+        import pytz
+        from datetime import datetime
+        async with self.db.execute(
+            "SELECT timezone FROM users WHERE user_id=?", (user_id,)
+        ) as c:
+            row = await c.fetchone()
+        tz_name = row["timezone"] if row else "Europe/Moscow"
+        try:
+            return datetime.now(pytz.timezone(tz_name))
+        except pytz.UnknownTimeZoneError:
+            return datetime.now(pytz.timezone("Europe/Moscow"))
+
+    async def _ensure_rows(self, user_id: int, local_date: str, week_iso: str) -> None:
+        """INSERT OR IGNORE для daily + weekly строк текущего дня/недели."""
+        await self.db.execute(
+            "INSERT OR IGNORE INTO daily_score_counters (user_id, local_date) "
+            "VALUES (?, ?)",
+            (user_id, local_date),
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO weekly_scores (user_id, week_iso) "
+            "VALUES (?, ?)",
+            (user_id, week_iso),
+        )
+
+    # ------------------------------------------------------------
+    # 1. Time pts — piecewise по дневным минутам (LEADERBOARD.md §1)
+    # ------------------------------------------------------------
+    async def grant_time_pts(
+        self, user_id: int, duration_min: int, now_local=None
+    ) -> float:
+        """
+        Начисляет time pts за сессию длиной duration_min, исходя из того,
+        сколько минут уже было сегодня (для корректного piecewise).
+        Хранимый time_minutes capped at 240; излишек не приносит pts.
+
+        Возвращает фактически начисленные pts (REAL, неокруглённые).
+        Вызов с duration_min <= 0 — no-op, возвращает 0.0.
+        """
+        from services import piecewise_time_pts, user_calendar_keys
+        if duration_min <= 0:
+            return 0.0
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        async with self.db.execute(
+            "SELECT time_minutes FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            row = await c.fetchone()
+        start = row["time_minutes"]
+        end = start + duration_min
+        pts = piecewise_time_pts(start, end)
+
+        # Cap stored time_minutes at 240 — за пределом всё равно 0 pts,
+        # хранить точное значение не нужно.
+        new_time_minutes = min(end, 240)
+        await self.db.execute(
+            "UPDATE daily_score_counters "
+            "SET time_minutes=?, time_pts = time_pts + ? "
+            "WHERE user_id=? AND local_date=?",
+            (new_time_minutes, pts, user_id, local_date),
+        )
+        await self.db.execute(
+            "UPDATE weekly_scores SET time_pts = time_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return pts
+
+    # ------------------------------------------------------------
+    # 2. Math task pts — 40/correct, daily cap 5 (LEADERBOARD.md §2)
+    # ------------------------------------------------------------
+    async def grant_task_pts(self, user_id: int, now_local=None) -> bool:
+        """
+        Начисляет 40 pts за решённую math task, если daily cap (5) не превышен.
+        Атомарная проверка cap через WHERE task_count < 5 + rowcount.
+        Возвращает True если начислено, False если capped.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters SET task_count = task_count + 1 "
+            "WHERE user_id=? AND local_date=? AND task_count < 5",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return False
+
+        await self.db.execute(
+            "UPDATE weekly_scores SET task_pts = task_pts + 40 "
+            "WHERE user_id=? AND week_iso=?",
+            (user_id, week_iso),
+        )
+        await self.db.commit()
+        return True
+
+    # ------------------------------------------------------------
+    # 3. Quiz correct — 5 pts + series bonus +15/3 (LEADERBOARD.md §3)
+    # ------------------------------------------------------------
+    async def grant_quiz_pts_correct(
+        self, user_id: int, now_local=None
+    ) -> tuple:
+        """
+        Начисляет pts за правильный quiz/MCQ-ответ. MCQ считается quiz'ом
+        для scoring (§3). Daily cap 25 correct. Series bonus +15 каждые
+        3 правильных подряд (3, 6, 9, …).
+
+        Возвращает (pts_awarded, series_bonus_fired). Если capped:
+        (0, False).
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters "
+            "SET quiz_count = quiz_count + 1, "
+            "    quiz_series_running = quiz_series_running + 1 "
+            "WHERE user_id=? AND local_date=? AND quiz_count < 25",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return (0, False)
+
+        async with self.db.execute(
+            "SELECT quiz_series_running FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            new_series = (await c.fetchone())["quiz_series_running"]
+
+        pts = 5
+        series_bonus = (new_series % 3 == 0)
+        if series_bonus:
+            pts += 15
+
+        await self.db.execute(
+            "UPDATE weekly_scores SET quiz_pts = quiz_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return (pts, series_bonus)
+
+    # ------------------------------------------------------------
+    # 4. Quiz wrong — сброс серии (без pts)
+    # ------------------------------------------------------------
+    async def reset_quiz_series(self, user_id: int, now_local=None) -> None:
+        """
+        Сбрасывает quiz_series_running в 0. Вызывается при wrong answer
+        в quiz/MCQ. Никаких pts не начисляет и не отнимает.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, _ = user_calendar_keys(now_local)
+        # daily-row может ещё не существовать — создаём перед UPDATE,
+        # чтобы reset «работал» даже как первое действие дня (хотя
+        # серия и так 0 у новой строки).
+        await self.db.execute(
+            "INSERT OR IGNORE INTO daily_score_counters (user_id, local_date) "
+            "VALUES (?, ?)",
+            (user_id, local_date),
+        )
+        await self.db.execute(
+            "UPDATE daily_score_counters SET quiz_series_running = 0 "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        )
+        await self.db.commit()
+
+    # ------------------------------------------------------------
+    # 5. Card pts — +3 new / +5 review, daily cap 8 (LEADERBOARD.md §4)
+    # ------------------------------------------------------------
+    async def grant_card_pts(
+        self, user_id: int, is_new: bool, now_local=None
+    ) -> int:
+        """
+        Начисляет pts за УСПЕШНО (quality ≥ 3) повторённую/изученную карту.
+        Caller отвечает за фильтрацию по quality — repo не знает SM-2.
+        +3 для new (нет строки в flashcard_progress), +5 для review.
+        Daily cap 8 successful reviews.
+
+        Возвращает pts (0, 3 или 5). 0 = capped.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters SET cards_count = cards_count + 1 "
+            "WHERE user_id=? AND local_date=? AND cards_count < 8",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return 0
+
+        pts = 3 if is_new else 5
+        await self.db.execute(
+            "UPDATE weekly_scores SET card_pts = card_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return pts
+
+    # ------------------------------------------------------------
+    # 6. Read helpers (для UI, тестов, backtest)
+    # ------------------------------------------------------------
+    async def get_daily_counters(
+        self, user_id: int, local_date: str
+    ) -> Optional[Dict[str, Any]]:
+        """Возвращает dict с дневными счётчиками или None если строки нет."""
+        async with self.db.execute(
+            "SELECT * FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            row = await c.fetchone()
+        return dict(row) if row else None
+
+    async def get_weekly_score(
+        self, user_id: int, week_iso: str
+    ) -> Optional[Dict[str, Any]]:
+        """Возвращает dict с weekly-компонентами или None если строки нет."""
+        async with self.db.execute(
+            "SELECT * FROM weekly_scores WHERE user_id=? AND week_iso=?",
+            (user_id, week_iso),
+        ) as c:
+            row = await c.fetchone()
+        return dict(row) if row else None

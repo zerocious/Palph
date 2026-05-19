@@ -32,7 +32,7 @@ from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
-    EventRepository, PetRepository,
+    EventRepository, PetRepository, LeaderboardRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -2240,10 +2240,14 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
             "question_index": cur_idx,
         })
     if is_correct:
+        # Leaderboard: MCQ считается quiz'ом (LEADERBOARD.md §3).
+        await leaderboard_repo.grant_quiz_pts_correct(user_id)
         await user_repo.add_coins(user_id, 1)
         feedback = "✅ Верно! +1 🪙"
         await state.update_data(mcq_correct_count=data.get("mcq_correct_count", 0) + 1)
     else:
+        # Wrong → сбрасываем series counter (LEADERBOARD.md §3).
+        await leaderboard_repo.reset_quiz_series(user_id)
         feedback = f"❌ Неверно.\nПравильный ответ: {correct_text}"
 
     # Убираем inline-кнопки + дописываем feedback, чтобы повторный тап не сработал
@@ -2413,6 +2417,9 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await task_repo.record_attempt(
             user_id, task["id"], attempts_used=attempts + 1, succeeded=True
         )
+        # Leaderboard: 40 pts за math task (mission lever, LEADERBOARD.md §2).
+        # Daily cap 5 — grant_task_pts вернёт False сверх лимита, тихо.
+        await leaderboard_repo.grant_task_pts(user_id)
         await event_repo.log(user_id, "task_attempted", {
             "subject_id": data.get("task_subject_id"),
             "task_id": task["id"],
@@ -2694,6 +2701,11 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
         next_review=next_review,
     )
     await user_repo.add_coins(user_id, FLASH_COINS_PER_CARD)
+    # Leaderboard: pts только за УСПЕШНЫЙ review (LEADERBOARD.md §4).
+    # quality 1 (❌ Не знал) → no pts; quality 3 (😐) / 5 (✅) → grant.
+    # +3 для new, +5 для review. Daily cap 8 successful (внутри repo).
+    if quality >= 3:
+        await leaderboard_repo.grant_card_pts(user_id, is_new=is_new_card)
     await event_repo.log(user_id, "flashcard_reviewed", {
         "subject_id": data.get("flash_subject_id"),
         "card_hash": card_hash,
@@ -2795,8 +2807,11 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
     if is_correct:
         streak += 1
         feedback += f"\n\n🔥 Термин будет повторён через {quiz_interval_days(streak)} дн."
+        # Leaderboard: 5 pts + возможный series-bonus (LEADERBOARD.md §3).
+        await leaderboard_repo.grant_quiz_pts_correct(user_id)
     else:
         streak = 0
+        await leaderboard_repo.reset_quiz_series(user_id)
     await update_quiz_progress(user_id, term["hash"], is_correct, streak)
     await event_repo.log(user_id, "quiz_answered", {
         "subject_id": data.get("subject_id", "industrial-management"),
@@ -4195,7 +4210,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4207,8 +4222,9 @@ async def main():
     subject_stats_repo = SubjectStatsRepository(db)
     event_repo = EventRepository(db)
     pet_repo = PetRepository(db)
+    leaderboard_repo = LeaderboardRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
-    study_service = StudyService(user_repo, session_repo, ach_service, pet_repo)
+    study_service = StudyService(user_repo, session_repo, ach_service, pet_repo, leaderboard_repo)
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей

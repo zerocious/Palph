@@ -9,7 +9,7 @@ from time import monotonic
 import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
 
-from repository import UserRepository, SessionRepository, PetRepository
+from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
 
 logger = logging.getLogger("studybuddy_bot")
 
@@ -319,6 +319,83 @@ def derive_emotion(
     return "happy"
 
 
+# ------------------------------------------------------------
+# Leaderboard scoring helpers — pure functions.
+# Полный спек: LEADERBOARD.md. Эти функции — единственное место,
+# где зашита численная сторона формулы; если нужно ребалансить —
+# меняем здесь + соответствующую таблицу в LEADERBOARD.md.
+# ------------------------------------------------------------
+def piecewise_time_pts(start: int, end: int) -> float:
+    """
+    Pts за переход от `start` к `end` суммарных дневных минут учёбы.
+    Tiers (LEADERBOARD.md §1):
+      0–60 мин:    1.00 pts/мин
+      61–120:      0.75
+      121–180:     0.50
+      181–240:     0.25
+      241+:        0   (минуты выше 240 не приносят pts вообще)
+
+    Семантика: caller передаёт «было N минут до сессии, стало M»,
+    функция возвращает pts за конкретно эту дельту с учётом того,
+    в каких tier'ах она лежит. Так корректно работает «склейка»
+    нескольких сессий одного дня.
+    """
+    start = max(0, start)
+    if end <= start:
+        return 0.0
+    tiers = [(60, 1.00), (120, 0.75), (180, 0.50), (240, 0.25)]
+    pts, cursor = 0.0, start
+    for tier_end, rate in tiers:
+        if cursor >= tier_end:
+            continue
+        portion = min(end, tier_end) - cursor
+        if portion > 0:
+            pts += portion * rate
+        cursor = min(end, tier_end)
+        if cursor >= end:
+            break
+    return pts
+
+
+def streak_multiplier(streak_days: int) -> float:
+    """
+    Weekly-score множитель (LEADERBOARD.md §5).
+    Применяется на read-time к сумме компонентов недели.
+    """
+    if streak_days >= 14:
+        return 1.20
+    if streak_days >= 7:
+        return 1.10
+    if streak_days >= 3:
+        return 1.05
+    return 1.00
+
+
+def freeze_cost(streak_days: int) -> int:
+    """
+    Coin-цена заморозки стрика в зависимости от длины (LEADERBOARD.md §Streak Freeze).
+    Чем длиннее стрик — тем дороже сохранить.
+    """
+    if streak_days >= 21:
+        return 1000
+    if streak_days >= 8:
+        return 750
+    return 500
+
+
+def user_calendar_keys(now_local: datetime) -> tuple:
+    """
+    Возвращает (local_date 'YYYY-MM-DD', week_iso 'YYYY-Www') из datetime
+    в локальном TZ пользователя.
+
+    week_iso использует ISO 8601 неделю (%G-W%V), так что неделя всегда
+    начинается с понедельника — что точно соответствует rollover-семантике
+    спеки. local_date — обычный Gregorian (%Y-%m-%d), используется для
+    PK в daily_score_counters и для consumed_for_date в streak_freezes.
+    """
+    return now_local.strftime("%Y-%m-%d"), now_local.strftime("%G-W%V")
+
+
 class StudyService:
     def __init__(
         self,
@@ -326,13 +403,16 @@ class StudyService:
         session_repo: SessionRepository,
         achievement_service: AchievementService,
         pet_repo: PetRepository | None = None,
+        leaderboard_repo: LeaderboardRepository | None = None,
     ):
         self.user_repo = user_repo
         self.session_repo = session_repo
         self.achievement_service = achievement_service
-        # pet_repo опционален: тесты вне pet-флоу могут не передавать —
-        # тогда XP-grant просто skip'ается. В production bot.py всегда даёт.
+        # pet_repo / leaderboard_repo опциональны: тесты вне pet/leaderboard
+        # флоу могут их не передавать — соответствующий grant просто skip'ается.
+        # В production bot.py передаёт оба.
         self.pet_repo = pet_repo
+        self.leaderboard_repo = leaderboard_repo
 
     async def complete_session(self, user_id: int, duration: int) -> tuple[list, int, int]:
         """
@@ -370,6 +450,13 @@ class StudyService:
                 await self.pet_repo.add_xp(user_id, duration)
                 if earned:
                     await self.pet_repo.mark_excited(user_id)
+
+            # Leaderboard time pts (LEADERBOARD.md §1). Piecewise по дневным
+            # минутам с учётом уже накопленных за сегодня. Repository сам
+            # резолвит user TZ через users.timezone (now_local=None default).
+            # Lock уже взят — grant_time_pts его не берёт повторно.
+            if self.leaderboard_repo is not None:
+                await self.leaderboard_repo.grant_time_pts(user_id, duration)
 
         return earned, bonus, session_id
     
