@@ -8,15 +8,15 @@ Running log of changes made per coding session. Newest entries at the top.
 
 Goal: design and ship the weekly leaderboard. Multi-phase build across one
 long session: spec → Phase 0 audit → Phase 1 data layer → Phase 2a
-user-facing view + privacy. Pet PR (#2) merged early in the session to
-unblock leaderboard wiring.
+user-facing view + privacy → Phase 2b rollover scheduler + rewards.
+Pet PR (#2) merged early in the session to unblock leaderboard wiring.
 
-**Итог:** 4 PR-ready commits на `claude/leaderboard-system` (PR #3 открыт);
-319 тестов зелёных (185 baseline + 47 pet + 87 leaderboard); пет PR #2
-squash-merged в `main` как `9203aab`. Phase 2b (rollover scheduler +
-reward distribution), Phase 3 (streak freeze UI), Phase 4 (friends) —
-явно deferred в LEADERBOARD.md с прокладкой (схема + repo-методы +
-design notes) для следующих сессий.
+**Итог:** Phase 2 целиком закрыт (a + b); **332 теста** зелёных
+(185 baseline + 47 pet + 100 leaderboard); пет PR #2 squash-merged в
+`main` как `9203aab`; PR #3 на `claude/leaderboard-system` содержит
+весь leaderboard-стек. Phase 3 (streak freeze UI), Phase 4 (friends)
+остаются deferred с прокладкой (схемы + repo-методы + design notes)
+для следующих сессий.
 
 Plan / spec файл: [LEADERBOARD.md](LEADERBOARD.md) (v1.1)
 
@@ -29,6 +29,8 @@ Plan / spec файл: [LEADERBOARD.md](LEADERBOARD.md) (v1.1)
 | Phase 1 — Data layer | `930a2e8` | 4 tables (`daily_score_counters`, `weekly_scores`, `streak_freezes`, `weekly_badges`) + `users.hidden_from_leaderboards`; 4 pure scoring helpers in services.py; `LeaderboardRepository` (7 methods) with lock-free atomic-UPDATE cap enforcement; wiring into 4 hooks in bot.py + `StudyService.complete_session`; 64 tests; `analysis/leaderboard_backtest.ipynb` |
 | Phase 2a — Visibility | `9ab3ff1` | `LeaderboardRepository.get_ranked_segment` / `get_user_rank` / `award_badge` / `get_active_badges`; `UserRepository.set_hidden_from_leaderboards` / `is_hidden_from_leaderboards`; `LeaderboardService.render_leaderboard` (segment auto-routing, hidden-user marker); `/leaderboard` slash command; "Лидерборды: Виден/Скрыт" toggle in settings menu; 23 tests |
 | Phasing doc | `a25655d` | LEADERBOARD.md phasing section updated to reflect shipped vs deferred |
+| Docs refresh | `5626c6a` | README + TODO + session_notes synced after Phase 2a |
+| Phase 2b — Rollover + rewards | `25c25b3` | `LeaderboardService.run_rollover` (top-3 main + breakthrough newbie + top-10% coin bonus, gated by `award_badge` INSERT OR IGNORE rowcount → idempotent on re-run); `leaderboard_scheduler` in `tasks.py` (UTC Tuesday 00:00 anchor — all global TZs have crossed local Mon by then); `_compute_ended_week_iso` pure helper; bot.py wires scheduler into `background_tasks`; 13 tests cover correctness, idempotency, top-10% threshold, hidden eligibility, ISO year boundaries |
 
 ### Key design calls captured
 
@@ -63,9 +65,8 @@ Pet PR (TODO #16 data layer) was already a PR from the earlier session; merged v
 
 ### Deferred to follow-up sessions
 
-- **Phase 2b** — `LeaderboardService.run_rollover` + `leaderboard_scheduler` in `tasks.py` + top-3/breakthrough/top-10% awarding. Data plumbing exists (`get_ranked_segment`, `award_badge` is idempotent). Design call still open: UTC Tuesday 00:00 anchor (recommended) vs per-TZ rollover.
-- **Phase 3** — Streak freeze mechanic (UI + atomic coin deduction). `streak_freezes` table exists.
-- **Phase 4** — Friends system (new tables, FSM add/accept flow, friends-tab view).
+- **Phase 3** — Streak freeze mechanic (UI + atomic coin deduction). `streak_freezes` table exists from Phase 1; helper `freeze_cost(streak_days)` exists; only missing piece is the profile-side FSM confirm dialog + coin deduction wiring.
+- **Phase 4** — Friends system (new tables, FSM add/accept flow, friends-tab view). No infrastructure exists yet — start from scratch.
 
 ---
 
