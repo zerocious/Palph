@@ -138,6 +138,24 @@ class UserRepository:
         )
         await self.db.commit()
 
+    async def set_hidden_from_leaderboards(self, user_id: int, hidden: bool) -> None:
+        """Скрывает/возвращает пользователя на публичные лидерборды
+        (LEADERBOARD.md §Privacy). Не влияет на накопление очков и rewards."""
+        await self.db.execute(
+            "UPDATE users SET hidden_from_leaderboards = ? WHERE user_id = ?",
+            (1 if hidden else 0, user_id),
+        )
+        await self.db.commit()
+
+    async def is_hidden_from_leaderboards(self, user_id: int) -> bool:
+        """Текущее состояние privacy-флага."""
+        async with self.db.execute(
+            "SELECT hidden_from_leaderboards FROM users WHERE user_id=?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row["hidden_from_leaderboards"]) if row else False
+
     async def get_distinct_timezones(self) -> list[str]:
         """Возвращает все часовые пояса, которые используются хотя бы одним пользователем."""
         async with self.db.execute(
@@ -1173,3 +1191,145 @@ class LeaderboardRepository:
         ) as c:
             row = await c.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------
+    # 7. Ranked-сегмент + rank lookup (для /leaderboard + rollover)
+    # ------------------------------------------------------------
+    async def get_ranked_segment(
+        self,
+        week_iso: str,
+        segment: str,
+        *,
+        exclude_hidden: bool = True,
+    ) -> list:
+        """
+        Возвращает список dict'ов всех пользователей в сегменте, отсортированный
+        по total_final DESC. Каждая запись:
+          user_id, time_pts, task_pts, quiz_pts, card_pts,
+          current_streak, multiplier, total_base, total_final, hidden
+
+        segment ∈ {'newbie', 'main'}.
+        - newbie: julianday(now) - julianday(u.created_at) < 7
+        - main:   julianday(now) - julianday(u.created_at) >= 7
+
+        Сортировка — в Python, после применения streak_multiplier; SQL-side
+        ORDER BY total_base некорректен из-за multiplier'а (1.20× для 14+
+        дней может перевернуть top-3).
+
+        exclude_hidden=False — для get_user_rank, где hidden юзер должен
+        видеть свою позицию.
+        """
+        from services import streak_multiplier
+        if segment == "newbie":
+            seg_cond = "julianday('now') - julianday(u.created_at) < 7"
+        elif segment == "main":
+            seg_cond = "julianday('now') - julianday(u.created_at) >= 7"
+        else:
+            raise ValueError(f"Unknown segment: {segment!r}")
+        hide_cond = "AND u.hidden_from_leaderboards = 0" if exclude_hidden else ""
+
+        sql = (
+            "SELECT ws.user_id, ws.time_pts, ws.task_pts, ws.quiz_pts, ws.card_pts, "
+            "       u.current_streak, u.hidden_from_leaderboards "
+            "FROM weekly_scores ws "
+            "JOIN users u ON ws.user_id = u.user_id "
+            f"WHERE ws.week_iso = ? AND {seg_cond} {hide_cond}"
+        )
+        async with self.db.execute(sql, (week_iso,)) as c:
+            rows = await c.fetchall()
+
+        result = []
+        for r in rows:
+            mult = streak_multiplier(r["current_streak"])
+            base = (
+                r["time_pts"] + r["task_pts"] + r["quiz_pts"] + r["card_pts"]
+            )
+            result.append({
+                "user_id": r["user_id"],
+                "time_pts": r["time_pts"],
+                "task_pts": r["task_pts"],
+                "quiz_pts": r["quiz_pts"],
+                "card_pts": r["card_pts"],
+                "current_streak": r["current_streak"],
+                "multiplier": mult,
+                "total_base": base,
+                "total_final": base * mult,
+                "hidden": bool(r["hidden_from_leaderboards"]),
+            })
+        result.sort(key=lambda x: x["total_final"], reverse=True)
+        return result
+
+    async def get_user_rank(
+        self, user_id: int, week_iso: str, segment: str
+    ) -> tuple:
+        """
+        Возвращает (rank, entry_dict) для user в указанном segment'е,
+        или (None, None) если user не в сегменте или не имеет weekly-row.
+
+        exclude_hidden=False внутри — чтобы hidden user мог увидеть
+        свой rank (только себе). Для публичной leaderboard caller
+        дополнительно фильтрует.
+        """
+        ranked = await self.get_ranked_segment(
+            week_iso, segment, exclude_hidden=False
+        )
+        for idx, entry in enumerate(ranked):
+            if entry["user_id"] == user_id:
+                return (idx + 1, entry)
+        return (None, None)
+
+    # ------------------------------------------------------------
+    # 8. Weekly badges — атомарное awarding + чтение активных
+    # ------------------------------------------------------------
+    async def award_badge(
+        self,
+        user_id: int,
+        badge_id: str,
+        awarded_for_week: str,
+        *,
+        duration_days: int = 7,
+    ) -> bool:
+        """
+        Идемпотентное awarding: INSERT OR IGNORE на PK (user_id, badge_id,
+        awarded_for_week). Возвращает True если бэдж впервые выдан этой
+        операцией, False если уже был (например, при повторном rollover'е).
+
+        Используется и для cosmetic badges (top_1/top_2/top_3/breakthrough),
+        и для маркеров coin-бонусов (badge_id='top10_pct_bonus') — caller
+        проверяет return и начисляет coins только если True.
+        """
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        expires = now + timedelta(days=duration_days)
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO weekly_badges "
+            "(user_id, badge_id, awarded_for_week, awarded_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                user_id, badge_id, awarded_for_week,
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                expires.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "leaderboard.badge_awarded user_id=%s badge=%s week=%s",
+                user_id, badge_id, awarded_for_week,
+            )
+        return cursor.rowcount > 0
+
+    async def get_active_badges(self, user_id: int) -> list:
+        """
+        Возвращает не-истёкшие бэджи пользователя, последние первыми.
+        Используется для profile-отображения и /leaderboard'а.
+        """
+        async with self.db.execute(
+            "SELECT badge_id, awarded_for_week, awarded_at, expires_at "
+            "FROM weekly_badges "
+            "WHERE user_id=? AND expires_at > datetime('now') "
+            "ORDER BY awarded_at DESC",
+            (user_id,),
+        ) as c:
+            rows = await c.fetchall()
+        return [dict(r) for r in rows]

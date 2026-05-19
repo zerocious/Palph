@@ -607,6 +607,128 @@ class StreakService:
 
 
 # ------------------------------------------------------------
+# LeaderboardService — render + (future) rollover logic.
+# Чистая обёртка над LeaderboardRepository: маршрутизация newbie vs main,
+# форматирование Telegram-friendly текста, computation вспомогательных
+# полей. Rollover/badges/coin-bonuses не реализованы в этом релизе —
+# отдельный коммит.
+# ------------------------------------------------------------
+class LeaderboardService:
+    """
+    Главная UI-обёртка над LeaderboardRepository (LEADERBOARD.md §Segments).
+
+    Auto-routing:
+      - newbie: created_at < 7 days ago → видит топ только среди newbie
+      - main:   created_at >= 7 days ago → видит main-сегмент
+
+    Privacy:
+      - hidden_from_leaderboards=1 → не показываемся другим, но видим
+        свою позицию с маркером «Вы скрыты».
+    """
+
+    TOP_N_DISPLAY = 20
+
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        leaderboard_repo,  # type: LeaderboardRepository — late binding
+    ):
+        self.user_repo = user_repo
+        self.leaderboard_repo = leaderboard_repo
+
+    async def _user_segment(self, user_id: int) -> str:
+        """Возвращает 'newbie' или 'main' по created_at пользователя."""
+        async with self.user_repo.db.execute(
+            "SELECT (julianday('now') - julianday(created_at)) AS age_days "
+            "FROM users WHERE user_id=?",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+        if row is None:
+            return "newbie"  # defensive
+        return "newbie" if row["age_days"] < 7 else "main"
+
+    async def _current_week_iso(self, user_id: int) -> str:
+        """Текущая ISO-неделя в TZ пользователя."""
+        now_local = await self.leaderboard_repo._now_local_for_user(user_id)
+        _, week_iso = user_calendar_keys(now_local)
+        return week_iso
+
+    async def render_leaderboard(self, user_id: int) -> str:
+        """
+        Текст leaderboard'а для отправки в Telegram (HTML parse_mode).
+        Показывает:
+          - сегмент (newbie/main), week_iso
+          - TOP_N_DISPLAY топ-пользователей сегмента (исключая hidden)
+          - собственный ранг пользователя ниже, если он за пределами топа
+            или hidden (в этом случае с маркером «Вы скрыты»)
+        Имена пользователей не хранятся в БД, поэтому показываем
+        user_id — UI слой может потом обогатить через bot.get_chat.
+        """
+        segment = await self._user_segment(user_id)
+        week_iso = await self._current_week_iso(user_id)
+
+        # Публичный топ (исключая hidden)
+        public_top = await self.leaderboard_repo.get_ranked_segment(
+            week_iso, segment, exclude_hidden=True
+        )
+        # Полный ranked (включая hidden) — для поиска позиции self
+        full_ranked = await self.leaderboard_repo.get_ranked_segment(
+            week_iso, segment, exclude_hidden=False
+        )
+
+        seg_label = "🆕 Новички" if segment == "newbie" else "🏆 Основной"
+        lines = [
+            f"<b>📊 Лидерборд недели · {week_iso}</b>",
+            f"Сегмент: {seg_label}",
+            "",
+        ]
+
+        if not public_top:
+            lines.append("Пока никто не набрал очков в этой неделе.")
+        else:
+            lines.append("<b>Топ:</b>")
+            for idx, entry in enumerate(public_top[: self.TOP_N_DISPLAY], start=1):
+                marker = "👤" if entry["user_id"] == user_id else "  "
+                lines.append(
+                    f"{marker} {idx}. id={entry['user_id']}  "
+                    f"{entry['total_final']:.0f} pts  "
+                    f"(×{entry['multiplier']:.2f})"
+                )
+
+        # Собственный ранг — если за пределами топа или hidden
+        own_rank = None
+        own_entry = None
+        for idx, entry in enumerate(full_ranked, start=1):
+            if entry["user_id"] == user_id:
+                own_rank = idx
+                own_entry = entry
+                break
+
+        if own_entry is None:
+            lines.append("")
+            lines.append("Вы пока без очков на этой неделе.")
+        else:
+            in_displayed_top = (
+                not own_entry["hidden"]
+                and any(
+                    e["user_id"] == user_id
+                    for e in public_top[: self.TOP_N_DISPLAY]
+                )
+            )
+            if not in_displayed_top:
+                lines.append("")
+                hidden_note = " · Вы скрыты" if own_entry["hidden"] else ""
+                lines.append(
+                    f"Ваш ранг: <b>{own_rank}</b>  "
+                    f"{own_entry['total_final']:.0f} pts"
+                    f"{hidden_note}"
+                )
+
+        return "\n".join(lines)
+
+
+# ------------------------------------------------------------
 # AnalyticsService — продуктовая аналитика для PA-портфолио.
 # Чистые SQL-агрегаты над существующими таблицами; никаких новых
 # таблиц не вводит. Возвращает structured dicts — UI/admin commands

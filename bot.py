@@ -36,7 +36,7 @@ from repository import (
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
-    BackupService, AnalyticsService, UserRateLimiter, sm2_update,
+    BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
 )
 from tasks import streak_scheduler, reminder_scheduler
 
@@ -1508,6 +1508,7 @@ class NotificationSettings:
         settings = await self.load()
         user = await self.repo.get_user(self.user_id)
         tz = (user or {}).get("timezone") or "Europe/Moscow"
+        hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
         lines = ["⚙️ Настройки уведомлений\n"]
         emoji_on = {"morning": "🌅", "evening": "🌙", "streak": "🔥", "achievements": "🎉"}
         emoji_off = {"morning": "🌚", "evening": "🌚", "streak": "❄️", "achievements": "🔕"}
@@ -1523,10 +1524,15 @@ class NotificationSettings:
             status = "✅ Включено" if enabled else "❌ Отключено"
             lines.append(f"{emoji} {labels[key]}{time_str}: {status}")
         lines.append(f"\n🌍 Часовой пояс: {tz_label(tz)}")
+        lines.append(
+            f"👤 Лидерборды: "
+            f"{'❌ Скрыт (рейтинги не видны другим)' if hidden else '✅ Виден'}"
+        )
         return "\n".join(lines)
 
     async def get_keyboard(self) -> InlineKeyboardMarkup:
         settings = await self.load()
+        hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
         kb = InlineKeyboardBuilder()
         labels = {"morning": "Утро", "evening": "Вечер", "streak": "Стрик", "achievements": "Достижения"}
         # Утро: переключатель + кнопка изменения времени
@@ -1548,8 +1554,13 @@ class NotificationSettings:
                 callback_data=f"settings_toggle:{key}:{self.user_id}",
             )
         kb.button(text="🌍 Часовой пояс", callback_data=f"settings_tz_picker:{self.user_id}")
+        # Privacy toggle: единственная кнопка для leaderboards (LEADERBOARD.md §Privacy).
+        kb.button(
+            text=f"👤 Лидерборды: {'Скрыт' if hidden else 'Виден'}",
+            callback_data=f"settings_privacy:{self.user_id}",
+        )
         kb.button(text="⬅️ Назад в профиль", callback_data=f"back_to_profile:{self.user_id}")
-        kb.adjust(2, 2, 2, 1, 1)
+        kb.adjust(2, 2, 2, 1, 1, 1)
         return kb.as_markup()
 
 @router.callback_query(F.data.startswith("settings_menu:"))
@@ -1576,6 +1587,23 @@ async def toggle_notification_setting(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error toggling setting: {e}")
         await callback.answer("Ошибка переключения", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("settings_privacy:"))
+async def toggle_privacy(callback: CallbackQuery):
+    """Переключает users.hidden_from_leaderboards (LEADERBOARD.md §Privacy)."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    current = await user_repo.is_hidden_from_leaderboards(user_id)
+    await user_repo.set_hidden_from_leaderboards(user_id, not current)
+    ns = NotificationSettings(user_id, user_repo)
+    try:
+        await callback.message.edit_text(
+            await ns.get_display_text(),
+            reply_markup=await ns.get_keyboard(),
+        )
+    except Exception as e:
+        logger.warning("settings.privacy_toggle_render_failed user=%s err=%s", user_id, e)
 
 
 @router.callback_query(F.data.startswith("settings_time:"))
@@ -3976,6 +4004,22 @@ async def cmd_listadmins(message: Message):
     )
 
 
+@router.message(Command("leaderboard"))
+async def cmd_leaderboard(message: Message):
+    """Показывает недельный лидерборд: auto-routing newbie vs main + собственный ранг.
+    См. LEADERBOARD.md."""
+    user_id = message.from_user.id
+    try:
+        text = await leaderboard_service.render_leaderboard(user_id)
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(
+            "leaderboard.render_failed user=%s err=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+        await message.answer("Не удалось загрузить лидерборд. Попробуй позже.")
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     """Админская справка по командам. Обычным пользователям советует открыть FAQ."""
@@ -4210,7 +4254,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4225,6 +4269,7 @@ async def main():
     leaderboard_repo = LeaderboardRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service, pet_repo, leaderboard_repo)
+    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo)
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей
