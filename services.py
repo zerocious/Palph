@@ -628,6 +628,17 @@ class LeaderboardService:
 
     TOP_N_DISPLAY = 20
 
+    # Top 10% coin bonus в конце недели — "small" по спеке (§Rewards).
+    # 50 coins = ~1.25 math task. Видимый, но не настолько большой,
+    # чтобы перевернуть экономию баланса монет.
+    COIN_BONUS_TOP10_PCT = 50
+
+    # Минимальный размер сегмента для имеющего смысл "top 10%". При
+    # 3 пользователях "10%" = 0.3 → округляется в 0; при 9 — то же.
+    # Без минимума мы бы выдавали бонус всем при маленьком сегменте,
+    # что обесценивает rewards.
+    MIN_SEGMENT_FOR_TOP10_BONUS = 10
+
     def __init__(
         self,
         user_repo: UserRepository,
@@ -726,6 +737,101 @@ class LeaderboardService:
                 )
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------
+    # Weekly rollover — выдача badges + top-10% coin bonus
+    # ------------------------------------------------------------
+    async def run_rollover(self, ended_week_iso: str) -> dict:
+        """
+        Выдаёт еженедельные награды за уже закончившуюся неделю.
+        Спецификация: LEADERBOARD.md §Rewards.
+
+        Для каждого сегмента (main, newbie):
+          - top-3 main: бэджи `top_1`, `top_2`, `top_3`
+          - top-1 newbie: бэдж `breakthrough`
+          - top-10% (только если в сегменте ≥ MIN_SEGMENT_FOR_TOP10_BONUS
+            пользователей): COIN_BONUS_TOP10_PCT монет каждому
+
+        Идемпотентность: award_badge — INSERT OR IGNORE по PK
+        (user_id, badge_id, awarded_for_week). Повторный run_rollover
+        для той же week — no-op (нет дубль-бэджей, нет повторных
+        начислений монет). Coin-бонус начисляется ТОЛЬКО когда
+        award_badge('top10_pct_bonus', …) вернёт True.
+
+        Hidden-пользователи **получают** rewards (заработали по спеке;
+        scoring не зависит от privacy), просто не отображаются на
+        публичных лидербордах. Поэтому здесь exclude_hidden=False.
+
+        Возвращает stats dict: {
+            'week': str, 'badges_awarded': int, 'coins_distributed': int,
+            'segments_processed': int
+        }
+        """
+        stats = {
+            "week": ended_week_iso,
+            "badges_awarded": 0,
+            "coins_distributed": 0,
+            "segments_processed": 0,
+        }
+
+        for segment in ("main", "newbie"):
+            ranked = await self.leaderboard_repo.get_ranked_segment(
+                ended_week_iso, segment, exclude_hidden=False
+            )
+            if not ranked:
+                continue
+            stats["segments_processed"] += 1
+
+            if segment == "main":
+                badge_by_rank = {1: "top_1", 2: "top_2", 3: "top_3"}
+            else:  # newbie
+                badge_by_rank = {1: "breakthrough"}
+
+            for rank, entry in enumerate(ranked, start=1):
+                badge_id = badge_by_rank.get(rank)
+                if badge_id is None:
+                    break
+                newly = await self.leaderboard_repo.award_badge(
+                    entry["user_id"], badge_id, ended_week_iso
+                )
+                if newly:
+                    stats["badges_awarded"] += 1
+                    logger.info(
+                        "leaderboard.rollover.badge segment=%s rank=%s "
+                        "badge=%s user_id=%s week=%s",
+                        segment, rank, badge_id, entry["user_id"],
+                        ended_week_iso,
+                    )
+
+            # Top-10% coin bonus — только когда сегмент достаточно велик.
+            # Маленькие сегменты (<10 человек) пропускаем целиком, иначе
+            # bonus превращается в "всем подряд" и обесценивается.
+            if len(ranked) >= self.MIN_SEGMENT_FOR_TOP10_BONUS:
+                top10_count = max(1, len(ranked) // 10)
+                for entry in ranked[:top10_count]:
+                    newly = await self.leaderboard_repo.award_badge(
+                        entry["user_id"], "top10_pct_bonus", ended_week_iso
+                    )
+                    if newly:
+                        stats["badges_awarded"] += 1
+                        await self.user_repo.add_coins(
+                            entry["user_id"], self.COIN_BONUS_TOP10_PCT
+                        )
+                        stats["coins_distributed"] += self.COIN_BONUS_TOP10_PCT
+                        logger.info(
+                            "leaderboard.rollover.coin_bonus segment=%s "
+                            "user_id=%s coins=%s week=%s",
+                            segment, entry["user_id"],
+                            self.COIN_BONUS_TOP10_PCT, ended_week_iso,
+                        )
+
+        logger.info(
+            "leaderboard.rollover.summary week=%s segments=%s "
+            "badges_awarded=%s coins_distributed=%s",
+            ended_week_iso, stats["segments_processed"],
+            stats["badges_awarded"], stats["coins_distributed"],
+        )
+        return stats
 
 
 # ------------------------------------------------------------

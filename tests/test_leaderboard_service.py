@@ -2,16 +2,17 @@
 Тесты LeaderboardService + новых read-методов LeaderboardRepository,
 а также privacy-флага в UserRepository.
 
-Scope соответствует тому, что shipped в Phase 2:
+Покрывает Phase 2a (render + privacy + ranked-segment + badges) и
+Phase 2b (run_rollover + ended-week computation):
 - render_leaderboard (формат текста, auto-routing сегмента, скрытые юзеры)
 - get_ranked_segment (фильтр сегмента, multiplier, hidden)
 - get_user_rank
 - award_badge (идемпотентность)
 - get_active_badges (expiration)
 - is_hidden_from_leaderboards / set_hidden_from_leaderboards
-
-Rollover/coin-bonus тесты не входят в этот файл — соответствующая логика
-ещё не реализована (см. LEADERBOARD.md Phase 2 deferred).
+- run_rollover (top-3 main + breakthrough newbie + top-10% bonus,
+  идемпотентность повторного запуска, hidden остаётся eligible)
+- _compute_ended_week_iso (UTC anchor)
 """
 from datetime import datetime, timedelta
 
@@ -272,3 +273,222 @@ class TestRenderLeaderboard:
         text = await lb_service.render_leaderboard(1)
         assert "id=1" in text
         assert "id=2" not in text
+
+
+# ============================================================
+# run_rollover — Phase 2b
+# ============================================================
+async def _get_badge_count(db, user_id):
+    """Сколько активных бэджей у юзера."""
+    async with db.execute(
+        "SELECT COUNT(*) AS n FROM weekly_badges WHERE user_id=?",
+        (user_id,),
+    ) as c:
+        return (await c.fetchone())["n"]
+
+
+async def _get_coins(db, user_id):
+    async with db.execute(
+        "SELECT total_coins FROM users WHERE user_id=?", (user_id,)
+    ) as c:
+        row = await c.fetchone()
+    return row["total_coins"] if row else 0
+
+
+class TestRunRollover:
+    async def test_empty_world_no_op(self, lb_service):
+        """Никаких юзеров — rollover не падает и считает нули."""
+        stats = await lb_service.run_rollover(WEEK)
+        assert stats == {
+            "week": WEEK,
+            "badges_awarded": 0,
+            "coins_distributed": 0,
+            "segments_processed": 0,
+        }
+
+    async def test_main_top3_awarded(self, lb_service, user_repo, lb_repo, db):
+        # 5 main-юзеров с разными очками
+        for uid, pts in [(1, 500), (2, 400), (3, 300), (4, 200), (5, 100)]:
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=pts)
+
+        stats = await lb_service.run_rollover(WEEK)
+        # 3 топ-бэджа за main; newbie сегмент пустой
+        assert stats["badges_awarded"] == 3
+        assert stats["segments_processed"] == 1
+        # top-10% не выдан (5 юзеров < MIN_SEGMENT_FOR_TOP10_BONUS=10)
+        assert stats["coins_distributed"] == 0
+
+        # User 1 = top_1, User 2 = top_2, User 3 = top_3
+        async with db.execute(
+            "SELECT user_id, badge_id FROM weekly_badges "
+            "WHERE awarded_for_week=? ORDER BY user_id",
+            (WEEK,),
+        ) as c:
+            rows = await c.fetchall()
+        result = [(r["user_id"], r["badge_id"]) for r in rows]
+        assert result == [(1, "top_1"), (2, "top_2"), (3, "top_3")]
+
+    async def test_newbie_breakthrough_only(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        # 3 новичка
+        for uid, pts in [(1, 100), (2, 80), (3, 60)]:
+            await _make_user(user_repo, db, uid, age_days=2)
+            await _grant(lb_repo, uid, task=pts)
+
+        stats = await lb_service.run_rollover(WEEK)
+        # Только top-1 newbie получает breakthrough
+        assert stats["badges_awarded"] == 1
+
+        async with db.execute(
+            "SELECT user_id, badge_id FROM weekly_badges WHERE awarded_for_week=?",
+            (WEEK,),
+        ) as c:
+            rows = await c.fetchall()
+        assert len(rows) == 1
+        assert rows[0]["user_id"] == 1
+        assert rows[0]["badge_id"] == "breakthrough"
+
+    async def test_top10_pct_skipped_below_threshold(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """С 5 юзерами 10% = 0.5, скип — иначе bonus превращается в 'всем подряд'."""
+        for uid in range(1, 6):
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=(6 - uid) * 100)
+
+        stats = await lb_service.run_rollover(WEEK)
+        assert stats["coins_distributed"] == 0
+        # Никаких top10_pct_bonus бэджей
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM weekly_badges "
+            "WHERE badge_id='top10_pct_bonus'"
+        ) as c:
+            assert (await c.fetchone())["n"] == 0
+
+    async def test_top10_pct_awarded_at_threshold(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """10 юзеров → 10% = 1 человек получает coin-бонус."""
+        for uid in range(1, 11):
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=(11 - uid) * 100)
+
+        stats = await lb_service.run_rollover(WEEK)
+        # 3 топ-бэджа + 1 top-10%
+        assert stats["badges_awarded"] == 4
+        assert stats["coins_distributed"] == LeaderboardService.COIN_BONUS_TOP10_PCT
+        # User 1 — top_1 + top10_pct_bonus
+        assert await _get_badge_count(db, 1) == 2
+        assert await _get_coins(db, 1) == LeaderboardService.COIN_BONUS_TOP10_PCT
+
+    async def test_top10_pct_floor_at_20_users(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """20 юзеров → 10% = 2 человека."""
+        for uid in range(1, 21):
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=(21 - uid) * 100)
+
+        stats = await lb_service.run_rollover(WEEK)
+        # 3 top + 2 top-10%
+        assert stats["badges_awarded"] == 5
+        assert (
+            stats["coins_distributed"]
+            == 2 * LeaderboardService.COIN_BONUS_TOP10_PCT
+        )
+
+    async def test_idempotent_no_duplicate_badges(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """Второй run_rollover для той же недели — no-op."""
+        for uid in range(1, 11):
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=(11 - uid) * 100)
+
+        await lb_service.run_rollover(WEEK)
+        # Снова, той же неделей
+        stats_2 = await lb_service.run_rollover(WEEK)
+        # Все badges INSERT OR IGNORE — повторно ничего не вставилось
+        assert stats_2["badges_awarded"] == 0
+        assert stats_2["coins_distributed"] == 0
+
+    async def test_idempotent_no_double_coins(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """Повторный rollover не дублирует coin-бонус (rowcount-gated)."""
+        for uid in range(1, 11):
+            await _make_user(user_repo, db, uid, age_days=30)
+            await _grant(lb_repo, uid, task=(11 - uid) * 100)
+
+        await lb_service.run_rollover(WEEK)
+        coins_after_first = await _get_coins(db, 1)
+        await lb_service.run_rollover(WEEK)
+        coins_after_second = await _get_coins(db, 1)
+        assert coins_after_first == coins_after_second
+        assert coins_after_first == LeaderboardService.COIN_BONUS_TOP10_PCT
+
+    async def test_hidden_user_still_gets_rewards(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """Hidden user не отображается публично, но rewards получает —
+        по спеке (LEADERBOARD.md §Privacy)."""
+        # User 1 — hidden, top score; user 2 — visible, second
+        await _make_user(user_repo, db, 1, age_days=30, hidden=True)
+        await _make_user(user_repo, db, 2, age_days=30, hidden=False)
+        await _grant(lb_repo, 1, task=500)
+        await _grant(lb_repo, 2, task=300)
+
+        await lb_service.run_rollover(WEEK)
+        # User 1 (hidden) должен иметь top_1 badge
+        async with db.execute(
+            "SELECT badge_id FROM weekly_badges WHERE user_id=?",
+            (1,),
+        ) as c:
+            badges = [r["badge_id"] for r in await c.fetchall()]
+        assert "top_1" in badges
+
+    async def test_different_weeks_independent(
+        self, lb_service, user_repo, lb_repo, db
+    ):
+        """Rollover для разных недель — независимое awarding."""
+        await _make_user(user_repo, db, 1, age_days=30)
+        await _grant(lb_repo, 1, task=100)
+
+        await lb_service.run_rollover(WEEK)
+        # Для следующей недели — другой week_iso, но weekly_scores не имеет
+        # данных. Должно быть no-op.
+        stats = await lb_service.run_rollover("2026-W22")
+        assert stats["badges_awarded"] == 0
+        # Прошлая неделя по-прежнему имеет ровно 1 badge (top_1)
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM weekly_badges WHERE awarded_for_week=?",
+            (WEEK,),
+        ) as c:
+            assert (await c.fetchone())["n"] == 1
+
+
+# ============================================================
+# tasks._compute_ended_week_iso — UTC Tuesday anchor
+# ============================================================
+class TestComputeEndedWeekIso:
+    def test_tuesday_anchor_returns_previous_week(self):
+        from tasks import _compute_ended_week_iso
+        # Tue 2026-05-19 00:00 UTC → ended week was 2026-W20 (Mon 11 - Sun 17)
+        now = datetime(2026, 5, 19, 0, 0)
+        assert _compute_ended_week_iso(now) == "2026-W20"
+
+    def test_january_year_boundary(self):
+        from tasks import _compute_ended_week_iso
+        # Tue 2026-01-06 00:00 UTC → ended week = Mon 2025-12-29 - Sun 2026-01-04
+        # ISO year of that week = 2026, week 1.
+        now = datetime(2026, 1, 6, 0, 0)
+        assert _compute_ended_week_iso(now) == "2026-W01"
+
+    def test_late_december_iso_week_52(self):
+        from tasks import _compute_ended_week_iso
+        # Tue 2024-12-31 00:00 UTC → ended week = Mon 2024-12-23 - Sun 2024-12-29
+        # ISO week 52 of 2024.
+        now = datetime(2024, 12, 31, 0, 0)
+        assert _compute_ended_week_iso(now) == "2024-W52"

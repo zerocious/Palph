@@ -190,17 +190,22 @@ Events from this patch forward have clean backtest semantics directly.
     accessors on `UserRepository`
   - 23 tests covering ranked-segment correctness, multiplier-vs-base ordering,
     hidden filter, user-rank, badge idempotency, expiration, render output
-- **Phase 2b** ⏳ deferred — Monday rollover scheduler + reward distribution
-  - `LeaderboardService.run_rollover(week_iso)` — top-3 / breakthrough /
-    top-10% coin bonus, idempotent via `award_badge` return value
-  - `leaderboard_scheduler` in `tasks.py` (pattern from `streak_scheduler`)
-  - Open design call: per-TZ rollover vs single UTC anchor. Lean toward
-    UTC Tuesday 00:00 anchor — all TZ Mondays have passed by then so
-    `weekly_scores` for the just-ended week is fully locked. Simpler and
-    avoids race between Moscow-rollover and NYC-rollover where the same
-    `week_iso` is "ended" at different real times.
-  - Tests: rollover correctness across segments, badge idempotency on
-    re-fire, coin-bonus paid exactly once per (user, week)
+- **Phase 2b** ✅ done — Monday rollover scheduler + reward distribution
+  - `LeaderboardService.run_rollover(week_iso)` — awards top-3 main /
+    breakthrough newbie / top-10% coin bonus (50 coins per slot,
+    constant `COIN_BONUS_TOP10_PCT`); idempotent via `award_badge`
+    INSERT OR IGNORE; coin payout gated by rowcount so re-runs don't
+    double-credit.
+  - `leaderboard_scheduler` in `tasks.py` — wakes every 60s, fires when
+    UTC Tuesday 00:00 hits; computes `ended_week_iso` via
+    `_compute_ended_week_iso(now_utc - 2 days)`. Date-based dedup
+    (`last_run_date`) avoids re-firing within the 60-second window.
+  - Anchor: UTC Tuesday 00:00. All global TZs have crossed their
+    local Monday boundary by this point, so `weekly_scores` for the
+    just-ended week is fully locked — no race with late-TZ writes.
+    13 tests cover rollover correctness across segments, top-10%
+    threshold (`< 10` users → skip), idempotency on re-fire, hidden
+    users still eligible, ISO week edge cases at year boundary.
 - **Phase 3** ⏳ — Streak freeze mechanic (UI + atomic coin deduction;
   `streak_freezes` table exists from Phase 1)
 - **Phase 4** ⏳ — Friends system (tables, FSM add/accept flow,

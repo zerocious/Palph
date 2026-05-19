@@ -38,7 +38,7 @@ from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
 )
-from tasks import streak_scheduler, reminder_scheduler
+from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
 # ------------------------------------------------------------
 # Настройки окружения
@@ -4329,6 +4329,8 @@ async def main():
     background_tasks = [
         asyncio.create_task(streak_scheduler(streak_service, user_repo, backup_service)),
         asyncio.create_task(reminder_scheduler(reminder_service, user_repo)),
+        # Weekly leaderboard rollover (UTC Tuesday 00:00 anchor). См. LEADERBOARD.md §Rewards.
+        asyncio.create_task(leaderboard_scheduler(leaderboard_service)),
     ]
     logger.info(
         "app.start admins=%s main_admin_id=%s server_tz=%s log_level=%s",

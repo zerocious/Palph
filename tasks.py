@@ -1,12 +1,72 @@
 import asyncio
 import logging
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from repository import UserRepository
-from services import ReminderService, StreakService, BackupService
+from services import ReminderService, StreakService, BackupService, LeaderboardService
 
 
 logger = logging.getLogger("studybuddy_bot")
+
+
+def _compute_ended_week_iso(now_utc: datetime) -> str:
+    """
+    Возвращает week_iso только что закончившейся недели для rollover'а.
+    Anchor — UTC Tuesday 00:00; в этот момент Sunday прошедшей недели
+    был 2 дня назад. ISO week оттуда даёт корректный week_iso.
+
+    Выделено в pure-функцию, чтобы тесты могли передать произвольный
+    now_utc без mocking даты внутри scheduler-loop'а.
+    """
+    ended = now_utc - timedelta(days=2)
+    return ended.strftime("%G-W%V")
+
+
+async def leaderboard_scheduler(leaderboard_service: LeaderboardService):
+    """
+    Раз в минуту проверяет, наступил ли Вторник 00:00 UTC. Если да —
+    запускает rollover недели для week_iso, закончившейся в прошедшее
+    воскресенье.
+
+    Почему UTC Tuesday 00:00 anchor (не per-TZ rollover):
+    - К UTC Вт 00:00 все глобальные TZ уже пересекли Sun→Mon boundary
+      в локальном времени (самый восточный UTC+14 → Tue 14:00 локально;
+      самый западный UTC-12 → Mon 12:00 локально).
+    - Значит, weekly_scores для прошедшей недели у ВСЕХ юзеров
+      зафиксирована — никаких race-conditions с поздними write'ами.
+    - Pro per-TZ rollover: мини-лидерборды на TZ → fragmented rewards,
+      ranking зависит от того, в каком TZ ты живёшь. Не наш кейс.
+
+    Идемпотентность:
+    - award_badge внутри run_rollover — INSERT OR IGNORE по PK
+      (user_id, badge_id, awarded_for_week). Повторный fire безвреден.
+    - Дополнительно дедупим по дате (last_run_date), чтобы не молотить
+      SQL в каждой минуте окна 00:00–00:59.
+    """
+    last_run_date: str | None = None  # 'YYYY-MM-DD' последнего успешного rollover
+    logger.info("leaderboard_scheduler: started")
+    while True:
+        try:
+            now_utc = datetime.now(pytz.UTC)
+            today = now_utc.strftime("%Y-%m-%d")
+            # weekday() == 1 → вторник (пн=0, вт=1, …)
+            if (
+                now_utc.weekday() == 1
+                and now_utc.hour == 0
+                and last_run_date != today
+            ):
+                ended_week_iso = _compute_ended_week_iso(now_utc)
+                stats = await leaderboard_service.run_rollover(ended_week_iso)
+                last_run_date = today
+                logger.info(
+                    "leaderboard_scheduler.rollover_done week=%s "
+                    "segments=%s badges=%s coins=%s",
+                    stats["week"], stats["segments_processed"],
+                    stats["badges_awarded"], stats["coins_distributed"],
+                )
+        except Exception as e:
+            logger.error(f"leaderboard_scheduler failed: {e}")
+        await asyncio.sleep(60)
 
 
 async def streak_scheduler(
