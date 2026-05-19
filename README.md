@@ -13,7 +13,7 @@ top-3/breakthrough/top-10% наградами, ❄️ заморозка стр�
 (profile-кнопка + cooldown + atomic покупка), 👥 friends system
 (`/friends` с add/accept/reject/remove + friends-tab по weekly score).
 Спек: [LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: 378 passing.
+[session_notes.md](session_notes.md). Tests: 400 passing.
 
 ---
 
@@ -133,11 +133,12 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
   по `created_at < 7 days`. Команды: `/leaderboard` (свой сегмент +
   ранг), `/friends` (👥 ранжированный лист друзей + add/accept/reject
-  по Telegram ID + remove с confirm). 👤 Privacy opt-out в настройках.
-  ❄️ **Streak freeze** — coins-gated кнопка в профиле, тиры
-  500/750/1000, 7-day cooldown, потребляется в miss-day path вместо
-  reset стрика. Top-3 / breakthrough / top-10% coin bonus раздаются
-  автоматически на rollover, идемпотентно. Backtest notebook
+  по **@username или Telegram ID** + remove с confirm; username
+  кешируется через middleware на каждый Message). 👤 Privacy opt-out
+  в настройках. ❄️ **Streak freeze** — coins-gated кнопка в профиле,
+  тиры 500/750/1000, 7-day cooldown, потребляется в miss-day path
+  вместо reset стрика. Top-3 / breakthrough / top-10% coin bonus
+  раздаются автоматически на rollover, идемпотентно. Backtest notebook
   `analysis/leaderboard_backtest.ipynb` валидирует формулу на
   исторических `events` до боевого запуска.
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
@@ -237,7 +238,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**378 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends) |
+| [tests/](tests/) | Юнит-тесты (**400 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search) |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |

@@ -156,6 +156,42 @@ class UserRepository:
             row = await cursor.fetchone()
             return bool(row["hidden_from_leaderboards"]) if row else False
 
+    # ------------------------------------------------------------
+    # Username (Telegram @handle) — для friends-search
+    # ------------------------------------------------------------
+    async def refresh_username(self, user_id: int, username) -> None:
+        """
+        Обновляет users.username. Безусловный UPDATE — допускает и
+        смену handle (str → str), и сброс в NULL (если пользователь
+        удалил публичный handle на стороне Telegram).
+
+        Принимает username как str или None. Вызывается из
+        UsernameSyncMiddleware на каждый Message/CallbackQuery,
+        чтобы кеш для friends-search не дрейфовал.
+        """
+        await self.db.execute(
+            "UPDATE users SET username = ? WHERE user_id = ?",
+            (username, user_id),
+        )
+        await self.db.commit()
+
+    async def find_user_id_by_username(self, username: str):
+        """
+        Case-insensitive lookup по users.username. Caller отвечает за
+        очистку входной строки от leading '@' и лишних пробелов.
+
+        Возвращает user_id (int) или None если username не найден.
+        Пустая строка → None defensively.
+        """
+        if not username:
+            return None
+        async with self.db.execute(
+            "SELECT user_id FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["user_id"] if row else None
+
     async def get_distinct_timezones(self) -> list[str]:
         """Возвращает все часовые пояса, которые используются хотя бы одним пользователем."""
         async with self.db.execute(

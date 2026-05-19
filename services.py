@@ -396,6 +396,40 @@ def user_calendar_keys(now_local: datetime) -> tuple:
     return now_local.strftime("%Y-%m-%d"), now_local.strftime("%G-W%V")
 
 
+def parse_friend_query(text: str) -> tuple:
+    """
+    Парсит ввод friend-add FSM в (username, numeric_id). Один из них
+    будет None — caller выбирает path по тому, что не-None. Если оба
+    None — вход неразборчивый, caller просит повторить.
+
+    Принимает:
+      '@alice'  → ('alice', None)
+      'alice'   → ('alice', None) — без @ трактуем как username
+      '12345'   → (None, 12345)
+      '-12345'  → (None, -12345)
+      ''        → (None, None)
+      'foo bar' → ('foo bar', None) — пробелы сохраняем; lookup всё
+                  равно не найдёт (Telegram username их не разрешает)
+
+    Эвристика "нет цифры → username" работает, потому что Telegram-handle
+    всегда начинается с буквы (regex `[A-Za-z][A-Za-z0-9_]{4,31}`).
+    Pure function; testable без bot.py.
+    """
+    text = (text or "").strip()
+    if not text:
+        return (None, None)
+    if text.startswith("@"):
+        username = text[1:].strip()
+        return ((username if username else None), None)
+    candidate = text[1:] if text.startswith("-") else text
+    if candidate.isdigit():
+        try:
+            return (None, int(text))
+        except ValueError:
+            return (None, None)
+    return (text, None)
+
+
 class StudyService:
     def __init__(
         self,

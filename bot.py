@@ -37,7 +37,7 @@ from repository import (
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
-    freeze_cost,
+    freeze_cost, parse_friend_query,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
@@ -133,6 +133,43 @@ active_timers: dict[int, asyncio.Task] = {}
 # Rate limiter — защита от спама/abuse'а на уровне приложения.
 # Initialize in main(); attached to dispatcher как middleware.
 rate_limiter: UserRateLimiter = None
+
+
+class UsernameSyncMiddleware(BaseMiddleware):
+    """
+    Обновляет users.username из event_from_user.username на каждом
+    Message/CallbackQuery. Telegram-юзер может менять @handle в любой
+    момент, и friends-search должен находить актуальное значение.
+
+    Безусловный UPDATE (1 SQL/event) — приемлемая цена для бота
+    <100 пользователей. Если cost станет проблемой — можно перейти
+    на in-memory cache + write-only-if-changed.
+
+    Sync failure тихо логируется и НЕ должна прерывать handler.
+    Username — вспомогательное поле, его недоступность не должна
+    лишать пользователя возможности учиться.
+    """
+
+    def __init__(self, user_repo: UserRepository):
+        self.user_repo = user_repo
+        super().__init__()
+
+    async def __call__(self, handler, event, data):
+        try:
+            user = data.get("event_from_user")
+            if user is not None and user.id:
+                # user.username — str или None; передаём как есть.
+                # refresh_username безусловный UPDATE; если строки
+                # пользователя нет (ещё не /start'нул), no-op
+                # (rowcount=0, никаких ошибок).
+                await self.user_repo.refresh_username(user.id, user.username)
+        except Exception as e:
+            logger.warning(
+                "username.sync_failed user_id=%s reason=%s",
+                getattr(getattr(event, "from_user", None), "id", None),
+                type(e).__name__,
+            )
+        return await handler(event, data)
 
 
 class RateLimitMiddleware(BaseMiddleware):
@@ -4198,7 +4235,7 @@ async def friends_back(callback: CallbackQuery):
 # ------------------------------------------------------------
 @router.callback_query(F.data.startswith("friend_add_start:"))
 async def friend_add_start(callback: CallbackQuery, state: FSMContext):
-    """Просит ввести Telegram ID для добавления в друзья."""
+    """Просит ввести @username ИЛИ Telegram ID."""
     await callback.answer()
     user_id = callback.from_user.id
     await state.set_state(FriendStates.waiting_for_user_id)
@@ -4206,9 +4243,17 @@ async def friend_add_start(callback: CallbackQuery, state: FSMContext):
     kb.button(text="◀️ Отмена", callback_data=f"friends_back:{user_id}")
     try:
         await callback.message.edit_text(
-            "🆔 Введи Telegram ID пользователя, которого хочешь добавить.\n\n"
-            "Узнать свой ID можно через бот @userinfobot.\n"
+            "🆔 Введи <b>@username</b> или <b>Telegram ID</b> пользователя.\n\n"
+            "Примеры:\n"
+            "  • <code>@alice</code>\n"
+            "  • <code>alice</code> (без @)\n"
+            "  • <code>123456789</code>\n\n"
+            "💡 Username сработает, только если пользователь хотя бы раз "
+            "взаимодействовал с ботом — на /start мы запоминаем его @handle. "
+            "Если поиск не нашёл — попроси прислать тебе свой Telegram ID "
+            "через @userinfobot.\n\n"
             "Для отмены отправь /cancel.",
+            parse_mode="HTML",
             reply_markup=kb.as_markup(),
         )
     except Exception as e:
@@ -4225,20 +4270,34 @@ async def friend_add_cancel(message: Message, state: FSMContext):
 @router.message(FriendStates.waiting_for_user_id)
 async def friend_add_process(message: Message, state: FSMContext):
     """
-    Парсит введённый Telegram ID, отправляет request. Если успешно —
-    шлёт notification target'у (с inline-кнопками Accept/Reject).
+    Парсит введённый @username ИЛИ Telegram ID, резолвит к user_id и
+    отправляет request. Если успешно — шлёт notification target'у
+    (с inline-кнопками Accept/Reject).
     """
     user_id = message.from_user.id
-    text_input = (message.text or "").strip()
+    text_input = message.text or ""
 
-    # Парсим число
-    try:
-        target_id = int(text_input)
-    except ValueError:
+    username, target_id = parse_friend_query(text_input)
+    if username is None and target_id is None:
         await message.answer(
-            "❌ Ожидался числовой Telegram ID. Попробуй ещё раз или /cancel."
+            "❌ Не понял ввод. Введи @username или числовой Telegram ID "
+            "(или /cancel)."
         )
         return
+
+    # Username path — резолвим к user_id через кеш users.username
+    if username is not None:
+        target_id = await user_repo.find_user_id_by_username(username)
+        if target_id is None:
+            await message.answer(
+                f"❌ Пользователь <code>@{username}</code> не найден.\n"
+                f"Возможно, он ещё не открывал бота, скрыл @handle или "
+                f"имя написано с опечаткой. Попроси его прислать тебе "
+                f"свой числовой Telegram ID и попробуй снова через /friends.",
+                parse_mode="HTML",
+            )
+            await state.clear()
+            return
 
     await state.clear()
     result = await friend_repo.send_request(user_id, target_id)
@@ -4735,6 +4794,13 @@ async def main():
     # ко всем хендлерам в роутере.
     rate_limiter = UserRateLimiter(max_actions=30, window_seconds=60)
     rl_middleware = RateLimitMiddleware(rate_limiter)
+    # Username sync — обновляем users.username из event_from_user.username
+    # перед всеми handler'ами. Регистрируем ДО rl_middleware, потому что
+    # rate-limit может silently drop event (return None), а username хотим
+    # обновить ВСЕГДА, пока юзер активен.
+    username_sync = UsernameSyncMiddleware(user_repo)
+    dp.message.middleware(username_sync)
+    dp.callback_query.middleware(username_sync)
     dp.message.middleware(rl_middleware)
     dp.callback_query.middleware(rl_middleware)
     dp.include_router(router)

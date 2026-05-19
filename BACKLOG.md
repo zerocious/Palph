@@ -49,29 +49,20 @@
 
 ---
 
-## Username-search для /friends (2026-05-19)
+## Username-search для /friends ✅ shipped 2026-05-19
 
-**Идея**: вместо ввода Telegram ID при добавлении друга — поиск по `@username`. `/friends → ➕ Добавить` сейчас просит цифровой ID, который большинство пользователей не знает наизусть. Telegram API даёт `from_user.username` в обновлениях, можно индексировать.
+Поднято с defer на ship в той же сессии (после Phase 4 friends).
+Реализация:
+- `users.username TEXT` колонка + migration.
+- `UsernameSyncMiddleware` обновляет username на каждом Message/CallbackQuery (FK-safe; failures swallow'ятся).
+- `UserRepository.refresh_username` + `find_user_id_by_username` (case-insensitive `COLLATE NOCASE`).
+- `services.parse_friend_query` — pure parser, принимает `@alice` / `alice` / `12345` / `-12345`.
+- `friend_add_process` сначала пытается username path → fallback на numeric.
+- 22 теста: parser variants + repo round-trips + case-insensitive lookup.
 
-**Зачем**:
-- Снижает trial-and-error: ID нужно искать через @userinfobot, копировать; username знают свой и чужие наизусть.
-- Без этого friends-feature будет иметь rate adoption sub-10% — слишком высокий барьер для casual-пользователя.
+Privacy-toggle (opt-out из username discovery) НЕ добавлен — спор был о том, нужен ли отдельный privacy-канал кроме `hidden_from_leaderboards`. Defer до user-feedback'а.
 
-**Подход (черновой)**:
-- На `/start` сохраняем `users.username TEXT` колонку (миграция ALTER TABLE через существующий try/except паттерн в `init_db`).
-- Обновляем на каждом `Message` (username юзера может смениться).
-- В `FriendStates.waiting_for_user_id` детектим: начинается с `@` или содержит только буквы/_ → ищем по username; иначе парсим как int.
-- `FriendRepository.find_user_by_username(s)` → user_id или None.
-- UI меняет prompt: «Введи @username или Telegram ID».
-
-**Риски**:
-- Username может быть unset (необязательное поле в Telegram). Резерв-fallback на ID нужен.
-- Username не уникален во времени: A удалил @foo, B взял @foo — старый сохранённый username в БД будет указывать неправильно. Нужно re-validate на send_request (получить user_id через текущее Telegram API).
-- Privacy: index username → public discovery. Возможно нужен opt-out (галочка «искать меня по username»).
-
-**Стоимость**: код ~50–80 строк (миграция + lookup + UI tweak + тесты), без арт-стоимости.
-
-**Решение**: defer до первого user-feedback'а после launch'а PR #3. Если жалобы на «не нашёл, как добавить друга» — pick up. Иначе оставить ID-only.
+Re-validation на stale username (A удалил @foo, B взял) тоже НЕ реализована — Telegram API через `bot.get_chat(username)` мог бы валидировать, но это добавляет round-trip и API rate-limit. v1 принимает stale-cache риск; если станет реальной проблемой — поднять в backlog.
 
 ---
 

@@ -320,4 +320,14 @@ async def init_db(db: aiosqlite.Connection):
     except Exception:
         pass  # колонка уже есть
 
+    # Миграция: Telegram @username для friends-search (BACKLOG → ship).
+    # Nullable: пользователи без публичного @handle имеют NULL.
+    # Обновляется UsernameSyncMiddleware на каждый Message/CallbackQuery,
+    # т.к. Telegram может менять username в любой момент.
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
     
