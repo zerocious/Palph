@@ -120,8 +120,26 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
   termы с `streak ≥ 3`, флэш-карты с `repetitions ≥ 3`, MCQ-вопросы
   отвеченные хотя бы раз верно, решённые задачи.
-- **Цифровой питомец** (пока простой; настроение по стрику; полный
-  переработка с эмоциями/кастомизацией/уровнями — в v0.7 #16)
+- **Цифровой питомец** — **data-layer переработан 2026-05-19**
+  ([PR #2 merged](https://github.com/zerocious/Palph/pull/2)):
+  один дизайн, **5 derived эмоций**
+  (`studying / excited / sad / sleepy / happy` — выводятся в момент
+  рендера), 1 XP/мин, формула уровня `floor(sqrt(xp/10))+1`,
+  `user_pet_inventory` для будущей кастомизации, атомарная покупка
+  под `db.lock`. Остаётся art/UI-трек (Pillow build → 125 PNG,
+  picker UI, level-up notification, sad-pet в reminder).
+- **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
+  `(time + math_task + quiz + card) × streak_multiplier`, daily caps,
+  ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
+  по `created_at < 7 days`. Команды: `/leaderboard` (свой сегмент +
+  ранг), `/friends` (👥 ранжированный лист друзей + add/accept/reject
+  по Telegram ID + remove с confirm). 👤 Privacy opt-out в настройках.
+  ❄️ **Streak freeze** — coins-gated кнопка в профиле, тиры
+  500/750/1000, 7-day cooldown, потребляется в miss-day path вместо
+  reset стрика. Top-3 / breakthrough / top-10% coin bonus раздаются
+  автоматически на rollover, идемпотентно. Backtest notebook
+  `analysis/leaderboard_backtest.ipynb` валидирует формулу на
+  исторических `events` до боевого запуска.
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user
 - **❓ FAQ** — интерактивное меню с 9 вопросами + кнопка техподдержки.
@@ -207,6 +225,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [BACKLOG.md](BACKLOG.md) | Сырые идеи без приоритета — отстойник перед TODO |
 | [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
+| [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
 
 ## Файлы инфраструктуры
 
@@ -216,9 +235,10 @@ study_materials/    # Учебные материалы — data-driven дере
 | [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
 | [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
-| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
+| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (185 штук: SM-2, services, progress repos, BackupService, AnalyticsService (включая segments/content_stats/event_timeline/heatmap), RateLimiter, EventRepository, log parser) |
+| [tests/](tests/) | Юнит-тесты (**378 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends) |
+| [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |

@@ -49,6 +49,56 @@
 
 ---
 
+## Username-search для /friends (2026-05-19)
+
+**Идея**: вместо ввода Telegram ID при добавлении друга — поиск по `@username`. `/friends → ➕ Добавить` сейчас просит цифровой ID, который большинство пользователей не знает наизусть. Telegram API даёт `from_user.username` в обновлениях, можно индексировать.
+
+**Зачем**:
+- Снижает trial-and-error: ID нужно искать через @userinfobot, копировать; username знают свой и чужие наизусть.
+- Без этого friends-feature будет иметь rate adoption sub-10% — слишком высокий барьер для casual-пользователя.
+
+**Подход (черновой)**:
+- На `/start` сохраняем `users.username TEXT` колонку (миграция ALTER TABLE через существующий try/except паттерн в `init_db`).
+- Обновляем на каждом `Message` (username юзера может смениться).
+- В `FriendStates.waiting_for_user_id` детектим: начинается с `@` или содержит только буквы/_ → ищем по username; иначе парсим как int.
+- `FriendRepository.find_user_by_username(s)` → user_id или None.
+- UI меняет prompt: «Введи @username или Telegram ID».
+
+**Риски**:
+- Username может быть unset (необязательное поле в Telegram). Резерв-fallback на ID нужен.
+- Username не уникален во времени: A удалил @foo, B взял @foo — старый сохранённый username в БД будет указывать неправильно. Нужно re-validate на send_request (получить user_id через текущее Telegram API).
+- Privacy: index username → public discovery. Возможно нужен opt-out (галочка «искать меня по username»).
+
+**Стоимость**: код ~50–80 строк (миграция + lookup + UI tweak + тесты), без арт-стоимости.
+
+**Решение**: defer до первого user-feedback'а после launch'а PR #3. Если жалобы на «не нашёл, как добавить друга» — pick up. Иначе оставить ID-only.
+
+---
+
+## Friend invite-link через deep links (2026-05-19)
+
+**Идея**: каждый user генерирует ссылку `t.me/StudyBuddyBot?start=friend_<token>`; кто-то открывает → автоматический отправленный friend-request от sharer'а. Сейчас единственный способ добавить — знать Telegram ID получателя.
+
+**Зачем**:
+- Social loop: «отправь мою ссылку» в WhatsApp/Telegram → 1-click конверсия. Существующий friends-flow с ID этого не даёт.
+- Возможный driver вирального роста.
+
+**Подход (черновой)**:
+- Таблица `friend_invite_tokens(token TEXT PK, from_user_id INTEGER, created_at TEXT, used_by INTEGER)`.
+- `/share_friend` команда → создаёт токен, шлёт ссылку.
+- Handler `/start friend_<token>` → парсит → проверяет токен → если новый user, регистрирует + auto-send_request; если существующий, просто send_request.
+- TTL ~30 дней; reusable (один токен — много новых friends).
+
+**Риски**:
+- Спам-vector: один user генерирует токен → раздаёт массам → флуд friend-requests. Rate limit на send_request per user/day решит (5–10/day разумно).
+- Tracking-сложность: если deep-link открыли несколько раз, дедуплицировать или нет?
+
+**Стоимость**: код ~120–150 строк (table + token gen + handler + UI button + tests).
+
+**Решение**: defer. Username-search покрывает 80% случая «как добавить друга». Deep-link добавляет 20% но за высокую implementation cost. Вернуться если username-search всё же мало.
+
+---
+
 ## Индивидуальный учебный план на основе диагностики и прогресса (2026-05-18)
 
 **Идея**: при первом входе в предмет — короткий входной тест (5-10 смешанных вопросов: теория + задачи), на основе которого + накопленных данных прогресса бот собирает **персональный план дня**: «сегодня изучи это, повтори это, попробуй эту задачу». План адаптируется по мере того, как пользователь учится.
