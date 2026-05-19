@@ -267,6 +267,34 @@ async def init_db(db: aiosqlite.Connection):
             expires_at TEXT NOT NULL,
             PRIMARY KEY (user_id, badge_id, awarded_for_week)
         );
+
+        -- Pending friend requests (Phase 4, LEADERBOARD.md §Segments → Friends).
+        -- Хранятся только pending: на accept строка удаляется и появляется
+        -- friendship; на reject/cancel — просто удаляется. PK (from, to)
+        -- предотвращает дубль-отправку. CHECK исключает self-request.
+        CREATE TABLE IF NOT EXISTS friend_requests (
+            from_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            to_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (from_user_id, to_user_id),
+            CHECK (from_user_id != to_user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_friend_requests_to
+            ON friend_requests(to_user_id);
+
+        -- Подтверждённые дружбы (Phase 4). Нормализованное хранение:
+        -- ВСЕГДА user_a < user_b. Это гарантирует одну строку на дружбу
+        -- (а не две a→b и b→a), упрощает уникальность и поиск
+        -- "are A and B friends?".
+        CREATE TABLE IF NOT EXISTS friendships (
+            user_a INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            user_b INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_a, user_b),
+            CHECK (user_a < user_b)
+        );
+        CREATE INDEX IF NOT EXISTS idx_friendships_user_b
+            ON friendships(user_b);
     """)
     await db.commit()
 

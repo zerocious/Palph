@@ -32,7 +32,7 @@ from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
-    EventRepository, PetRepository, LeaderboardRepository,
+    EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -213,6 +213,11 @@ class SetupStates(StatesGroup):
     setting_morning = State()
     setting_evening = State()
     confirming = State()
+
+
+class FriendStates(StatesGroup):
+    """FSM для добавления друга по Telegram ID (Phase 4)."""
+    waiting_for_user_id = State()
 
 
 class SettingsStates(StatesGroup):
@@ -4135,6 +4140,340 @@ async def cmd_leaderboard(message: Message):
         await message.answer("Не удалось загрузить лидерборд. Попробуй позже.")
 
 
+# ============================================================
+# Friends system (Phase 4 / LEADERBOARD.md §Segments → Friends)
+# ============================================================
+def _friends_menu_keyboard(user_id: int, pending_count: int = 0) -> InlineKeyboardMarkup:
+    """Inline-клавиатура для friends-tab: 3 действия + опциональный badge на pending."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить друга", callback_data=f"friend_add_start:{user_id}")
+    pending_label = (
+        f"📩 Запросы ({pending_count})" if pending_count > 0 else "📩 Запросы"
+    )
+    kb.button(text=pending_label, callback_data=f"friend_pending:{user_id}")
+    kb.button(text="➖ Удалить друга", callback_data=f"friend_remove_list:{user_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+@router.message(Command("friends"))
+async def cmd_friends(message: Message):
+    """Friends-tab: weekly-ранжированный список друзей + меню действий."""
+    user_id = message.from_user.id
+    try:
+        text = await leaderboard_service.render_friends_tab(user_id)
+        pending = await friend_repo.get_pending_received(user_id)
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(user_id, len(pending)),
+        )
+    except Exception as e:
+        logger.warning(
+            "friends.render_failed user=%s err=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+        await message.answer("Не удалось загрузить друзей. Попробуй позже.")
+
+
+@router.callback_query(F.data.startswith("friends_back:"))
+async def friends_back(callback: CallbackQuery):
+    """Возврат к friends-tab из любого вложенного экрана."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    text = await leaderboard_service.render_friends_tab(user_id)
+    pending = await friend_repo.get_pending_received(user_id)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(user_id, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.back_render_failed user=%s err=%s", user_id, e)
+
+
+# ------------------------------------------------------------
+# Add friend — FSM (waiting for user_id)
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_add_start:"))
+async def friend_add_start(callback: CallbackQuery, state: FSMContext):
+    """Просит ввести Telegram ID для добавления в друзья."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    await state.set_state(FriendStates.waiting_for_user_id)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Отмена", callback_data=f"friends_back:{user_id}")
+    try:
+        await callback.message.edit_text(
+            "🆔 Введи Telegram ID пользователя, которого хочешь добавить.\n\n"
+            "Узнать свой ID можно через бот @userinfobot.\n"
+            "Для отмены отправь /cancel.",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.add_start_render_failed user=%s err=%s", user_id, e)
+
+
+@router.message(FriendStates.waiting_for_user_id, Command("cancel"))
+async def friend_add_cancel(message: Message, state: FSMContext):
+    """Отмена add-friend FSM (через /cancel)."""
+    await state.clear()
+    await message.answer("Добавление отменено.")
+
+
+@router.message(FriendStates.waiting_for_user_id)
+async def friend_add_process(message: Message, state: FSMContext):
+    """
+    Парсит введённый Telegram ID, отправляет request. Если успешно —
+    шлёт notification target'у (с inline-кнопками Accept/Reject).
+    """
+    user_id = message.from_user.id
+    text_input = (message.text or "").strip()
+
+    # Парсим число
+    try:
+        target_id = int(text_input)
+    except ValueError:
+        await message.answer(
+            "❌ Ожидался числовой Telegram ID. Попробуй ещё раз или /cancel."
+        )
+        return
+
+    await state.clear()
+    result = await friend_repo.send_request(user_id, target_id)
+
+    feedback_map = {
+        "self_target": "🙂 Нельзя добавить самого себя.",
+        "user_not_found": "❌ Пользователь с таким ID не зарегистрирован в боте.",
+        "already_friends": "👥 Вы уже друзья.",
+        "already_pending": "📩 Запрос уже отправлен; ждём ответа.",
+        "auto_accepted": (
+            "🎉 У этого пользователя уже был запрос к тебе — "
+            "вы автоматически стали друзьями!"
+        ),
+        "sent": "✅ Запрос отправлен. Жди подтверждения.",
+    }
+    feedback = feedback_map.get(result, "Что-то пошло не так. Попробуй позже.")
+
+    # Notify target если был отправлен новый request или произошёл auto-accept.
+    if result == "sent":
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять", callback_data=f"friend_accept:{user_id}")
+        kb.button(text="❌ Отклонить", callback_data=f"friend_reject:{user_id}")
+        kb.adjust(2)
+        try:
+            await bot.send_message(
+                target_id,
+                f"👥 Пользователь <code>{user_id}</code> хочет добавить тебя в друзья.",
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_target user=%s reason=%s",
+                target_id, type(e).__name__,
+            )
+            feedback += "\n\n⚠️ Не удалось доставить уведомление — возможно, пользователь заблокировал бота."
+    elif result == "auto_accepted":
+        try:
+            await bot.send_message(
+                target_id,
+                f"🎉 Пользователь <code>{user_id}</code> отправил тебе запрос — "
+                f"вы автоматически стали друзьями (у тебя был встречный запрос).",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_auto_accept user=%s reason=%s",
+                target_id, type(e).__name__,
+            )
+
+    await message.answer(feedback)
+
+
+# ------------------------------------------------------------
+# Pending received requests — Accept / Reject
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_pending:"))
+async def friend_pending_list(callback: CallbackQuery):
+    """Список входящих запросов; для каждого — Accept/Reject inline."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    pending = await friend_repo.get_pending_received(user_id)
+    if not pending:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+        try:
+            await callback.message.edit_text(
+                "📩 Входящих запросов нет.",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.warning("friends.pending_empty_render user=%s err=%s", user_id, e)
+        return
+
+    lines = ["📩 <b>Входящие запросы:</b>", ""]
+    kb = InlineKeyboardBuilder()
+    for req in pending:
+        fid = req["from_user_id"]
+        lines.append(f"• id=<code>{fid}</code>")
+        kb.button(text=f"✅ Принять id={fid}", callback_data=f"friend_accept:{fid}")
+        kb.button(text=f"❌ Отклонить id={fid}", callback_data=f"friend_reject:{fid}")
+    kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+    kb.adjust(2)  # 2 кнопки на ряд (accept+reject пары)
+    try:
+        await callback.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.pending_list_render user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("friend_accept:"))
+async def friend_accept(callback: CallbackQuery):
+    """Принять входящий request. callback_data = friend_accept:<from_user_id>"""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        from_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    accepted = await friend_repo.accept_request(from_uid, me)
+    if not accepted:
+        await callback.answer("Запрос уже не активен.", show_alert=True)
+    else:
+        # Notify requester
+        try:
+            await bot.send_message(
+                from_uid,
+                f"🎉 Пользователь <code>{me}</code> принял твой запрос — "
+                f"теперь вы друзья!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_accept user=%s reason=%s",
+                from_uid, type(e).__name__,
+            )
+    # Возврат к friends-tab
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.accept_render user=%s err=%s", me, e)
+
+
+@router.callback_query(F.data.startswith("friend_reject:"))
+async def friend_reject(callback: CallbackQuery):
+    """Отклонить входящий request. callback_data = friend_reject:<from_user_id>"""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        from_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await friend_repo.reject_request(from_uid, me)
+    # Молча возвращаемся в friends-tab (без уведомления отправителю — спека)
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.reject_render user=%s err=%s", me, e)
+
+
+# ------------------------------------------------------------
+# Remove friend (with confirm)
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_remove_list:"))
+async def friend_remove_list(callback: CallbackQuery):
+    """Список текущих друзей с inline-кнопками для удаления."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    friends = await friend_repo.get_friends(user_id)
+    if not friends:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+        try:
+            await callback.message.edit_text(
+                "У тебя пока нет друзей, которых можно удалить.",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.warning("friends.remove_empty_render user=%s err=%s", user_id, e)
+        return
+
+    kb = InlineKeyboardBuilder()
+    for fid in friends:
+        kb.button(text=f"➖ id={fid}", callback_data=f"friend_remove_confirm:{fid}")
+    kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(
+            "Выбери друга для удаления:",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_list_render user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("friend_remove_confirm:"))
+async def friend_remove_confirm(callback: CallbackQuery):
+    """Confirm-диалог перед удалением."""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        target = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, удалить", callback_data=f"friend_remove_do:{target}")
+    kb.button(text="◀️ Отмена", callback_data=f"friends_back:{me}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(
+            f"Удалить пользователя <code>{target}</code> из друзей?",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_confirm_render user=%s err=%s", me, e)
+
+
+@router.callback_query(F.data.startswith("friend_remove_do:"))
+async def friend_remove_do(callback: CallbackQuery):
+    """Реально удаляет дружбу + возврат в friends-tab."""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        target = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await friend_repo.remove_friend(me, target)
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_do_render user=%s err=%s", me, e)
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     """Админская справка по командам. Обычным пользователям советует открыть FAQ."""
@@ -4369,7 +4708,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4382,9 +4721,10 @@ async def main():
     event_repo = EventRepository(db)
     pet_repo = PetRepository(db)
     leaderboard_repo = LeaderboardRepository(db)
+    friend_repo = FriendRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service, pet_repo, leaderboard_repo)
-    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo)
+    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo, friend_repo=friend_repo)
     # streak_service создаётся ниже после построения bot; ему нужен
     # leaderboard_repo для consume_freeze_if_active (Phase 3).
     bot = Bot(token=BOT_TOKEN)

@@ -37,6 +37,14 @@ async def lb_service(user_repo, lb_repo):
     return LeaderboardService(user_repo, lb_repo)
 
 
+@pytest_asyncio.fixture
+async def lb_service_with_friends(user_repo, lb_repo, db):
+    """LeaderboardService с friend_repo для тестов Phase 4."""
+    from repository import FriendRepository
+    fr = FriendRepository(db)
+    return LeaderboardService(user_repo, lb_repo, friend_repo=fr)
+
+
 async def _make_user(user_repo, db, uid, age_days, *, streak=0, hidden=False):
     """Создаёт user и сразу 'старит' его на N дней через UPDATE created_at."""
     await user_repo.create_user(uid)
@@ -634,3 +642,73 @@ class TestFreezeCooldown:
         remaining = await lb_repo.get_freeze_cooldown_remaining_days(created_user)
         # 6 or 7 days remaining depending on rounding at the moment of the query
         assert 5 <= remaining <= 7
+
+
+# ============================================================
+# Phase 4 — render_friends_tab
+# ============================================================
+async def _add_friend_pair(db, friend_repo, a, b):
+    """Helper: создаёт normalized дружбу через send + accept."""
+    await friend_repo.send_request(a, b)
+    await friend_repo.accept_request(a, b)
+
+
+class TestRenderFriendsTab:
+    async def test_no_friends_shows_hint(
+        self, lb_service_with_friends, user_repo, db
+    ):
+        await _make_user(user_repo, db, 1, age_days=30)
+        text = await lb_service_with_friends.render_friends_tab(1)
+        assert "нет добавленных друзей" in text
+        assert "/friends" in text
+
+    async def test_single_friend_with_self(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        # Создаём двух пользователей и дружбу между ними
+        await _make_user(user_repo, db, 1, age_days=30)
+        await _make_user(user_repo, db, 2, age_days=30)
+        fr = lb_service_with_friends.friend_repo
+        await _add_friend_pair(db, fr, 1, 2)
+        # Дать счёт на текущей неделе
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=200)
+
+        text = await lb_service_with_friends.render_friends_tab(1)
+        # Обе строки присутствуют
+        assert "id=1" in text
+        assert "id=2" in text
+        # Маркер собственной строки
+        assert "(Вы)" in text
+        # Top-2 ранжирование: medal для первого, второй без emoji
+        assert "🥇" in text
+        assert "🥈" in text
+
+    async def test_friends_sorted_by_total_final(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        """User 1 видит друзей в порядке total_final desc (с multiplier)."""
+        # User 1: streak 0, task=100 → final 100
+        # User 2: streak 14, task=100 → final 120
+        # User 3: streak 0, task=200 → final 200
+        await _make_user(user_repo, db, 1, age_days=30, streak=0)
+        await _make_user(user_repo, db, 2, age_days=30, streak=14)
+        await _make_user(user_repo, db, 3, age_days=30, streak=0)
+        fr = lb_service_with_friends.friend_repo
+        await _add_friend_pair(db, fr, 1, 2)
+        await _add_friend_pair(db, fr, 1, 3)
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=100)
+        await _grant(lb_repo, 3, task=200)
+
+        text = await lb_service_with_friends.render_friends_tab(1)
+        # Порядок в тексте: 3 → 2 → 1 (200, 120, 100)
+        pos_3 = text.find("id=3")
+        pos_2 = text.find("id=2")
+        pos_1 = text.find("id=1")
+        assert pos_3 < pos_2 < pos_1, f"Order wrong; got 3@{pos_3}, 2@{pos_2}, 1@{pos_1}"
+
+    async def test_no_friend_repo_returns_message(self, lb_service):
+        """Если LeaderboardService построен без friend_repo — graceful message."""
+        text = await lb_service.render_friends_tab(1)
+        assert "не настроен" in text.lower()

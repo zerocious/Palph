@@ -1443,3 +1443,199 @@ class LeaderboardRepository:
             row = await c.fetchone()
         remaining = row["remaining"] if row else None
         return max(0, remaining) if remaining is not None else 0
+
+
+class FriendRepository:
+    """
+    Friends system (Phase 4 / LEADERBOARD.md §Segments → Friends).
+
+    Хранит pending requests + accepted friendships в нормализованной
+    форме (user_a < user_b — одна строка на дружбу). Reverse-direction
+    request на existing pending → auto-accept (cross-fires the friendship).
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    @staticmethod
+    def _norm_pair(a: int, b: int) -> tuple:
+        """Returns (smaller, larger). Используется для friendship-PK."""
+        return (a, b) if a < b else (b, a)
+
+    # ------------------------------------------------------------
+    # Request lifecycle: send → accept / reject / cancel
+    # ------------------------------------------------------------
+    async def send_request(self, from_uid: int, to_uid: int) -> str:
+        """
+        Атомарно (под self.db.lock) отправляет friend-request. Возвращает
+        статус-строку для UI:
+          - 'self_target'     — попытка дружить с самим собой
+          - 'user_not_found'  — target user'а нет в таблице users
+          - 'already_friends' — дружба уже существует
+          - 'already_pending' — same-direction request уже отправлен
+          - 'auto_accepted'   — reverse-direction request от target существовал;
+                                автоматически создаём friendship и удаляем
+                                reverse-request (обоюдность достигнута)
+          - 'sent'            — новый pending request создан
+        """
+        if from_uid == to_uid:
+            return "self_target"
+
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT 1 FROM users WHERE user_id=?", (to_uid,),
+            ) as c:
+                if not await c.fetchone():
+                    return "user_not_found"
+
+            ua, ub = self._norm_pair(from_uid, to_uid)
+            async with self.db.execute(
+                "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+                (ua, ub),
+            ) as c:
+                if await c.fetchone():
+                    return "already_friends"
+
+            # Reverse direction pending → auto-accept
+            async with self.db.execute(
+                "SELECT 1 FROM friend_requests "
+                "WHERE from_user_id=? AND to_user_id=?",
+                (to_uid, from_uid),
+            ) as c:
+                if await c.fetchone():
+                    await self.db.execute(
+                        "DELETE FROM friend_requests "
+                        "WHERE from_user_id=? AND to_user_id=?",
+                        (to_uid, from_uid),
+                    )
+                    await self.db.execute(
+                        "INSERT INTO friendships (user_a, user_b) "
+                        "VALUES (?, ?)",
+                        (ua, ub),
+                    )
+                    await self.db.commit()
+                    self._logger.info(
+                        "friends.auto_accepted user_a=%s user_b=%s "
+                        "via_from=%s",
+                        ua, ub, from_uid,
+                    )
+                    return "auto_accepted"
+
+            # New request (INSERT OR IGNORE — PK предотвращает дубль)
+            cursor = await self.db.execute(
+                "INSERT OR IGNORE INTO friend_requests "
+                "(from_user_id, to_user_id) VALUES (?, ?)",
+                (from_uid, to_uid),
+            )
+            await self.db.commit()
+            if cursor.rowcount == 0:
+                return "already_pending"
+            self._logger.info(
+                "friends.request_sent from=%s to=%s",
+                from_uid, to_uid,
+            )
+            return "sent"
+
+    async def accept_request(self, from_uid: int, to_uid: int) -> bool:
+        """
+        to_uid принимает request от from_uid. Транзакционно
+        (под self.db.lock): DELETE pending + INSERT friendship.
+        Возвращает True если accept'ed, False если pending request
+        не существовал.
+        """
+        ua, ub = self._norm_pair(from_uid, to_uid)
+        async with self.db.lock:
+            cursor = await self.db.execute(
+                "DELETE FROM friend_requests "
+                "WHERE from_user_id=? AND to_user_id=?",
+                (from_uid, to_uid),
+            )
+            if cursor.rowcount == 0:
+                await self.db.commit()
+                return False
+            await self.db.execute(
+                "INSERT OR IGNORE INTO friendships (user_a, user_b) "
+                "VALUES (?, ?)",
+                (ua, ub),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "friends.accepted from=%s to=%s normalized=(%s,%s)",
+                from_uid, to_uid, ua, ub,
+            )
+            return True
+
+    async def reject_request(self, from_uid: int, to_uid: int) -> bool:
+        """to_uid отклоняет request от from_uid. Returns True если был pending."""
+        cursor = await self.db.execute(
+            "DELETE FROM friend_requests "
+            "WHERE from_user_id=? AND to_user_id=?",
+            (from_uid, to_uid),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "friends.rejected from=%s to=%s", from_uid, to_uid,
+            )
+        return cursor.rowcount > 0
+
+    async def cancel_request(self, from_uid: int, to_uid: int) -> bool:
+        """from_uid отменяет отправленный им request. Same SQL as reject."""
+        return await self.reject_request(from_uid, to_uid)
+
+    # ------------------------------------------------------------
+    # Read helpers
+    # ------------------------------------------------------------
+    async def get_pending_received(self, to_uid: int) -> list:
+        """Список pending requests, полученных пользователем (отсорт. по дате)."""
+        async with self.db.execute(
+            "SELECT from_user_id, created_at FROM friend_requests "
+            "WHERE to_user_id=? ORDER BY created_at ASC",
+            (to_uid,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_pending_sent(self, from_uid: int) -> list:
+        """Список pending requests, отправленных пользователем."""
+        async with self.db.execute(
+            "SELECT to_user_id, created_at FROM friend_requests "
+            "WHERE from_user_id=? ORDER BY created_at ASC",
+            (from_uid,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_friends(self, user_id: int) -> list:
+        """Все user_id-друзей пользователя. UNION над обеими сторонами PK."""
+        async with self.db.execute(
+            "SELECT user_b AS friend_id FROM friendships WHERE user_a=? "
+            "UNION "
+            "SELECT user_a AS friend_id FROM friendships WHERE user_b=?",
+            (user_id, user_id),
+        ) as c:
+            return [r["friend_id"] for r in await c.fetchall()]
+
+    async def are_friends(self, a: int, b: int) -> bool:
+        if a == b:
+            return False
+        ua, ub = self._norm_pair(a, b)
+        async with self.db.execute(
+            "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+            (ua, ub),
+        ) as c:
+            return (await c.fetchone()) is not None
+
+    async def remove_friend(self, a: int, b: int) -> bool:
+        """Удалить дружбу bidirectional. Returns True если что-то удалено."""
+        ua, ub = self._norm_pair(a, b)
+        cursor = await self.db.execute(
+            "DELETE FROM friendships WHERE user_a=? AND user_b=?",
+            (ua, ub),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "friends.removed user_a=%s user_b=%s", ua, ub,
+            )
+        return cursor.rowcount > 0

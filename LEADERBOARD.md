@@ -227,6 +227,31 @@ Events from this patch forward have clean backtest semantics directly.
     and consume; consume idempotency; cooldown days helper; streak
     integration (preserved with freeze, reset without, untouched on
     studied day, consumed only once per missed day).
-- **Phase 4** ⏳ — Friends system (tables, FSM add/accept flow,
-  friends-tab view of comparative weekly scores)
+- **Phase 4** ✅ done — Friends system
+  - 2 new tables: `friend_requests` (PK from+to, CHECK from!=to) +
+    `friendships` normalized one-row-per-pair (PK user_a+user_b,
+    CHECK user_a<user_b).
+  - `FriendRepository` with full lifecycle: `send_request` (status
+    incl. self_target / user_not_found / already_friends /
+    already_pending / **auto_accepted** — reverse-direction pending
+    cross-fires the friendship), `accept_request` (transactional
+    DELETE + INSERT), `reject_request`, `cancel_request`,
+    `get_pending_received`, `get_pending_sent`, `get_friends`
+    (UNION over both PK sides), `are_friends`, `remove_friend` —
+    last two normalize internally so order-of-args doesn't matter.
+  - `LeaderboardService` gains optional `friend_repo` and
+    `render_friends_tab(user_id)` — list user + friends sorted by
+    current week's `total_final` (multiplier applied),
+    🥇🥈🥉 medals for top-3, `(Вы)` marker for self row.
+  - `/friends` slash command with inline keyboard: ➕ Add (FSM enters
+    Telegram ID, sends request, notifies target with accept/reject
+    buttons), 📩 Pending (incoming requests with per-row
+    accept/reject), ➖ Remove (lists friends, confirm dialog).
+    Cross-user notifications via `bot.send_message` (graceful on
+    blocked-bot exception).
+  - 29 tests: `test_friend_repository.py` covers all status paths,
+    auto-accept, normalization, UNION read, symmetric ops; new
+    `TestRenderFriendsTab` covers empty hint, multi-friend sorting
+    by total_final, multiplier ordering, no-friend-repo graceful
+    fallback.
 - **Privacy opt-out toggle** ✅ shipped with Phase 2a

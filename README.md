@@ -7,12 +7,13 @@ Telegram-бот для формирования регулярных учебн�
 **Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
 (4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **data-layer
 цифрового питомца merged 2026-05-19** (остаётся art/UI трек). Weekly
-leaderboard — phases 0/1/2/3 shipped (PR #3): `/leaderboard` command,
+leaderboard — **все 4 фазы shipped** (PR #3): `/leaderboard` command,
 segment auto-routing, privacy opt-out, UTC-anchored weekly rollover с
 top-3/breakthrough/top-10% наградами, ❄️ заморозка стрика
-(profile-кнопка + cooldown + atomic покупка). Спек:
-[LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: 349 passing.
+(profile-кнопка + cooldown + atomic покупка), 👥 friends system
+(`/friends` с add/accept/reject/remove + friends-tab по weekly score).
+Спек: [LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
+[session_notes.md](session_notes.md). Tests: 378 passing.
 
 ---
 

@@ -688,9 +688,13 @@ class LeaderboardService:
         self,
         user_repo: UserRepository,
         leaderboard_repo,  # type: LeaderboardRepository — late binding
+        friend_repo=None,  # type: FriendRepository | None — Phase 4
     ):
         self.user_repo = user_repo
         self.leaderboard_repo = leaderboard_repo
+        # friend_repo опционален: render_friends_tab требует его, остальной
+        # leaderboard-стэк работает без. Тесты Phase 0-3 не передают.
+        self.friend_repo = friend_repo
 
     async def _user_segment(self, user_id: int) -> str:
         """Возвращает 'newbie' или 'main' по created_at пользователя."""
@@ -877,6 +881,66 @@ class LeaderboardService:
             stats["badges_awarded"], stats["coins_distributed"],
         )
         return stats
+
+    # ------------------------------------------------------------
+    # Friends-tab (Phase 4 / LEADERBOARD.md §Segments → Friends)
+    # ------------------------------------------------------------
+    async def render_friends_tab(self, user_id: int) -> str:
+        """
+        Telegram-friendly текст friends-tab: viewer + его friends, отсортированы
+        по total_final текущей недели (с применением streak_multiplier).
+
+        Top 3 получают medal-emoji (🥇🥈🥉); собственная строка viewer'а
+        размечена суффиксом «(Вы)». Пустой friends-list — подсказка
+        добавить через /friends. Friends-tab показывает ВСЕХ друзей
+        независимо от их hidden_from_leaderboards (privacy не применяется
+        внутри взаимных дружб — добавление в друзья = opt-in видимости).
+        """
+        if self.friend_repo is None:
+            return "Friends-функционал не настроен."
+
+        week_iso = await self._current_week_iso(user_id)
+        friend_ids = await self.friend_repo.get_friends(user_id)
+
+        if not friend_ids:
+            return (
+                "<b>👥 Друзья</b>\n\n"
+                "У тебя пока нет добавленных друзей.\n"
+                "Используй <b>/friends</b> и кнопку «➕ Добавить», "
+                "чтобы пригласить кого-то по Telegram ID."
+            )
+
+        # Включаем себя в список для ранжирования
+        all_ids = friend_ids + [user_id]
+        rows = []
+        for uid in all_ids:
+            user = await self.user_repo.get_user(uid)
+            ws = await self.leaderboard_repo.get_weekly_score(uid, week_iso)
+            base = 0
+            if ws is not None:
+                base = (
+                    ws["time_pts"] + ws["task_pts"]
+                    + ws["quiz_pts"] + ws["card_pts"]
+                )
+            streak_days = user["current_streak"] if user else 0
+            mult = streak_multiplier(streak_days)
+            rows.append({
+                "user_id": uid,
+                "total_final": base * mult,
+                "current_streak": streak_days,
+            })
+        rows.sort(key=lambda r: r["total_final"], reverse=True)
+
+        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"<b>👥 Друзья · {week_iso}</b>", ""]
+        for rank, row in enumerate(rows, start=1):
+            emoji = rank_emojis.get(rank, "  ")
+            suffix = " <i>(Вы)</i>" if row["user_id"] == user_id else ""
+            lines.append(
+                f"{emoji} id={row['user_id']}  "
+                f"{row['total_final']:.0f} pts{suffix}"
+            )
+        return "\n".join(lines)
 
 
 # ------------------------------------------------------------

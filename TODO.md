@@ -20,13 +20,13 @@ XP-grant в complete_session + 47 тестов). Остаток v0.7 #16 — о�
 art/UI трек, разбит на: UI кастомизации, level-up notification, render_pet,
 Pillow-сборка ассетов, sad-pet интеграция в reminder.
 
-### 🎯 Следующая инициатива (после v0.7 art-track) — Weekly Leaderboard
+### ✅ Weekly Leaderboard — закрыт полностью
 
-Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). Phase 0 + Phase 1 + Phase 2
-(a+b) + Phase 3 shipped 2026-05-19 (PR #3 open). Активные сцены:
-
-- **Phase 4** (deferred) — Friends system (новые таблицы + FSM + friends-tab).
-  Единственная оставшаяся фаза по LEADERBOARD.md. Инфраструктура с нуля.
+Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). **Все 4 фазы shipped
+2026-05-19** в PR #3 (Phase 0 audit, Phase 1 data layer, Phase 2a view +
+privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends).
+378 тестов покрывают всю систему. После merge PR #3 — никакой
+открытой работы по leaderboard'у.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer merged 2026-05-19**  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
