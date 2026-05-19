@@ -206,8 +206,27 @@ Events from this patch forward have clean backtest semantics directly.
     13 tests cover rollover correctness across segments, top-10%
     threshold (`< 10` users → skip), idempotency on re-fire, hidden
     users still eligible, ISO week edge cases at year boundary.
-- **Phase 3** ⏳ — Streak freeze mechanic (UI + atomic coin deduction;
-  `streak_freezes` table exists from Phase 1)
+- **Phase 3** ✅ done — Streak freeze mechanic
+  - `LeaderboardRepository.purchase_freeze(user_id, current_streak)`:
+    atomic under `db.lock`. Cooldown check (`granted_at > now - 7 days`),
+    balance check via `users.total_coins`, deduct + insert row.
+    Returns status string `purchased` / `insufficient_coins` /
+    `cooldown_active`.
+  - `has_active_freeze`, `consume_freeze_if_active(user_id, today_local)`,
+    `get_freeze_cooldown_remaining_days` helpers.
+  - `StreakService` accepts optional `leaderboard_repo`. On miss-day
+    path: try `consume_freeze_if_active` first; if it returns True,
+    skip streak reset and send a notification ("❄️ Заморозка
+    сработала, стрик сохранён"). Otherwise reset as before.
+  - Profile inline keyboard gets "❄️ Заморозить стрик" button → details
+    screen showing current streak / cost / balance / availability →
+    confirm button only when purchasable. Double-tap-safe via repo-level
+    atomic cooldown check.
+  - 17 tests cover: purchase happy path / insufficient coins / exact
+    balance / cooldown / cost-tier; has_active before/after purchase
+    and consume; consume idempotency; cooldown days helper; streak
+    integration (preserved with freeze, reset without, untouched on
+    studied day, consumed only once per missed day).
 - **Phase 4** ⏳ — Friends system (tables, FSM add/accept flow,
   friends-tab view of comparative weekly scores)
 - **Privacy opt-out toggle** ✅ shipped with Phase 2a

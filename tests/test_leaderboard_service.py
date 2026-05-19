@@ -492,3 +492,145 @@ class TestComputeEndedWeekIso:
         # ISO week 52 of 2024.
         now = datetime(2024, 12, 31, 0, 0)
         assert _compute_ended_week_iso(now) == "2024-W52"
+
+
+# ============================================================
+# Phase 3 — streak freeze repo methods
+# ============================================================
+class TestPurchaseFreeze:
+    async def test_happy_path(self, lb_repo, user_repo, created_user, db):
+        await user_repo.add_coins(created_user, 1000)
+        result = await lb_repo.purchase_freeze(created_user, current_streak=5)
+        assert result == "purchased"
+        # Balance reduced by freeze_cost(5) = 500
+        coins = (await user_repo.get_user(created_user))["total_coins"]
+        assert coins == 500
+        # Row in streak_freezes exists, unconsumed
+        async with db.execute(
+            "SELECT streak_at_grant, cost_paid, consumed_for_date "
+            "FROM streak_freezes WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            row = await c.fetchone()
+        assert row["streak_at_grant"] == 5
+        assert row["cost_paid"] == 500
+        assert row["consumed_for_date"] is None
+
+    async def test_insufficient_coins(self, lb_repo, user_repo, created_user, db):
+        # 100 coins, 5-day streak → cost=500 → insufficient
+        await user_repo.add_coins(created_user, 100)
+        result = await lb_repo.purchase_freeze(created_user, current_streak=5)
+        assert result == "insufficient_coins"
+        # Никаких изменений
+        coins = (await user_repo.get_user(created_user))["total_coins"]
+        assert coins == 100
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM streak_freezes WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            assert (await c.fetchone())["n"] == 0
+
+    async def test_balance_exact_to_cost(
+        self, lb_repo, user_repo, created_user
+    ):
+        """Баланс ровно равен цене — должна пройти, оставив 0."""
+        await user_repo.add_coins(created_user, 500)
+        result = await lb_repo.purchase_freeze(created_user, current_streak=3)
+        assert result == "purchased"
+        assert (await user_repo.get_user(created_user))["total_coins"] == 0
+
+    async def test_cooldown_blocks_second_purchase(
+        self, lb_repo, user_repo, created_user
+    ):
+        await user_repo.add_coins(created_user, 2000)
+        first = await lb_repo.purchase_freeze(created_user, 5)
+        assert first == "purchased"
+        # Immediately try again
+        second = await lb_repo.purchase_freeze(created_user, 5)
+        assert second == "cooldown_active"
+        # Никаких лишних строк/списаний
+        async with lb_repo.db.execute(
+            "SELECT COUNT(*) AS n FROM streak_freezes WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            assert (await c.fetchone())["n"] == 1
+        # 1000 (1 freeze, cost 500), не 2 × 500 = 1000 списано — после ОДНОЙ покупки
+        coins = (await user_repo.get_user(created_user))["total_coins"]
+        assert coins == 2000 - 500
+
+    async def test_cost_scales_with_streak(
+        self, lb_repo, user_repo, created_user
+    ):
+        """freeze_cost(0) = 500, freeze_cost(8) = 750, freeze_cost(21) = 1000."""
+        # 8-day streak → cost 750
+        await user_repo.add_coins(created_user, 2000)
+        result = await lb_repo.purchase_freeze(created_user, current_streak=8)
+        assert result == "purchased"
+        async with lb_repo.db.execute(
+            "SELECT cost_paid FROM streak_freezes WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            assert (await c.fetchone())["cost_paid"] == 750
+
+
+class TestHasActiveFreeze:
+    async def test_no_freeze(self, lb_repo, created_user):
+        assert await lb_repo.has_active_freeze(created_user) is False
+
+    async def test_after_purchase(self, lb_repo, user_repo, created_user):
+        await user_repo.add_coins(created_user, 1000)
+        await lb_repo.purchase_freeze(created_user, 5)
+        assert await lb_repo.has_active_freeze(created_user) is True
+
+    async def test_after_consume(self, lb_repo, user_repo, created_user):
+        await user_repo.add_coins(created_user, 1000)
+        await lb_repo.purchase_freeze(created_user, 5)
+        await lb_repo.consume_freeze_if_active(created_user, "2026-05-19")
+        assert await lb_repo.has_active_freeze(created_user) is False
+
+
+class TestConsumeFreezeIfActive:
+    async def test_consume_active_freeze(
+        self, lb_repo, user_repo, created_user, db
+    ):
+        await user_repo.add_coins(created_user, 1000)
+        await lb_repo.purchase_freeze(created_user, 5)
+        consumed = await lb_repo.consume_freeze_if_active(
+            created_user, "2026-05-19"
+        )
+        assert consumed is True
+        # consumed_for_date теперь установлен
+        async with db.execute(
+            "SELECT consumed_for_date FROM streak_freezes WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            row = await c.fetchone()
+        assert row["consumed_for_date"] == "2026-05-19"
+
+    async def test_consume_when_no_freeze(self, lb_repo, created_user):
+        consumed = await lb_repo.consume_freeze_if_active(
+            created_user, "2026-05-19"
+        )
+        assert consumed is False
+
+    async def test_consume_idempotent(self, lb_repo, user_repo, created_user):
+        await user_repo.add_coins(created_user, 1000)
+        await lb_repo.purchase_freeze(created_user, 5)
+        first = await lb_repo.consume_freeze_if_active(created_user, "2026-05-19")
+        second = await lb_repo.consume_freeze_if_active(created_user, "2026-05-20")
+        assert first is True
+        assert second is False
+
+
+class TestFreezeCooldown:
+    async def test_no_cooldown_initially(self, lb_repo, created_user):
+        assert await lb_repo.get_freeze_cooldown_remaining_days(created_user) == 0
+
+    async def test_cooldown_active_after_purchase(
+        self, lb_repo, user_repo, created_user
+    ):
+        await user_repo.add_coins(created_user, 1000)
+        await lb_repo.purchase_freeze(created_user, 5)
+        remaining = await lb_repo.get_freeze_cooldown_remaining_days(created_user)
+        # 6 or 7 days remaining depending on rounding at the moment of the query
+        assert 5 <= remaining <= 7

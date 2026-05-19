@@ -37,6 +37,7 @@ from repository import (
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
+    freeze_cost,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
@@ -1221,7 +1222,10 @@ async def cmd_profile(message: Message):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    inline_kb.adjust(2, 1)
+    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
+    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1)
     await message.answer(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1589,6 +1593,114 @@ async def toggle_notification_setting(callback: CallbackQuery):
         await callback.answer("Ошибка переключения", show_alert=True)
 
 
+@router.callback_query(F.data.startswith("freeze_menu:"))
+async def freeze_menu(callback: CallbackQuery):
+    """
+    Экран details + confirm для покупки заморозки стрика
+    (LEADERBOARD.md §Streak Freeze). Показывает текущий стрик, цену
+    и баланс. Кнопка «Купить» появляется только когда покупка
+    действительно возможна; иначе экран объясняет почему нет.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    current_streak = user["current_streak"]
+    balance = user["total_coins"]
+    cost = freeze_cost(current_streak)
+
+    has_active = await leaderboard_repo.has_active_freeze(user_id)
+    cooldown_days = await leaderboard_repo.get_freeze_cooldown_remaining_days(user_id)
+
+    lines = [
+        "❄️ <b>Заморозка стрика</b>",
+        "",
+        f"🔥 Текущий стрик: <b>{current_streak}</b> дн.",
+        f"💰 Баланс: <b>{balance}</b> 🪙",
+        f"💸 Цена: <b>{cost}</b> 🪙",
+        "",
+    ]
+
+    kb = InlineKeyboardBuilder()
+    can_purchase = (
+        not has_active and cooldown_days == 0 and balance >= cost
+    )
+
+    if has_active:
+        lines.append(
+            "✅ У тебя уже есть активная заморозка — "
+            "сработает при следующем пропущенном дне."
+        )
+    elif cooldown_days > 0:
+        lines.append(
+            f"⏳ Кулдаун: следующая заморозка через "
+            f"<b>{cooldown_days}</b> дн."
+        )
+    elif balance < cost:
+        lines.append(f"❌ Не хватает <b>{cost - balance}</b> 🪙.")
+    else:
+        lines.append(
+            "Заморозка сохранит стрик при ОДНОМ пропущенном дне. "
+            "Покупка действует до использования."
+        )
+
+    if can_purchase:
+        kb.button(
+            text=f"✅ Купить за {cost} 🪙",
+            callback_data=f"freeze_confirm:{user_id}",
+        )
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
+    kb.adjust(1)
+
+    try:
+        await callback.message.edit_text(
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(
+            "freeze.menu_render_failed user=%s err=%s", user_id, e,
+        )
+
+
+@router.callback_query(F.data.startswith("freeze_confirm:"))
+async def freeze_confirm(callback: CallbackQuery):
+    """
+    Атомарная покупка заморозки. Двойной тап безопасен:
+    LeaderboardRepository.purchase_freeze под self.db.lock проверяет
+    cooldown заново и вернёт 'cooldown_active' при повторе.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    current_streak = user["current_streak"]
+    result = await leaderboard_repo.purchase_freeze(user_id, current_streak)
+
+    if result == "purchased":
+        text = (
+            f"❄️ Заморозка куплена за <b>{freeze_cost(current_streak)}</b> 🪙.\n\n"
+            f"🔥 Стрик: <b>{current_streak}</b> дн. — сохранится при "
+            f"следующем пропущенном дне."
+        )
+    elif result == "insufficient_coins":
+        text = "❌ Не хватает монет."
+    elif result == "cooldown_active":
+        text = "⏳ Заморозка уже покупалась в последние 7 дней."
+    else:
+        text = "Что-то пошло не так. Попробуй позже."
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        logger.warning("freeze.confirm_render_failed user=%s err=%s", user_id, e)
+
+
 @router.callback_query(F.data.startswith("settings_privacy:"))
 async def toggle_privacy(callback: CallbackQuery):
     """Переключает users.hidden_from_leaderboards (LEADERBOARD.md §Privacy)."""
@@ -1744,7 +1856,10 @@ async def back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    inline_kb.adjust(2, 1)
+    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
+    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1)
     await callback.message.edit_text(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -4270,6 +4385,8 @@ async def main():
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     study_service = StudyService(user_repo, session_repo, ach_service, pet_repo, leaderboard_repo)
     leaderboard_service = LeaderboardService(user_repo, leaderboard_repo)
+    # streak_service создаётся ниже после построения bot; ему нужен
+    # leaderboard_repo для consume_freeze_if_active (Phase 3).
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей
@@ -4281,7 +4398,7 @@ async def main():
     dp.message.middleware(rl_middleware)
     dp.callback_query.middleware(rl_middleware)
     dp.include_router(router)
-    streak_service = StreakService(user_repo, bot)
+    streak_service = StreakService(user_repo, bot, leaderboard_repo=leaderboard_repo)
     reminder_service = ReminderService(user_repo, bot)
     # Backup сервис: snapshot БД раз в сутки после streak processing.
     # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;

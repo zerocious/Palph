@@ -23,13 +23,10 @@ Pillow-сборка ассетов, sad-pet интеграция в reminder.
 ### 🎯 Следующая инициатива (после v0.7 art-track) — Weekly Leaderboard
 
 Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). Phase 0 + Phase 1 + Phase 2
-(a+b) shipped 2026-05-19 (PR #3 open). Активные сцены:
+(a+b) + Phase 3 shipped 2026-05-19 (PR #3 open). Активные сцены:
 
-- **Phase 3** (deferred) — Streak freeze UI + атомарное coin-deduction.
-  Таблица `streak_freezes` создана в Phase 1; helper `freeze_cost(streak_days)`
-  тоже есть. Остаётся profile-кнопка + FSM confirm + deduct.
 - **Phase 4** (deferred) — Friends system (новые таблицы + FSM + friends-tab).
-  Инфраструктура с нуля.
+  Единственная оставшаяся фаза по LEADERBOARD.md. Инфраструктура с нуля.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer merged 2026-05-19**  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  

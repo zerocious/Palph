@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from repository import LeaderboardRepository
 from services import StreakService
 
 
@@ -19,6 +20,18 @@ async def streak_service(user_repo):
     bot.send_message = AsyncMock()
     svc = StreakService(user_repo, bot=bot)
     svc._test_bot = bot  # для проверки вызовов в тестах
+    return svc
+
+
+@pytest_asyncio.fixture
+async def streak_service_with_freeze(user_repo, db):
+    """StreakService с leaderboard_repo, для тестов Phase 3 freeze-integration."""
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    lb_repo = LeaderboardRepository(db)
+    svc = StreakService(user_repo, bot=bot, leaderboard_repo=lb_repo)
+    svc._test_bot = bot
+    svc._test_lb_repo = lb_repo
     return svc
 
 
@@ -127,3 +140,93 @@ class TestMultipleUsers:
         u2 = await user_repo.get_user(402)
         assert u1["current_streak"] == 0
         assert u2["current_streak"] == 4
+
+
+# ============================================================
+# Phase 3 — freeze integration в process_users_in_timezone
+# (process_all_users / tz="*" не имеет today_local → freeze не consume'ится)
+# ============================================================
+class TestStreakFreezeIntegration:
+    async def test_missed_day_with_freeze_preserves_streak(
+        self, user_repo, streak_service_with_freeze, db
+    ):
+        """User с активной freeze + missed day → стрик сохраняется, freeze consumed."""
+        uid = 500
+        await user_repo.create_user(uid)
+        await user_repo.set_streak(uid, 5)
+        await user_repo.add_coins(uid, 1000)
+        # Покупаем freeze
+        result = await streak_service_with_freeze._test_lb_repo.purchase_freeze(uid, 5)
+        assert result == "purchased"
+
+        # has_studied_today=0 (дефолт) → missed day
+        await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
+
+        # Стрик сохранён
+        u = await user_repo.get_user(uid)
+        assert u["current_streak"] == 5
+        # Freeze consumed
+        async with db.execute(
+            "SELECT consumed_for_date FROM streak_freezes WHERE user_id=?",
+            (uid,),
+        ) as c:
+            row = await c.fetchone()
+        assert row["consumed_for_date"] is not None
+
+    async def test_missed_day_without_freeze_resets(
+        self, user_repo, streak_service_with_freeze
+    ):
+        """User БЕЗ freeze + missed day → стрик сбрасывается (стандартное поведение)."""
+        uid = 501
+        await user_repo.create_user(uid)
+        await user_repo.set_streak(uid, 5)
+        # has_studied_today=0; freeze не покупали
+
+        await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
+
+        u = await user_repo.get_user(uid)
+        assert u["current_streak"] == 0
+
+    async def test_studied_day_with_freeze_keeps_freeze_unused(
+        self, user_repo, streak_service_with_freeze, db
+    ):
+        """User с freeze, который ОТУЧИЛСЯ сегодня → freeze не consumed, остаётся в запасе."""
+        uid = 502
+        await user_repo.create_user(uid)
+        await user_repo.set_streak(uid, 3)
+        await user_repo.add_coins(uid, 1000)
+        await streak_service_with_freeze._test_lb_repo.purchase_freeze(uid, 3)
+        await user_repo.set_has_studied_today(uid, True)
+
+        await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
+
+        # Стрик инкрементнулся
+        u = await user_repo.get_user(uid)
+        assert u["current_streak"] == 4
+        # Freeze всё ещё активен
+        async with db.execute(
+            "SELECT consumed_for_date FROM streak_freezes WHERE user_id=?",
+            (uid,),
+        ) as c:
+            row = await c.fetchone()
+        assert row["consumed_for_date"] is None
+
+    async def test_freeze_consumed_only_once_per_missed_day(
+        self, user_repo, streak_service_with_freeze
+    ):
+        """После consume freeze user снова не учился → теперь стрик действительно сбрасывается."""
+        uid = 503
+        await user_repo.create_user(uid)
+        await user_repo.set_streak(uid, 5)
+        await user_repo.add_coins(uid, 1000)
+        await streak_service_with_freeze._test_lb_repo.purchase_freeze(uid, 5)
+
+        # День 1: missed → freeze срабатывает
+        await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
+        u = await user_repo.get_user(uid)
+        assert u["current_streak"] == 5
+
+        # День 2: again missed → freeze уже потрачен, должен сбросить
+        await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
+        u = await user_repo.get_user(uid)
+        assert u["current_streak"] == 0

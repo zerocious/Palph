@@ -537,9 +537,18 @@ class StreakService:
     Обработка ежедневного обновления стриков.
     Вызывается ОДИН раз в сутки по расписанию.
     """
-    def __init__(self, user_repo: UserRepository, bot=None):
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        bot=None,
+        leaderboard_repo=None,  # type: LeaderboardRepository | None
+    ):
         self.user_repo = user_repo
         self.bot = bot  # опционально, для отправки уведомлений
+        # leaderboard_repo опционален: если передан, miss-day path сначала
+        # пытается consume freeze (LEADERBOARD.md §Streak Freeze) и только
+        # потом ресетит стрик. Без него — поведение как до Phase 3.
+        self.leaderboard_repo = leaderboard_repo
 
     async def process_users_in_timezone(self, tz: str):
         """
@@ -559,8 +568,20 @@ class StreakService:
         await self._process(users, tz="*")
 
     async def _process(self, users: list[dict], tz: str = "*"):
+        # Считаем today_local один раз per-TZ для consume_freeze_if_active.
+        # При tz == "*" (fallback path) freeze не consume'им — этот путь
+        # не используется в production.
+        today_local = None
+        if tz != "*":
+            try:
+                import pytz
+                today_local = datetime.now(pytz.timezone(tz)).strftime("%Y-%m-%d")
+            except Exception:
+                today_local = None
+
         incremented = 0
         reset = 0
+        frozen = 0
         bonuses_total = 0
         for user in users:
             user_id = user["user_id"]
@@ -594,15 +615,39 @@ class StreakService:
                             user_id, type(e).__name__,
                         )
             else:
-                # Сброс стрика
                 if current_streak > 0:
-                    async with self.user_repo.db.lock:
-                        await self.user_repo.apply_streak_reset(user_id)
-                    reset += 1
+                    # Сначала пробуем consume freeze; если активной заморозки
+                    # нет — стрик сбрасывается как раньше.
+                    consumed = False
+                    if self.leaderboard_repo is not None and today_local:
+                        consumed = await self.leaderboard_repo.consume_freeze_if_active(
+                            user_id, today_local
+                        )
+                    if consumed:
+                        frozen += 1
+                        # Notify пользователя что freeze отработал
+                        if self.bot:
+                            try:
+                                await self.bot.send_message(
+                                    chat_id=user_id,
+                                    text=(
+                                        f"❄️ Заморозка стрика сработала.\n"
+                                        f"🔥 Стрик сохранён: {current_streak} дн."
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "streak.freeze_notify_failed user_id=%s reason=%s",
+                                    user_id, type(e).__name__,
+                                )
+                    else:
+                        async with self.user_repo.db.lock:
+                            await self.user_repo.apply_streak_reset(user_id)
+                        reset += 1
 
         logger.info(
-            "streak.batch tz=%s users=%s incremented=%s reset=%s bonuses=%s",
-            tz, len(users), incremented, reset, bonuses_total,
+            "streak.batch tz=%s users=%s incremented=%s reset=%s frozen=%s bonuses=%s",
+            tz, len(users), incremented, reset, frozen, bonuses_total,
         )
 
 

@@ -31,6 +31,7 @@ Plan / spec файл: [LEADERBOARD.md](LEADERBOARD.md) (v1.1)
 | Phasing doc | `a25655d` | LEADERBOARD.md phasing section updated to reflect shipped vs deferred |
 | Docs refresh | `5626c6a` | README + TODO + session_notes synced after Phase 2a |
 | Phase 2b — Rollover + rewards | `25c25b3` | `LeaderboardService.run_rollover` (top-3 main + breakthrough newbie + top-10% coin bonus, gated by `award_badge` INSERT OR IGNORE rowcount → idempotent on re-run); `leaderboard_scheduler` in `tasks.py` (UTC Tuesday 00:00 anchor — all global TZs have crossed local Mon by then); `_compute_ended_week_iso` pure helper; bot.py wires scheduler into `background_tasks`; 13 tests cover correctness, idempotency, top-10% threshold, hidden eligibility, ISO year boundaries |
+| Phase 3 — Streak freeze | (pending commit) | `LeaderboardRepository.purchase_freeze` (atomic под `db.lock`, cooldown через `granted_at > now - 7 days`, returns `purchased`/`insufficient_coins`/`cooldown_active`); `has_active_freeze`, `consume_freeze_if_active(user_id, today_local)`, `get_freeze_cooldown_remaining_days`; `StreakService` принимает optional `leaderboard_repo` и на miss-day сначала consume freeze (если есть) перед reset; profile-кнопка «❄️ Заморозить стрик» + confirm-экран с cost/balance/availability; 17 тестов покрывают purchase atomicity, cooldown, consume, streak integration |
 
 ### Key design calls captured
 
@@ -65,8 +66,7 @@ Pet PR (TODO #16 data layer) was already a PR from the earlier session; merged v
 
 ### Deferred to follow-up sessions
 
-- **Phase 3** — Streak freeze mechanic (UI + atomic coin deduction). `streak_freezes` table exists from Phase 1; helper `freeze_cost(streak_days)` exists; only missing piece is the profile-side FSM confirm dialog + coin deduction wiring.
-- **Phase 4** — Friends system (new tables, FSM add/accept flow, friends-tab view). No infrastructure exists yet — start from scratch.
+- **Phase 4** — Friends system (new tables, FSM add/accept flow, friends-tab view). No infrastructure exists yet — start from scratch. Only remaining LEADERBOARD.md phase.
 
 ---
 

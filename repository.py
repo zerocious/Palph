@@ -1333,3 +1333,113 @@ class LeaderboardRepository:
         ) as c:
             rows = await c.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------
+    # 9. Streak freeze (LEADERBOARD.md §Streak Freeze)
+    # ------------------------------------------------------------
+    async def purchase_freeze(self, user_id: int, current_streak: int) -> str:
+        """
+        Атомарная покупка заморозки стрика под self.db.lock. Цена считается
+        из `services.freeze_cost(current_streak)` (500 / 750 / 1000).
+
+        Спека: «one freeze per 7 days max» — cooldown enforced через
+        MAX(granted_at) > now - 7 days; даже если предыдущий freeze
+        ещё не consumed, новый купить нельзя.
+
+        Возвращает статус-строку для UI:
+          - 'purchased'           — успешно
+          - 'cooldown_active'     — freeze покупался в последние 7 дней
+          - 'insufficient_coins'  — не хватает монет
+        """
+        from services import freeze_cost
+        cost = freeze_cost(current_streak)
+
+        async with self.db.lock:
+            # Cooldown
+            async with self.db.execute(
+                "SELECT 1 FROM streak_freezes "
+                "WHERE user_id=? AND granted_at > datetime('now', '-7 days') "
+                "LIMIT 1",
+                (user_id,),
+            ) as c:
+                if await c.fetchone():
+                    return "cooldown_active"
+
+            # Balance
+            async with self.db.execute(
+                "SELECT total_coins FROM users WHERE user_id=?", (user_id,),
+            ) as c:
+                row = await c.fetchone()
+            balance = row["total_coins"] if row else 0
+            if balance < cost:
+                return "insufficient_coins"
+
+            # Deduct + record
+            await self.db.execute(
+                "UPDATE users SET total_coins = total_coins - ? "
+                "WHERE user_id=?",
+                (cost, user_id),
+            )
+            await self.db.execute(
+                "INSERT INTO streak_freezes "
+                "(user_id, granted_at, streak_at_grant, cost_paid) "
+                "VALUES (?, datetime('now'), ?, ?)",
+                (user_id, current_streak, cost),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "streak.freeze_purchased user_id=%s streak=%s cost=%s "
+                "balance_after=%s",
+                user_id, current_streak, cost, balance - cost,
+            )
+            return "purchased"
+
+    async def has_active_freeze(self, user_id: int) -> bool:
+        """True если у пользователя есть купленный, но ещё не использованный freeze."""
+        async with self.db.execute(
+            "SELECT 1 FROM streak_freezes "
+            "WHERE user_id=? AND consumed_for_date IS NULL LIMIT 1",
+            (user_id,),
+        ) as c:
+            return (await c.fetchone()) is not None
+
+    async def consume_freeze_if_active(
+        self, user_id: int, today_local: str
+    ) -> bool:
+        """
+        Если у пользователя есть unused freeze — отмечает его как
+        использованный (consumed_for_date=today_local). Используется в
+        StreakService на missed-day path: вместо reset стрика, скармливаем
+        ему накопленный freeze.
+
+        Возвращает True если freeze был consumed (стрик сохраняется);
+        False если активного freeze не было (caller сбрасывает стрик).
+        """
+        cursor = await self.db.execute(
+            "UPDATE streak_freezes SET consumed_for_date=? "
+            "WHERE user_id=? AND consumed_for_date IS NULL",
+            (today_local, user_id),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "streak.freeze_consumed user_id=%s date=%s rows=%s",
+                user_id, today_local, cursor.rowcount,
+            )
+        return cursor.rowcount > 0
+
+    async def get_freeze_cooldown_remaining_days(self, user_id: int) -> int:
+        """
+        Возвращает сколько ПОЛНЫХ дней осталось до возможности купить
+        следующий freeze. 0 = можно покупать прямо сейчас.
+        """
+        async with self.db.execute(
+            "SELECT CAST(7 - (julianday('now') - julianday(MAX(granted_at))) "
+            "       AS INTEGER) AS remaining "
+            "FROM streak_freezes "
+            "WHERE user_id=? AND granted_at > datetime('now', '-7 days')",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+        remaining = row["remaining"] if row else None
+        return max(0, remaining) if remaining is not None else 0
