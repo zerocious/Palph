@@ -177,14 +177,32 @@ Events from this patch forward have clean backtest semantics directly.
 
 ### Phasing
 
-- **Phase 0** — Event property audit ✅ done
-- **Phase 1** — Score data layer (4 new tables, repository, scoring hooks,
-  backtest notebook, tests) — ~1 session
-- **Phase 2** — User-facing `/leaderboard` + Monday rollover scheduler +
-  top-3 / breakthrough / top-10% reward distribution — ~1 session
-- **Phase 3** — Streak freeze mechanic (UI + atomic coin deduction) —
-  ~0.5 session
-- **Phase 4** — Friends system (tables, FSM flow, friends-tab view) —
-  ~1 session
-- **Privacy opt-out toggle** ships with whichever phase first touches the
-  settings menu (likely Phase 2).
+- **Phase 0** — Event property audit ✅ done (commit `53e8c79`)
+- **Phase 1** — Score data layer: 4 tables + helpers + `LeaderboardRepository`
+  + scoring hooks (`complete_session`, quiz, MCQ, task, flashcard) + 64 tests
+  + backtest notebook ✅ done (commit `930a2e8`)
+- **Phase 2a** — `/leaderboard` view + privacy toggle ✅ done (commit `9ab3ff1`)
+  - `LeaderboardService.render_leaderboard` with segment auto-routing
+  - `LeaderboardRepository.get_ranked_segment` / `get_user_rank` /
+    `award_badge` / `get_active_badges`
+  - `/leaderboard` slash command in bot.py
+  - Privacy toggle button in settings menu + `users.hidden_from_leaderboards`
+    accessors on `UserRepository`
+  - 23 tests covering ranked-segment correctness, multiplier-vs-base ordering,
+    hidden filter, user-rank, badge idempotency, expiration, render output
+- **Phase 2b** ⏳ deferred — Monday rollover scheduler + reward distribution
+  - `LeaderboardService.run_rollover(week_iso)` — top-3 / breakthrough /
+    top-10% coin bonus, idempotent via `award_badge` return value
+  - `leaderboard_scheduler` in `tasks.py` (pattern from `streak_scheduler`)
+  - Open design call: per-TZ rollover vs single UTC anchor. Lean toward
+    UTC Tuesday 00:00 anchor — all TZ Mondays have passed by then so
+    `weekly_scores` for the just-ended week is fully locked. Simpler and
+    avoids race between Moscow-rollover and NYC-rollover where the same
+    `week_iso` is "ended" at different real times.
+  - Tests: rollover correctness across segments, badge idempotency on
+    re-fire, coin-bonus paid exactly once per (user, week)
+- **Phase 3** ⏳ — Streak freeze mechanic (UI + atomic coin deduction;
+  `streak_freezes` table exists from Phase 1)
+- **Phase 4** ⏳ — Friends system (tables, FSM add/accept flow,
+  friends-tab view of comparative weekly scores)
+- **Privacy opt-out toggle** ✅ shipped with Phase 2a
