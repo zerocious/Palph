@@ -5,9 +5,11 @@ Telegram-бот для формирования регулярных учебн�
 цифрового питомца.
 
 **Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
-(4 учебных режима + SM-2 + админ-CRUD + резюм таймера). Остался только
-полноценный цифровой питомец. См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md).
+(4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **data-layer
+цифрового питомца merged 2026-05-19** (остаётся art/UI трек). Активная
+работа над weekly leaderboard — спек: [LEADERBOARD.md](LEADERBOARD.md),
+phases 0/1/2a shipped. См. [TODO.md](TODO.md) и
+[session_notes.md](session_notes.md). Tests: 319 passing.
 
 ---
 

@@ -14,14 +14,25 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-**Прогресс:** 5 из 6 пунктов закрыты (меню 2×2, новости, FAQ, /help, admins→БД,
-резюм таймера, study_materials, MCQ, photo tasks, SM-2 флэш-карты). Пункт 16 в
-процессе — **data layer landed 2026-05-18** (schema + PetRepository +
-derive_emotion + XP-grant в complete_session + 47 тестов; см. session_notes от
-2026-05-18). Осталось: UI кастомизации, level-up notification, render_pet,
+**Прогресс:** 5 из 6 пунктов закрыты + **пункт 16 data-layer ✅ merged в `main`
+2026-05-19** (PR #2 = `9203aab`: schema + PetRepository + derive_emotion +
+XP-grant в complete_session + 47 тестов). Остаток v0.7 #16 — отдельный
+art/UI трек, разбит на: UI кастомизации, level-up notification, render_pet,
 Pillow-сборка ассетов, sad-pet интеграция в reminder.
 
-16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer готов**  
+### 🎯 Следующая инициатива (после v0.7 art-track) — Weekly Leaderboard
+
+Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). Phase 0 + Phase 1 + Phase 2a
+shipped 2026-05-19 (PR #3 open). Активные сцены:
+
+- **Phase 2b** (deferred) — Monday rollover scheduler + top-3 / breakthrough /
+  top-10% coin-bonus distribution. Repo-методы (`award_badge` идемпотентен,
+  `get_ranked_segment`) уже на месте.
+- **Phase 3** (deferred) — Streak freeze UI + атомарное coin-deduction. Таблица
+  `streak_freezes` создана в Phase 1.
+- **Phase 4** (deferred) — Friends system (новые таблицы + FSM + friends-tab).
+
+16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer merged 2026-05-19**  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
 Готовность:  
 — Один дизайн питомца (не 5 видов). Таблица `user_pet(user_id, name, color, accessory, level, xp, created_at)` без `species` и без хранения эмоции. Поле `accessory NOT NULL` с sentinel-значением `"none"` (вместо nullable).  

@@ -4,6 +4,71 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-19
+
+Goal: design and ship the weekly leaderboard. Multi-phase build across one
+long session: spec → Phase 0 audit → Phase 1 data layer → Phase 2a
+user-facing view + privacy. Pet PR (#2) merged early in the session to
+unblock leaderboard wiring.
+
+**Итог:** 4 PR-ready commits на `claude/leaderboard-system` (PR #3 открыт);
+319 тестов зелёных (185 baseline + 47 pet + 87 leaderboard); пет PR #2
+squash-merged в `main` как `9203aab`. Phase 2b (rollover scheduler +
+reward distribution), Phase 3 (streak freeze UI), Phase 4 (friends) —
+явно deferred в LEADERBOARD.md с прокладкой (схема + repo-методы +
+design notes) для следующих сессий.
+
+Plan / spec файл: [LEADERBOARD.md](LEADERBOARD.md) (v1.1)
+
+### Phases shipped
+
+| Phase | Commit | What landed |
+|-------|--------|-------------|
+| Spec v1.1 | `3c46644` | LEADERBOARD.md — formula, segments, privacy, anti-abuse, rewards, phasing |
+| Phase 0 — Event audit | `53e8c79` | Single patch: `flashcard_reviewed.is_new` added at the rate-handler call site, captured BEFORE `upsert_progress` writes the row. Other 4 scoring events already had what backtest needs. |
+| Phase 1 — Data layer | `930a2e8` | 4 tables (`daily_score_counters`, `weekly_scores`, `streak_freezes`, `weekly_badges`) + `users.hidden_from_leaderboards`; 4 pure scoring helpers in services.py; `LeaderboardRepository` (7 methods) with lock-free atomic-UPDATE cap enforcement; wiring into 4 hooks in bot.py + `StudyService.complete_session`; 64 tests; `analysis/leaderboard_backtest.ipynb` |
+| Phase 2a — Visibility | `9ab3ff1` | `LeaderboardRepository.get_ranked_segment` / `get_user_rank` / `award_badge` / `get_active_badges`; `UserRepository.set_hidden_from_leaderboards` / `is_hidden_from_leaderboards`; `LeaderboardService.render_leaderboard` (segment auto-routing, hidden-user marker); `/leaderboard` slash command; "Лидерборды: Виден/Скрыт" toggle in settings menu; 23 tests |
+| Phasing doc | `a25655d` | LEADERBOARD.md phasing section updated to reflect shipped vs deferred |
+
+### Key design calls captured
+
+- **Tasks at 40 pts** (math problems = mission lever). Single-tier instead of original "3@50 + 5@10" — same daily cap of 200 pts, one rule to communicate.
+- **Streak as weekly multiplier** (1.00 / 1.05 / 1.10 / 1.20 by tier) replacing useless flat `streak_days × 10`. Two users with same activity differ by streak-driven multiplier — meaningful ranking signal that rewards consistency without competing with the math-focus headline number.
+- **Streak freeze cost tiered** (500 / 750 / 1000 by current streak length) — scales with what you have to lose.
+- **All caps are daily** (LLM in original spec said "weekly" — corrected).
+- **Cards: pts only on `quality >= 3`** (successful review). Wrong answers neither grant pts nor burn the daily-8 cap.
+- **"New" card definition** = no existing row in `flashcard_progress` (NOT `repetitions == 0`, which is ambiguous after a reset). Captured at the call site before upsert.
+- **MCQ counts as quiz** for scoring (single +5/correct surface, shared series counter).
+- **Series counter resets at midnight local TZ** (clean daily slate, matches the daily-cap pattern).
+- **Privacy opt-out** as single toggle in settings; hidden users still earn rewards, just don't appear in others' public top.
+- **`now_local` optional** on all `grant_*` methods. Production callers pass `user_id` only (repo looks up TZ); tests pass explicit `now_local` for determinism.
+- **No locks inside `grant_*`.** Atomic `UPDATE … WHERE counter < cap` enforces cap-safety. `grant_time_pts` is the one real read-modify-write but per-user race is impossible by app logic (one timer at a time).
+- **Backtest notebook** validates the formula on existing `events` + `study_sessions` data before any user sees scores. Drives pandas/matplotlib/jupyter into requirements-dev.txt.
+
+### Sequence + pet PR merge
+
+Pet PR (TODO #16 data layer) was already a PR from the earlier session; merged via `gh pr merge --squash` (`9203aab`). Leaderboard branch rebased onto new main → `claude/elastic-mirzakhani-0b7ce0` (pet worktree) is now stale and can be deleted at convenience.
+
+### Files modified this session (leaderboard branch only)
+
+- **New:** `LEADERBOARD.md`, `analysis/leaderboard_backtest.ipynb`, `tests/test_leaderboard_helpers.py`, `tests/test_leaderboard_repository.py`, `tests/test_leaderboard_service.py`
+- **Modified:** `db.py` (+108 lines, 4 tables + privacy column migration), `repository.py` (+440 lines, LeaderboardRepository + UserRepository.is_hidden* + set_hidden*), `services.py` (+215 lines, 4 helpers + LeaderboardService), `bot.py` (+73 lines, imports + globals + privacy toggle + /leaderboard command + 4 hook patches + `is_new_card` capture), `requirements-dev.txt` (+3 deps for notebook)
+
+### Verification
+
+- `python -m py_compile bot.py db.py repository.py services.py` — clean
+- `python -m pytest tests/` — **319 passed** (185 → +47 pet → +64 Phase 1 → +23 Phase 2a)
+- Schema smoke-test: `init_db` creates all 4 leaderboard tables + `hidden_from_leaderboards` column on `users`; idempotent on second run
+- Notebook JSON validates with `json.load`
+
+### Deferred to follow-up sessions
+
+- **Phase 2b** — `LeaderboardService.run_rollover` + `leaderboard_scheduler` in `tasks.py` + top-3/breakthrough/top-10% awarding. Data plumbing exists (`get_ranked_segment`, `award_badge` is idempotent). Design call still open: UTC Tuesday 00:00 anchor (recommended) vs per-TZ rollover.
+- **Phase 3** — Streak freeze mechanic (UI + atomic coin deduction). `streak_freezes` table exists.
+- **Phase 4** — Friends system (new tables, FSM add/accept flow, friends-tab view).
+
+---
+
 ## Session — 2026-05-18
 
 Goal: data layer slice of TODO #16 (полноценный питомец) — schema +
