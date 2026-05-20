@@ -4,6 +4,40 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-19 (sad-pet reminder hook)
+
+Goal: маленький tail-of-#16 — sad-pet интеграция в evening reminder.
+Уже merged pet data layer даёт `derive_emotion` чистую функцию;
+здесь подключаем её в `ReminderService._send_evening`, чтобы вечернее
+напоминание показывало «🐾😢 Питомец загрустил» вместо generic
+copy. Отдельный PR на ветке `claude/pet-sad-reminder` off main —
+не пересекается с merged PR #3 leaderboard.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Service | `ReminderService._send_evening` теперь вычисляет per-user `now_local` (через `pytz.timezone(tz)`) и вызывает `derive_emotion` для выбора копи. `is_studying`/`recently_excited` приходят False (нет FSM-доступа в scheduler); `has_studied_today` — из user dict. Sad-path → `_EVENING_SAD_PET_TEXT` («🐾😢 Питомец загрустил»). Fallback на старый текст — defensive, на случай если has_studied_today=1 слипнётся через SQL filter. Unknown TZ → naive datetime fallback. | [services.py](services.py) |
+| 2 | Tests | `tests/test_reminder_service.py` (новый файл) — 6 тестов: sad-pet копи отправляется (default path), массовый send (3 user'а), fallback на не-sad emotion, empty users list → no-op, `TelegramForbiddenError` graceful handling, unknown TZ fallback. | [tests/test_reminder_service.py](tests/test_reminder_service.py) |
+
+### Design decision
+
+- **Не запрашиваем pet.last_excited_at** для recently_excited — это потребовало бы JOIN с user_pet и +1 SQL per user в reminder loop. `recently_excited=False` defensive подразумевает: вечером, после полной рабочей дня, любой level-up уже за пределами 5-минутного окна. Если станет проблемой — добавить отдельную колонку в `get_users_due_for_evening` query или JOIN.
+- **Sad-pet копи стабильно одна и та же** для всех sad-юзеров. Persistent variation (e.g., рандомизация фраз) ускоряет engagement-decay; оставляем константную копи + emoji 🐾😢 как стабильный визуальный маркер.
+- **Морning reminder не трогаем** — TODO #16 specifically requests sad-pet в reminder (evening). Утро остаётся generic с тем же tone что и было.
+
+### Verification
+
+- `python -m py_compile services.py` — clean
+- `python -m pytest tests/` — **238 passed** (232 baseline + 6 new)
+- Не запускали live integration (требует bot.send_message с реальным TG) — unit tests с AsyncMock покрывают.
+
+### Follow-up after PR #4 merges
+
+- **sad-pet image attachment** в `_send_evening`: после merge PR #3 в main всё `assets/pet/sad.gif` и `render_pet` доступны. ~10 LOC commit: вместо `bot.send_message(...)` использовать `bot.send_animation(FSInputFile(...sad.gif), caption=...)`. Отдельный коммит, чтобы PR #4 оставался минимальным.
+
+---
+
 ## Session — 2026-05-19
 
 Goal: design and ship the weekly leaderboard. Multi-phase build across one

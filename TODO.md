@@ -14,11 +14,19 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-**Прогресс:** 5 из 6 пунктов закрыты + **пункт 16 data-layer ✅ merged в `main`
-2026-05-19** (PR #2 = `9203aab`: schema + PetRepository + derive_emotion +
-XP-grant в complete_session + 47 тестов). Остаток v0.7 #16 — отдельный
-art/UI трек, разбит на: UI кастомизации, level-up notification, render_pet,
-Pillow-сборка ассетов, sad-pet интеграция в reminder.
+**Прогресс:** 5 из 6 пунктов закрыты + **пункт 16 полностью отгружен в `main`
+2026-05-19**:
+- **data layer** ✅ PR #2 = `9203aab` (schema + PetRepository +
+  derive_emotion + XP-grant в complete_session + 47 тестов)
+- **art track** ✅ PR #3 = `258fadc` (render_pet + 125 placeholder PNG +
+  5 GIF, Pillow build-script, level-up notification, pet detail screen,
+  4-state customization picker, FSM rename)
+- **sad-pet reminder hook** ✅ PR #4 (этот PR: интеграция derive_emotion
+  в ReminderService._send_evening + 6 тестов)
+
+Остаётся: real artwork (отдельный art-track — file replacement в `assets/pet/`),
+sad-pet image attachment в evening reminder (follow-up commit на main,
+~10 LOC).
 
 ### ✅ Weekly Leaderboard — закрыт полностью
 
