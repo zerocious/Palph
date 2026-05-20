@@ -2,11 +2,12 @@
 Тесты ReminderService — sad-pet интеграция в evening reminder.
 
 Покрывает:
-- Sad-pet copy используется когда derive_emotion возвращает 'sad'
+- Sad-pet GIF + caption отправляется когда derive_emotion='sad'
   (default case: has_studied_today=0 — по filter'у это всегда так)
-- Fallback copy используется defensively если has_studied_today=1
-  слипнулось через filter (теоретический edge case)
-- Empty users list → нет send_message вызовов
+- FileNotFoundError из render_pet → graceful fallback на text-only
+- Fallback copy через send_message используется defensively если
+  has_studied_today=1 слипнулось через filter (теоретический edge case)
+- Empty users list → ничего не шлём
 - TelegramForbiddenError → graceful logging, не падает
 - Unknown TZ → defensive fallback на naive datetime, всё ещё работает
 """
@@ -16,6 +17,7 @@ import pytest
 import pytest_asyncio
 from aiogram.exceptions import TelegramForbiddenError
 
+import services as services_mod
 from services import ReminderService
 
 
@@ -23,6 +25,7 @@ from services import ReminderService
 async def reminder_service(user_repo):
     bot = AsyncMock()
     bot.send_message = AsyncMock()
+    bot.send_animation = AsyncMock()
     svc = ReminderService(user_repo, bot=bot)
     svc._test_bot = bot
     return svc
@@ -42,24 +45,28 @@ async def _mock_due_users(reminder_service, users):
     reminder_service.user_repo.get_users_due_for_morning = _morning_stub
 
 
-class TestSadPetCopy:
-    async def test_sad_pet_text_sent_when_has_studied_today_zero(
+class TestSadPetAnimation:
+    async def test_sad_pet_gif_sent_when_has_studied_today_zero(
         self, reminder_service
     ):
-        """Default путь: has_studied_today=0 → sad-pet копи."""
+        """Default путь: has_studied_today=0 → sad-pet animation."""
         await _mock_due_users(
             reminder_service,
             [{"user_id": 100, "has_studied_today": 0}],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
 
-        reminder_service._test_bot.send_message.assert_called_once()
-        sent_text = reminder_service._test_bot.send_message.call_args.kwargs.get(
-            "text"
-        ) or reminder_service._test_bot.send_message.call_args.args[1]
-        assert "грустит" in sent_text or "🐾😢" in sent_text
+        reminder_service._test_bot.send_animation.assert_called_once()
+        # send_message НЕ должен вызываться на sad path
+        reminder_service._test_bot.send_message.assert_not_called()
+        # Caption содержит sad-pet emoji
+        call = reminder_service._test_bot.send_animation.call_args
+        caption = call.kwargs.get("caption", "")
+        assert "🐾😢" in caption
 
-    async def test_multiple_users_all_get_sad_pet(self, reminder_service):
+    async def test_multiple_users_all_get_sad_animation(
+        self, reminder_service
+    ):
         await _mock_due_users(
             reminder_service,
             [
@@ -69,43 +76,74 @@ class TestSadPetCopy:
             ],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
-        assert reminder_service._test_bot.send_message.call_count == 3
-        for call in reminder_service._test_bot.send_message.call_args_list:
-            text = call.kwargs.get("text") or call.args[1]
-            # Emoji marker — стабильнее чем конкретное слово
-            assert "🐾😢" in text
+        assert reminder_service._test_bot.send_animation.call_count == 3
+        for call in reminder_service._test_bot.send_animation.call_args_list:
+            caption = call.kwargs.get("caption", "")
+            assert "🐾😢" in caption
+
+
+class TestAssetMissingFallback:
+    async def test_filenotfound_falls_back_to_text(
+        self, reminder_service, monkeypatch
+    ):
+        """
+        Если assets/pet/sad.gif отсутствует (например, build-script не
+        запускался) — render_pet бросает FileNotFoundError, и мы
+        gracefully fallback'имся на bot.send_message с тем же sad-pet текстом.
+        """
+        def _missing(*args, **kwargs):
+            raise FileNotFoundError("simulated missing asset")
+        monkeypatch.setattr(services_mod, "render_pet", _missing)
+
+        await _mock_due_users(
+            reminder_service,
+            [{"user_id": 1, "has_studied_today": 0}],
+        )
+        await reminder_service.tick("Europe/Moscow", "21:00")
+        # Animation НЕ вызван (raise до него)
+        reminder_service._test_bot.send_animation.assert_not_called()
+        # Зато send_message — да, с sad-pet текстом
+        reminder_service._test_bot.send_message.assert_called_once()
+        text = reminder_service._test_bot.send_message.call_args.kwargs.get("text", "")
+        assert "🐾😢" in text
 
 
 class TestFallbackCopy:
-    async def test_has_studied_today_true_uses_fallback(self, reminder_service):
+    async def test_has_studied_today_true_uses_text_fallback(
+        self, reminder_service
+    ):
         """
         Defensive: если has_studied_today=1 слипнулось через filter
         (теоретически), мы НЕ говорим что пёс грустит — некорректно.
-        Fallback копия — generic.
+        Fallback копия через send_message (без animation).
         """
         await _mock_due_users(
             reminder_service,
             [{"user_id": 100, "has_studied_today": 1}],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
-        sent_text = (
-            reminder_service._test_bot.send_message.call_args.kwargs.get("text")
-            or reminder_service._test_bot.send_message.call_args.args[1]
+        # Sad-path animation НЕ вызван
+        reminder_service._test_bot.send_animation.assert_not_called()
+        # send_message вызван с generic копией
+        reminder_service._test_bot.send_message.assert_called_once()
+        sent_text = reminder_service._test_bot.send_message.call_args.kwargs.get(
+            "text", ""
         )
-        # Это путь не-sad — sad-pet копи не должна быть
         assert "🐾😢" not in sent_text
-        # Но какой-то reminder всё равно отправляется
-        assert reminder_service._test_bot.send_message.called
 
 
 class TestEdgeCases:
     async def test_empty_users_no_send(self, reminder_service):
         await _mock_due_users(reminder_service, [])
         await reminder_service.tick("Europe/Moscow", "21:00")
+        reminder_service._test_bot.send_animation.assert_not_called()
         reminder_service._test_bot.send_message.assert_not_called()
 
     async def test_blocked_user_handled_gracefully(self, reminder_service):
-        """TelegramForbiddenError при отправке — INFO log + продолжаем."""
+        """
+        TelegramForbiddenError при отправке sad-animation — INFO log +
+        продолжаем со следующим user'ом.
+        """
         await _mock_due_users(
             reminder_service,
             [
@@ -113,19 +151,17 @@ class TestEdgeCases:
                 {"user_id": 2, "has_studied_today": 0},
             ],
         )
-        # User 1 заблокировал бота
-        async def _send_side_effect(*args, **kwargs):
+        async def _anim_side_effect(*args, **kwargs):
             uid = kwargs.get("chat_id") or args[0]
             if uid == 1:
                 raise TelegramForbiddenError(
                     method=None, message="Forbidden: bot was blocked"
                 )
-
-        reminder_service._test_bot.send_message.side_effect = _send_side_effect
+        reminder_service._test_bot.send_animation.side_effect = _anim_side_effect
         # Не должно бросить наружу
         await reminder_service.tick("Europe/Moscow", "21:00")
         # User 2 всё равно получил попытку отправки
-        assert reminder_service._test_bot.send_message.call_count == 2
+        assert reminder_service._test_bot.send_animation.call_count == 2
 
     async def test_unknown_timezone_defensive_fallback(self, reminder_service):
         """Несуществующий TZ → pytz бросит, но мы fall back на naive datetime."""
@@ -135,4 +171,5 @@ class TestEdgeCases:
         )
         # 'Not/A/Real/TZ' не валиден, но reminder не должен упасть
         await reminder_service.tick("Not/A/Real/TZ", "21:00")
-        reminder_service._test_bot.send_message.assert_called_once()
+        # Sad-path всё равно срабатывает (по умолчанию)
+        reminder_service._test_bot.send_animation.assert_called_once()
