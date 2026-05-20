@@ -1,4 +1,4 @@
-# StudyBuddy — Weekly Leaderboard System
+# Palph — Weekly Leaderboard System
 
 Design spec for the weekly leaderboard. Source of truth for implementation
 across multiple slices. Edit this file, not the formula in code, when

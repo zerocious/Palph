@@ -1,8 +1,20 @@
-# StudyBuddy
+# Palph
 
 Telegram-бот для формирования регулярных учебных привычек у студентов через
 геймификацию (монеты, ачивки, стрики), Pomodoro-таймер, квизы и
 цифрового питомца.
+
+> **Имя проекта.** Бот переименован из **StudyBuddy** в **Palph**
+> 2026-05-19. Все user-facing строки и документация обновлены. Для
+> операционной стабильности (logs, backups, deployment) сохранены
+> исторические внутренние имена: `studybuddy.db` (default DB-файл),
+> `studybuddy_bot` (logger name), `studybuddy-{date}.db` (backup
+> filename pattern), `studybuddy-bot` (docker-compose container_name).
+> Переименование этих имён сломало бы existing production deployment'ы
+> (миграция БД, monitoring tools индексирующие по logger name,
+> docker-compose up при сохранённых volumes). Если нужен полный rename
+> внутренних имён — это отдельная migration-задача с явным
+> backup/restore шагом.
 
 **Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
 (4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **data-layer
@@ -29,7 +41,7 @@ top-3/breakthrough/top-10% наградами, ❄️ заморозка стр�
 
 ```bash
 git clone <repo-url>
-cd studybuddy
+cd Palph
 python -m venv venv
 # Windows PowerShell:
 .\venv\Scripts\Activate.ps1

@@ -906,7 +906,7 @@ async def cmd_start(message: Message, state: FSMContext):
         keyboard.button(text="🚀 Начать сразу")
         keyboard.adjust(1)
         await message.answer(
-            "🐾 Привет! Я — StudyBuddy, твой цифровой питомец для учёбы!\n\n"
+            "🐾 Привет! Я — Palph, твой цифровой питомец для учёбы!\n\n"
             "✨ Я помогу тебе учиться регулярно и без стресса. "
             "Даже 5 минут в день — это уже победа!\n\n"
             "Хочешь сначала настроить уведомления под себя или начать сразу?",
@@ -1094,7 +1094,7 @@ FAQ_ITEMS: list[dict[str, str]] = [
         "btn":   "1️⃣ Миссия проекта",
         "title": "1️⃣ Какая миссия у проекта?",
         "body": (
-            "StudyBuddy создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
+            "Palph создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
             "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки) с "
             "научно проверенными техниками запоминания (интервальное повторение, "
             "SM-2, active recall, Pomodoro). Получается система, которая:\n"
@@ -3714,7 +3714,7 @@ async def _send_all_tables_zip(reply_target) -> None:
         logger.error("export.all_failed reason=%s detail=%s", type(e).__name__, e)
         await reply_target.answer(f"❌ Export-all failed: {type(e).__name__}: {e}")
         return
-    filename = f"studybuddy-export-{datetime.now().strftime('%Y-%m-%d')}.zip"
+    filename = f"palph-export-{datetime.now().strftime('%Y-%m-%d')}.zip"
     size_kb = len(zip_bytes) / 1024
     total_rows = sum(metadata["row_counts"].values())
     logger.info(
@@ -4961,7 +4961,7 @@ async def main():
             type(e).__name__,
         )
 
-    logger.info("✅ StudyBuddy запущен")
+    logger.info("✅ Palph запущен")
     try:
         await dp.start_polling(bot)
     finally:
