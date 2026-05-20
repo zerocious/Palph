@@ -15,15 +15,27 @@ class UserRepository:
     # ------------------------------------------------------------
     # 1. Создание пользователя
     # ------------------------------------------------------------
-    async def create_user(self, user_id: int, timezone: str = "Europe/Moscow") -> None:
+    async def create_user(
+        self,
+        user_id: int,
+        timezone: str = "Europe/Moscow",
+        username: str | None = None,
+    ) -> None:
         """
         Создаёт запись в users и дефолтные настройки уведомлений.
         Если пользователь уже существует — ничего не делает.
+
+        username — опциональный Telegram @handle. Передаётся caller'ом
+        из message.from_user.username, чтобы first-message gap не
+        наступал (см. UsernameSyncMiddleware: middleware UPDATE
+        выполняется ДО создания строки, поэтому без явной передачи
+        новый user получил бы NULL username до второй активности).
         """
         # INSERT OR IGNORE гарантирует идемпотентность
         await self.db.execute(
-            "INSERT OR IGNORE INTO users (user_id, timezone) VALUES (?, ?)",
-            (user_id, timezone)
+            "INSERT OR IGNORE INTO users (user_id, timezone, username) "
+            "VALUES (?, ?, ?)",
+            (user_id, timezone, username),
         )
         await self.db.execute(
             "INSERT OR IGNORE INTO notification_settings (user_id) VALUES (?)",

@@ -138,3 +138,37 @@ class TestFindUserIdByUsername:
         assert await user_repo.find_user_id_by_username("bob") == 2
         assert await user_repo.find_user_id_by_username("carol") == 3
         assert await user_repo.find_user_id_by_username("dave") is None
+
+
+# ============================================================
+# create_user with username kwarg — закрывает first-message gap
+# ============================================================
+class TestCreateUserWithUsername:
+    """
+    UsernameSyncMiddleware фактически делает UPDATE до того как handler
+    создаёт строку user'а (см. cmd_start). Чтобы новый user сразу был
+    findable по @handle, create_user принимает username и сидит его
+    при INSERT'е.
+    """
+
+    async def test_creates_with_username(self, user_repo, db):
+        await user_repo.create_user(42, username="alice")
+        assert await user_repo.find_user_id_by_username("alice") == 42
+
+    async def test_default_username_is_none(self, user_repo, db):
+        """Без передачи username — NULL (backwards-compat с конфтест-фикстурой)."""
+        await user_repo.create_user(42)
+        async with db.execute(
+            "SELECT username FROM users WHERE user_id=?", (42,)
+        ) as c:
+            assert (await c.fetchone())["username"] is None
+
+    async def test_existing_user_not_overwritten(self, user_repo, db):
+        """INSERT OR IGNORE: если user уже есть, повторный create
+        с другим username не должен перетереть существующий handle."""
+        await user_repo.create_user(42, username="alice")
+        await user_repo.create_user(42, username="bob")  # ignored
+        async with db.execute(
+            "SELECT username FROM users WHERE user_id=?", (42,)
+        ) as c:
+            assert (await c.fetchone())["username"] == "alice"

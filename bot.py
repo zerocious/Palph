@@ -887,7 +887,9 @@ async def get_next_quiz_term(user_id: int, all_terms: list[QuizTerm]) -> QuizTer
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
         logger.info("user.registered user_id=%s", user_id)
         await event_repo.log(user_id, "user_registered", {
             "language_code": message.from_user.language_code,
@@ -2061,7 +2063,9 @@ async def send_achievement_notification(user_id: int, achievement_ids: list):
 async def handle_standard_timer(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
     current_state = await state.get_state()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
@@ -2122,7 +2126,9 @@ async def process_duration(message: Message, state: FSMContext):
         return
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
     await message.answer(
