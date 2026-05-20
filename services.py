@@ -320,6 +320,86 @@ def derive_emotion(
 
 
 # ------------------------------------------------------------
+# render_pet — путь к asset-файлу питомца.
+# Pure-функция, не делает I/O помимо `Path.exists()`. Caller
+# заворачивает результат в `FSInputFile` или подобный wrapper
+# UI-фреймворка (мы не импортируем FSInputFile, чтобы services.py
+# не зависел от aiogram.types).
+#
+# Assets генерируются `scripts/build_pet_assets.py` (Pillow build-time);
+# в production runtime — только чтение готовых PNG/GIF.
+#
+# Fallback chain (если запрошенной комбинации нет):
+#   1. <emotion>_<color>_<accessory>.png — основной путь
+#   2. <emotion>_orange_none.png — дефолтная комбинация
+#   3. <emotion>_happy_none.png ИЛИ генерим первый существующий
+#   4. raise FileNotFoundError — caller может graceful'но
+#      деградировать до text-only message
+# ------------------------------------------------------------
+_ASSETS_PET_DIR = Path(__file__).resolve().parent / "assets" / "pet"
+
+
+def render_pet(
+    user_pet,            # dict с полями color, accessory ИЛИ None
+    emotion: str,
+    *,
+    animated: bool = False,
+) -> Path:
+    """
+    Returns Path к asset-файлу питомца. Pure: только path-resolution.
+
+    `user_pet=None` трактуется как дефолт (orange + none) — для пользователей
+    без созданного pet'a (добавляется auto в add_xp; до первой сессии row нет).
+
+    `animated=True` → `<emotion>.gif` (один общий per emotion, без цвета/аксессуара,
+    т.к. GIF используется в level-up/sad-reminder для драматического beat'а,
+    конкретный цвет там не критичен).
+
+    Возвращает Path. Существование файла проверяется внутри (fallback);
+    raise FileNotFoundError если даже fallback'и отсутствуют (assets
+    директория не была сгенерирована).
+    """
+    if animated:
+        path = _ASSETS_PET_DIR / f"{emotion}.gif"
+        if path.exists():
+            return path
+        # Animated fallback: happy.gif как универсальный нейтрал
+        path = _ASSETS_PET_DIR / "happy.gif"
+        if path.exists():
+            return path
+        raise FileNotFoundError(
+            f"No animated assets for emotion={emotion!r}. "
+            f"Run `python scripts/build_pet_assets.py` to generate them."
+        )
+
+    if user_pet is None:
+        color = "orange"
+        accessory = "none"
+    else:
+        color = user_pet.get("color", "orange")
+        accessory = user_pet.get("accessory", "none")
+
+    primary = _ASSETS_PET_DIR / f"{emotion}_{color}_{accessory}.png"
+    if primary.exists():
+        return primary
+
+    # Fallback 1: дефолтная комбинация для этой эмоции
+    fallback_default = _ASSETS_PET_DIR / f"{emotion}_orange_none.png"
+    if fallback_default.exists():
+        return fallback_default
+
+    # Fallback 2: happy_orange_none — самая безопасная картинка
+    fallback_happy = _ASSETS_PET_DIR / "happy_orange_none.png"
+    if fallback_happy.exists():
+        return fallback_happy
+
+    raise FileNotFoundError(
+        f"No pet assets found for emotion={emotion!r} color={color!r} "
+        f"accessory={accessory!r}. Run `python scripts/build_pet_assets.py`."
+    )
+
+
+# ------------------------------------------------------------
 # Leaderboard scoring helpers — pure functions.
 # Полный спек: LEADERBOARD.md. Эти функции — единственное место,
 # где зашита численная сторона формулы; если нужно ребалансить —
@@ -438,15 +518,61 @@ class StudyService:
         achievement_service: AchievementService,
         pet_repo: PetRepository | None = None,
         leaderboard_repo: LeaderboardRepository | None = None,
+        bot=None,
     ):
         self.user_repo = user_repo
         self.session_repo = session_repo
         self.achievement_service = achievement_service
-        # pet_repo / leaderboard_repo опциональны: тесты вне pet/leaderboard
-        # флоу могут их не передавать — соответствующий grant просто skip'ается.
-        # В production bot.py передаёт оба.
+        # pet_repo / leaderboard_repo / bot опциональны: тесты вне pet/leaderboard
+        # флоу могут их не передавать — соответствующий grant / notification
+        # просто skip'ается. В production bot.py передаёт все три.
         self.pet_repo = pet_repo
         self.leaderboard_repo = leaderboard_repo
+        self.bot = bot  # для отправки level-up уведомлений
+
+    async def _notify_level_up(
+        self, user_id: int, old_level: int, new_level: int
+    ) -> None:
+        """
+        Отправляет сообщение о level-up с перечислением только-что
+        разблокированных предметов из COLOR_CATALOG / ACCESSORY_CATALOG.
+        По спеке TODO #16: «сообщение содержит список разблокированных-
+        но-непокупленных предметов с их ценой».
+
+        Бесшумно поглощает Telegram exceptions (заблокирован, etc.) —
+        notification является вспомогательным flow.
+        """
+        if self.bot is None or self.pet_repo is None:
+            return
+
+        unlocked = []
+        for value, (lvl, price) in self.pet_repo.COLOR_CATALOG.items():
+            if old_level < lvl <= new_level and price > 0:
+                unlocked.append(f"🎨 цвет «{value}» — {price} 🪙")
+        for value, (lvl, price) in self.pet_repo.ACCESSORY_CATALOG.items():
+            if old_level < lvl <= new_level and price > 0:
+                unlocked.append(f"🎁 «{value}» — {price} 🪙")
+
+        msg = (
+            f"🎉 <b>Уровень повышен!</b>\n"
+            f"🐾 Питомец вырос: {old_level} → <b>{new_level}</b>"
+        )
+        if unlocked:
+            msg += (
+                "\n\n<b>Открылись новые предметы:</b>\n"
+                + "\n".join(f"• {u}" for u in unlocked)
+                + "\n\nКупить можно в профиле через customization picker."
+            )
+        else:
+            msg += "\n\nНа этом уровне новых предметов не открылось — продолжай!"
+
+        try:
+            await self.bot.send_message(user_id, msg, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(
+                "pet.level_up_notify_failed user_id=%s new_level=%s reason=%s",
+                user_id, new_level, type(e).__name__,
+            )
 
     async def complete_session(self, user_id: int, duration: int) -> tuple[list, int, int]:
         """
@@ -480,10 +606,13 @@ class StudyService:
             # last_excited_at при level-up. Если ачивки были — тоже
             # пометим excited (вторая ветка приоритета derive_emotion).
             # Lock уже взят выше — pet_repo.add_xp его не берёт повторно.
+            level_up_info = None
             if self.pet_repo is not None:
-                await self.pet_repo.add_xp(user_id, duration)
+                old_level, new_level = await self.pet_repo.add_xp(user_id, duration)
                 if earned:
                     await self.pet_repo.mark_excited(user_id)
+                if new_level > old_level:
+                    level_up_info = (old_level, new_level)
 
             # Leaderboard time pts (LEADERBOARD.md §1). Piecewise по дневным
             # минутам с учётом уже накопленных за сегодня. Repository сам
@@ -491,6 +620,12 @@ class StudyService:
             # Lock уже взят — grant_time_pts его не берёт повторно.
             if self.leaderboard_repo is not None:
                 await self.leaderboard_repo.grant_time_pts(user_id, duration)
+
+        # Level-up уведомление ВНЕ db.lock — не хотим держать лок ради
+        # сетевого вызова к Telegram. На этой точке db-операции уже
+        # commit'нуты, и небольшая задержка нотификации не критична.
+        if level_up_info is not None:
+            await self._notify_level_up(user_id, *level_up_info)
 
         return earned, bonus, session_id
     

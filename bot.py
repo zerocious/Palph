@@ -4870,11 +4870,14 @@ async def main():
     leaderboard_repo = LeaderboardRepository(db)
     friend_repo = FriendRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
-    study_service = StudyService(user_repo, session_repo, ach_service, pet_repo, leaderboard_repo)
-    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo, friend_repo=friend_repo)
-    # streak_service создаётся ниже после построения bot; ему нужен
-    # leaderboard_repo для consume_freeze_if_active (Phase 3).
     bot = Bot(token=BOT_TOKEN)
+    study_service = StudyService(
+        user_repo, session_repo, ach_service,
+        pet_repo, leaderboard_repo, bot=bot,
+    )
+    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo, friend_repo=friend_repo)
+    # bot создан выше для передачи в StudyService (level-up notifications).
+    # streak_service ниже также получит leaderboard_repo для consume_freeze_if_active.
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей
     # ≥ 30 actions / 60 секунд (warn на 70%, hard block на 100%).
