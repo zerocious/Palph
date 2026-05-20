@@ -25,7 +25,7 @@ top-3/breakthrough/top-10% наградами, ❄️ заморозка стр�
 (profile-кнопка + cooldown + atomic покупка), 👥 friends system
 (`/friends` с add/accept/reject/remove + friends-tab по weekly score).
 Спек: [LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: 437 passing.
+[session_notes.md](session_notes.md). Tests: 469 passing.
 
 ---
 
@@ -132,14 +132,19 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
   termы с `streak ≥ 3`, флэш-карты с `repetitions ≥ 3`, MCQ-вопросы
   отвеченные хотя бы раз верно, решённые задачи.
-- **Цифровой питомец** — **data-layer переработан 2026-05-19**
-  ([PR #2 merged](https://github.com/zerocious/Palph/pull/2)):
-  один дизайн, **5 derived эмоций**
+- **Цифровой питомец** — data-layer ([PR #2 merged](https://github.com/zerocious/Palph/pull/2))
+  + art/UI track в PR #3: один дизайн, **5 derived эмоций**
   (`studying / excited / sad / sleepy / happy` — выводятся в момент
-  рендера), 1 XP/мин, формула уровня `floor(sqrt(xp/10))+1`,
-  `user_pet_inventory` для будущей кастомизации, атомарная покупка
-  под `db.lock`. Остаётся art/UI-трек (Pillow build → 125 PNG,
-  picker UI, level-up notification, sad-pet в reminder).
+  рендера), 1 XP/мин, `level = floor(sqrt(xp/10)) + 1`,
+  `user_pet_inventory` под кастомизацию, атомарная покупка под `db.lock`,
+  **level-up notification** со списком новых разблокированных предметов,
+  **pet detail screen** в профиле (фото-превью + name + level + xp),
+  **4-state customization picker** (⭐ надето / ✓ куплено / 💰 N доступно /
+  🔒 lv.N заблокировано) для 5 цветов и 5 аксессуаров с confirm-диалогом
+  на покупку, **переименование** через FSM. Pillow build-script
+  (`scripts/build_pet_assets.py`) генерирует 125 PNG + 5 GIF placeholder
+  ассетов (programmer-art) — real artwork как отдельный track-замена
+  файлов в `assets/pet/`. Sad-pet image в evening reminder — follow-up.
 - **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
   `(time + math_task + quiz + card) × streak_multiplier`, daily caps,
   ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
@@ -252,7 +257,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**437 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows) |
+| [tests/](tests/) | Юнит-тесты (**469 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers) |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |

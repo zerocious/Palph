@@ -34,7 +34,15 @@ end-to-end integration flows). После merge PR #3 — никакой
 Sad-pet reminder hook (последний бит TODO #16 на data-layer треке)
 вышел отдельным PR #4 на ветке `claude/pet-sad-reminder`, off main.
 
-16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer merged 2026-05-19**  
+16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
+- `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);
+- level-up notification со списком разблокированных предметов;
+- pet detail screen с image preview;
+- 4-state customization picker (⭐/✓/💰/🔒) для цветов и аксессуаров;
+- покупка через confirm dialog (атомарная под db.lock);
+- equip уже купленного — instant;
+- переименование через FSM.
+Real artwork — отдельный art-track (placeholder PNG functional, но programmer-art ugly). Sad-pet image в reminder — отдельный follow-up после merge PR #4.  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
 Готовность:  
 — Один дизайн питомца (не 5 видов). Таблица `user_pet(user_id, name, color, accessory, level, xp, created_at)` без `species` и без хранения эмоции. Поле `accessory NOT NULL` с sentinel-значением `"none"` (вместо nullable).  

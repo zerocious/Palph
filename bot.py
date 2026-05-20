@@ -37,7 +37,7 @@ from repository import (
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
-    freeze_cost, parse_friend_query,
+    freeze_cost, parse_friend_query, derive_emotion, render_pet,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
@@ -255,6 +255,11 @@ class SetupStates(StatesGroup):
 class FriendStates(StatesGroup):
     """FSM для добавления друга по Telegram ID (Phase 4)."""
     waiting_for_user_id = State()
+
+
+class PetStates(StatesGroup):
+    """FSM для переименования питомца (TODO #16 Phase B)."""
+    waiting_for_name = State()
 
 
 class SettingsStates(StatesGroup):
@@ -1320,10 +1325,12 @@ async def cmd_profile(message: Message):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    # Питомец: image preview + customization picker (TODO #16 Phase B).
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
     # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1)
+    inline_kb.adjust(2, 1, 1, 1)
     await message.answer(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1954,10 +1961,12 @@ async def back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    # Питомец: image preview + customization picker (TODO #16 Phase B).
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
     # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1)
+    inline_kb.adjust(2, 1, 1, 1)
     await callback.message.edit_text(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -4235,6 +4244,396 @@ async def cmd_leaderboard(message: Message):
             user_id, type(e).__name__, e,
         )
         await message.answer("Не удалось загрузить лидерборд. Попробуй позже.")
+
+
+# ============================================================
+# Pet customization (TODO #16 Phase B): detail screen + picker UI
+# ============================================================
+async def _compute_pet_emotion_for_user(user_id: int) -> tuple:
+    """
+    Возвращает (emotion_str, FSInputFile | None). image=None если
+    asset не найден — caller graceful'но fallback'нет на text-only.
+
+    FSM-state не доступна тут (профиль обычно открывается вне таймера),
+    поэтому is_studying=False. recently_excited вычисляется из
+    pet.last_excited_at (в окне 5 минут).
+    """
+    from datetime import datetime, timedelta
+    import pytz
+    user = await user_repo.get_user(user_id)
+    pet = await pet_repo.get_pet(user_id)
+
+    recently_excited = False
+    if pet and pet.get("last_excited_at"):
+        try:
+            last = datetime.strptime(
+                pet["last_excited_at"], "%Y-%m-%d %H:%M:%S"
+            )
+            recently_excited = (datetime.now() - last) < timedelta(minutes=5)
+        except (ValueError, TypeError):
+            pass
+
+    has_studied_today = bool(user["has_studied_today"]) if user else False
+    tz_name = (user or {}).get("timezone") or "Europe/Moscow"
+    try:
+        now_local = datetime.now(pytz.timezone(tz_name))
+    except Exception:
+        now_local = datetime.now()
+
+    emotion = derive_emotion(
+        is_studying=False,
+        recently_excited=recently_excited,
+        has_studied_today=has_studied_today,
+        now_local=now_local,
+    )
+    try:
+        path = render_pet(pet, emotion)
+        return emotion, FSInputFile(str(path))
+    except FileNotFoundError:
+        return emotion, None
+
+
+def _picker_button_label(value: str, catalog: dict, user_pet, owned: set,
+                          item_type: str) -> tuple:
+    """
+    Возвращает (button_text, callback_data) для одной кнопки picker'а.
+    4 состояния по спеке: ⭐ equipped / ✓ owned / 💰 buyable / 🔒 locked.
+
+    item_type ∈ {'color', 'accessory'} — для построения callback_data.
+    """
+    unlock_level, price = catalog[value]
+    user_level = user_pet["level"] if user_pet else 1
+    is_equipped = user_pet and user_pet.get(item_type) == value
+    is_owned = value in owned
+
+    if is_equipped:
+        return (f"⭐ {value}", "pet_locked:equipped")
+    if is_owned:
+        return (f"✓ {value}", f"pet_equip:{item_type}:{value}")
+    if user_level < unlock_level:
+        return (
+            f"🔒 ур.{unlock_level} · 💰{price} {value}",
+            f"pet_locked:level:{unlock_level}",
+        )
+    return (f"💰{price} {value}", f"pet_buy:{item_type}:{value}")
+
+
+@router.callback_query(F.data.startswith("pet_menu:"))
+async def pet_menu(callback: CallbackQuery):
+    """
+    Pet detail screen: фото питомца + name/level/xp/color/accessory +
+    customization кнопки. Авто-создаёт pet (с дефолтами) если ещё нет.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    pet = await pet_repo.get_pet(user_id)
+    if pet is None:
+        await pet_repo.create_pet_with_defaults(user_id)
+        pet = await pet_repo.get_pet(user_id)
+
+    user = await user_repo.get_user(user_id)
+    emotion, image = await _compute_pet_emotion_for_user(user_id)
+
+    caption = (
+        f"🐾 <b>{pet['name']}</b>\n\n"
+        f"Уровень: <b>{pet['level']}</b>\n"
+        f"XP: {pet['xp']}\n"
+        f"Цвет: {pet['color']}  ·  Аксессуар: {pet['accessory']}\n"
+        f"Эмоция сейчас: {emotion}\n\n"
+        f"💰 Баланс: {user['total_coins']} 🪙"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎨 Цвета", callback_data=f"pet_colors:{user_id}")
+    kb.button(text="🎁 Аксессуары", callback_data=f"pet_accessories:{user_id}")
+    kb.button(text="✏️ Переименовать", callback_data=f"pet_rename:{user_id}")
+    kb.button(text="◀️ Профиль", callback_data=f"pet_back_to_profile:{user_id}")
+    kb.adjust(2, 1, 1)
+
+    # Pet menu приходит из ТЕКСТОВОГО профиля → нужно удалить старое
+    # сообщение и отправить новое (фото). Photo + caption + inline kb.
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    if image is not None:
+        try:
+            await bot.send_photo(
+                chat_id=callback.message.chat.id,
+                photo=image,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+            return
+        except Exception as e:
+            logger.warning("pet.menu_send_photo_failed user=%s err=%s", user_id, e)
+
+    # Fallback: text-only если asset отсутствует
+    await bot.send_message(
+        chat_id=callback.message.chat.id,
+        text=caption + f"\n\n<i>(изображение питомца недоступно)</i>",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _render_picker(callback: CallbackQuery, item_type: str) -> None:
+    """Generic picker renderer для colors/accessories."""
+    user_id = callback.from_user.id
+    pet = await pet_repo.get_pet(user_id)
+    if pet is None:
+        await pet_repo.create_pet_with_defaults(user_id)
+        pet = await pet_repo.get_pet(user_id)
+
+    if item_type == "color":
+        catalog = PetRepository.COLOR_CATALOG
+        title = "🎨 Цвета"
+    else:
+        catalog = PetRepository.ACCESSORY_CATALOG
+        title = "🎁 Аксессуары"
+
+    inventory = await pet_repo.get_inventory(user_id)
+    owned = {i["item_value"] for i in inventory if i["item_type"] == item_type}
+
+    kb = InlineKeyboardBuilder()
+    for value in catalog.keys():
+        text, cb_data = _picker_button_label(value, catalog, pet, owned, item_type)
+        kb.button(text=text, callback_data=cb_data)
+    kb.button(text="◀️ Назад к питомцу", callback_data=f"pet_menu:{user_id}")
+    kb.adjust(1)
+
+    msg = (
+        f"<b>{title}</b>\n\n"
+        f"⭐ — надето\n"
+        f"✓ — куплено (нажми чтобы надеть)\n"
+        f"💰 — доступно к покупке\n"
+        f"🔒 — заблокировано до указанного уровня\n\n"
+        f"Уровень: <b>{pet['level']}</b>"
+    )
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+        else:
+            await callback.message.edit_text(
+                msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+    except Exception as e:
+        logger.warning("pet.picker_render_failed user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("pet_colors:"))
+async def pet_colors(callback: CallbackQuery):
+    await callback.answer()
+    await _render_picker(callback, "color")
+
+
+@router.callback_query(F.data.startswith("pet_accessories:"))
+async def pet_accessories(callback: CallbackQuery):
+    await callback.answer()
+    await _render_picker(callback, "accessory")
+
+
+@router.callback_query(F.data.startswith("pet_locked:"))
+async def pet_locked(callback: CallbackQuery):
+    """Alert на нажатие locked / already-equipped кнопки."""
+    data = callback.data
+    if data.startswith("pet_locked:level:"):
+        try:
+            lvl = int(data.split(":", 2)[2])
+            await callback.answer(
+                f"🔒 Открывается на уровне {lvl}. Учись больше!",
+                show_alert=True,
+            )
+        except (ValueError, IndexError):
+            await callback.answer()
+    elif data == "pet_locked:equipped":
+        await callback.answer("⭐ Уже надето!")
+    else:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pet_equip:"))
+async def pet_equip(callback: CallbackQuery):
+    """Надеть уже купленный предмет (color/accessory)."""
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer()
+        return
+    success = await pet_repo.equip(user_id, item_type, item_value)
+    await callback.answer(
+        f"⭐ Надето: {item_value}" if success else "❌ Не удалось надеть",
+        show_alert=not success,
+    )
+    if success:
+        await _render_picker(callback, item_type)
+
+
+@router.callback_query(F.data.startswith("pet_buy:"))
+async def pet_buy_confirm_dialog(callback: CallbackQuery):
+    """Confirm dialog перед покупкой."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        return
+    catalog = (
+        PetRepository.COLOR_CATALOG if item_type == "color"
+        else PetRepository.ACCESSORY_CATALOG if item_type == "accessory"
+        else None
+    )
+    if catalog is None or item_value not in catalog:
+        return
+    unlock_level, price = catalog[item_value]
+    user = await user_repo.get_user(user_id)
+
+    msg = (
+        f"💰 <b>Купить {item_type} «{item_value}»?</b>\n\n"
+        f"Цена: <b>{price}</b> 🪙\n"
+        f"Твой баланс: {user['total_coins']} 🪙\n"
+        f"После покупки: <b>{user['total_coins'] - price}</b> 🪙\n\n"
+        f"После покупки предмет автоматически надевается."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=f"✅ Купить за {price} 🪙",
+        callback_data=f"pet_buy_do:{item_type}:{item_value}",
+    )
+    back_cb = (
+        f"pet_colors:{user_id}" if item_type == "color"
+        else f"pet_accessories:{user_id}"
+    )
+    kb.button(text="◀️ Отмена", callback_data=back_cb)
+    kb.adjust(1)
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+        else:
+            await callback.message.edit_text(
+                msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+    except Exception as e:
+        logger.warning("pet.buy_confirm_failed user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("pet_buy_do:"))
+async def pet_buy_do(callback: CallbackQuery):
+    """Атомарная покупка через PetRepository.purchase_item."""
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer()
+        return
+    result = await pet_repo.purchase_item(user_id, item_type, item_value)
+    feedback_map = {
+        "purchased": f"✅ Куплено и надето: {item_value}!",
+        "already_owned": "👌 У тебя уже есть этот предмет.",
+        "insufficient_coins": "❌ Не хватает монет.",
+        "insufficient_level": "🔒 Уровень слишком низкий.",
+        "unknown_item": "❌ Такого предмета не существует.",
+        "no_pet": "❌ Питомец ещё не создан — сделай первую сессию.",
+    }
+    await callback.answer(
+        feedback_map.get(result, "Что-то пошло не так."),
+        show_alert=(result != "purchased"),
+    )
+    await _render_picker(callback, item_type)
+
+
+@router.callback_query(F.data.startswith("pet_rename:"))
+async def pet_rename_start(callback: CallbackQuery, state: FSMContext):
+    """Войти в FSM ожидания нового имени."""
+    await callback.answer()
+    await state.set_state(PetStates.waiting_for_name)
+    prompt = (
+        "✏️ <b>Переименовать питомца</b>\n\n"
+        "Введи новое имя (до 20 символов).\n"
+        "Для отмены отправь /cancel."
+    )
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(caption=prompt, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(prompt, parse_mode="HTML")
+    except Exception:
+        await bot.send_message(callback.message.chat.id, prompt, parse_mode="HTML")
+
+
+@router.message(PetStates.waiting_for_name, Command("cancel"))
+async def pet_rename_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Переименование отменено.")
+
+
+@router.message(PetStates.waiting_for_name)
+async def pet_rename_process(message: Message, state: FSMContext):
+    """Принимает новое имя и переименовывает питомца."""
+    user_id = message.from_user.id
+    new_name = (message.text or "").strip()
+    if not new_name:
+        await message.answer(
+            "Имя не может быть пустым. Попробуй ещё раз или /cancel."
+        )
+        return
+    if len(new_name) > 20:
+        await message.answer(
+            f"Слишком длинное ({len(new_name)} симв., максимум 20). Попробуй короче или /cancel."
+        )
+        return
+    ok = await pet_repo.rename(user_id, new_name)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ Питомец теперь называется «{new_name}».")
+    else:
+        await message.answer(
+            "Не удалось переименовать — возможно, питомец ещё не создан. "
+            "Сделай первую сессию через /start."
+        )
+
+
+@router.callback_query(F.data.startswith("pet_back_to_profile:"))
+async def pet_back_to_profile(callback: CallbackQuery):
+    """
+    Возврат из photo-based pet detail в text-based профиль.
+    Удаляем фото-сообщение и шлём свежее текстовое сообщение профиля.
+    Отдельный handler (не общий back_to_profile), потому что
+    callback.message здесь photo — edit_text не работает.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
+    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
+    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1, 1)
+    await bot.send_message(
+        callback.message.chat.id,
+        f"📊 Твой профиль:\n"
+        f"🆔 ID: {user_id}\n"
+        f"📚 Всего сессий: {user['total_sessions']}\n"
+        f"💰 Всего монет: {user['total_coins']} 🪙\n"
+        f"🔥 Стрик: {user['current_streak']} дней подряд\n"
+        f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
+        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
+        reply_markup=inline_kb.as_markup(),
+    )
 
 
 # ============================================================
