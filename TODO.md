@@ -15,18 +15,21 @@ Example:
 Сессия: см. session_notes.md, запись от 2026-05-17
 
 **Прогресс:** 5 из 6 пунктов закрыты + **пункт 16 полностью отгружен в `main`
-2026-05-19**:
+к 2026-05-20**:
 - **data layer** ✅ PR #2 = `9203aab` (schema + PetRepository +
   derive_emotion + XP-grant в complete_session + 47 тестов)
 - **art track** ✅ PR #3 = `258fadc` (render_pet + 125 placeholder PNG +
   5 GIF, Pillow build-script, level-up notification, pet detail screen,
   4-state customization picker, FSM rename)
-- **sad-pet reminder hook** ✅ PR #4 (этот PR: интеграция derive_emotion
-  в ReminderService._send_evening + 6 тестов)
+- **sad-pet reminder text** ✅ PR #4 = `fe69329` (интеграция
+  derive_emotion в `ReminderService._send_evening` + 7 тестов)
+- **sad-pet GIF attachment + 👥 Друзья в профиле** ✅ PR #5 = `55e70ec`
+  (post-v0.8 follow-ups: bot.send_animation с sad.gif + caption +
+  graceful FileNotFoundError fallback; кнопка `👥 Друзья` в профиле
+  (3 keyboard sites), reusing existing friends_back handler)
 
-Остаётся: real artwork (отдельный art-track — file replacement в `assets/pet/`),
-sad-pet image attachment в evening reminder (follow-up commit на main,
-~10 LOC).
+Остаётся: **real artwork** (отдельный art-track — file replacement
+в `assets/pet/`, без code changes); полностью закрывает TODO #16.
 
 ### ✅ Weekly Leaderboard — закрыт полностью
 
@@ -34,13 +37,12 @@ sad-pet image attachment в evening reminder (follow-up commit на main,
 2026-05-19** в PR #3 (Phase 0 audit, Phase 1 data layer, Phase 2a view +
 privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **username-search для /friends** (BACKLOG → ship) +
-**deep-link invite-links** через `/share_friend` (BACKLOG → ship).
-**437 тестов** покрывают всю систему (включая middleware и
-end-to-end integration flows). После merge PR #3 — никакой
-открытой работы по leaderboard'у.
-
-Sad-pet reminder hook (последний бит TODO #16 на data-layer треке)
-вышел отдельным PR #4 на ветке `claude/pet-sad-reminder`, off main.
+**deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
+**👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
+handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На текущем
+`main` (`55e70ec`) **476 тестов** покрывают всю систему (включая
+middleware, end-to-end integration flows, reminder service sad-pet
+animation). Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
 - `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);

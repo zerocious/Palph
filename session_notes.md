@@ -4,6 +4,60 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-20 (post-v0.8 follow-ups)
+
+Goal: ship два deferred follow-up'а на main после merge PR #3 и PR #4:
+sad-pet GIF в вечернем напоминании (вместо text-only) + кнопка
+`👥 Друзья` в profile inline keyboard.
+
+**Итог:** PR #5 = `55e70ec` merged в main; 476 тестов зелёных
+(475 на предыдущем main + 1 новый тест на FileNotFoundError fallback).
+Worktrees + branches очищены. **Бот feature-complete от original brief**
+с code-side perspective — остаётся только реальное art-replacement в
+`assets/pet/` и quiz content (sections II-IV) — content-authoring задачи.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Service | `ReminderService._send_evening` для `emotion='sad'` теперь шлёт `bot.send_animation(assets/pet/sad.gif, caption=...)` через lazy-import `FSInputFile` + `render_pet(None, "sad", animated=True)`. Graceful `FileNotFoundError` fallback: если asset отсутствует — `bot.send_message` с тем же sad-pet текстом. Non-sad emotion path (defensive edge case) сохраняет `send_message` с generic fallback копией. | [services.py](services.py) |
+| 2 | UI | Кнопка `👥 Друзья` в profile inline keyboard. Добавлена во ВСЕ ТРИ профильных keyboard-сайта: `cmd_profile`, `back_to_profile`, `pet_back_to_profile`. Callback reuses existing `friends_back:` handler (исторически "back to friends list" из inner screens, теперь doubles as "main friends-tab view" entry). Layout grid: adjust(2, 1, 1, 1, 1). | [bot.py](bot.py) |
+| 3 | Tests | Реорганизация `tests/test_reminder_service.py` для нового send_animation path: `TestSadPetAnimation` (2) — animation called, send_message НЕ called; `TestAssetMissingFallback` (1 новый) — monkeypatch `services.render_pet` бросать FileNotFoundError, проверяем graceful text fallback; `TestFallbackCopy` (1) — defensive has_studied_today=1 ещё использует send_message; `TestEdgeCases` (3) — empty/blocked/unknown-TZ обновлены под send_animation. **Net +1 тест.** | [tests/test_reminder_service.py](tests/test_reminder_service.py) |
+
+### Design notes
+
+- **Lazy `FSInputFile` import** в `_send_evening` (внутри try/except) — `services.py` намеренно не импортирует `aiogram.types.FSInputFile` на module-level, чтобы сохранять loose coupling с UI-фреймворком. Caller-pattern.
+- **Не переименовывали `friends_back` callback** — функционально работает, переименование задело бы много callback-сайтов в inner friends screens без functional gain. Comment в `bot.py` объясняет.
+- **Пет image в /profile root НЕ добавлен** — для этого пришлось бы delete-and-resend всю message при back-navigation (text→photo transition). Защёлкнули в pet detail screen через `pet_menu` callback. Polish item.
+
+### Verification
+
+- `python -m py_compile bot.py services.py` — clean
+- `python -m pytest tests/` — **476 passed** (475 → +1 новый)
+- pip-audit — clean (без новых dependencies)
+
+### Cleanup на merge
+
+- Worktrees: `claude/leaderboard-system`, `claude/pet-sad-reminder`,
+  `claude/post-v0.8-followups`, `claude/elastic-mirzakhani-0b7ce0`
+  все удалены (последний — orphaned directory, файлы на диске, но
+  git-tracking уже нет).
+- Local + remote branches удалены для всех PR'ов 2/3/4/5.
+- Local `main` синхронизирован с `origin/main` (`55e70ec`).
+
+### Что ОСТАЛОСЬ для full feature-complete release
+
+- **Real artwork** — file replacement в `assets/pet/` (drop replacement
+  PNGs/GIFs over placeholder programmer-art). Без code changes.
+- **TODO #1 content** — quiz content для sections II-IV (content
+  authoring задача).
+- **Manual QA** — ~30 минут live test против real Telegram с main
+  admin аккаунтом перед announcement.
+
+Code-side бот **готов к v0.8 announcement**.
+
+---
+
 ## Session — 2026-05-19 (sad-pet reminder hook)
 
 Goal: маленький tail-of-#16 — sad-pet интеграция в evening reminder.

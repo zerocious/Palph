@@ -16,16 +16,22 @@ Telegram-бот для формирования регулярных учебн�
 > внутренних имён — это отдельная migration-задача с явным
 > backup/restore шагом.
 
-**Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
-(4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **data-layer
-цифрового питомца merged 2026-05-19** (остаётся art/UI трек). Weekly
-leaderboard — **все 4 фазы shipped** (PR #3): `/leaderboard` command,
-segment auto-routing, privacy opt-out, UTC-anchored weekly rollover с
-top-3/breakthrough/top-10% наградами, ❄️ заморозка стрика
-(profile-кнопка + cooldown + atomic покупка), 👥 friends system
-(`/friends` с add/accept/reject/remove + friends-tab по weekly score).
-Спек: [LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: 469 passing.
+**Статус:** v0.8 shipped 2026-05-20. Спринт v0.7 закрыт на 5 из 6 пунктов
+(4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **полностью
+переработанный цифровой питомец** (data layer + art track + UI: profile
+preview, customization picker с 4-state buttons, level-up notification
+со списком разблокированных, FSM rename, sad-pet GIF в вечернем
+напоминании). Weekly leaderboard — **все 4 фазы shipped**:
+`/leaderboard` command, segment auto-routing (newbie/main), privacy
+opt-out, UTC-anchored weekly rollover с top-3/breakthrough/top-10%
+наградами, ❄️ заморозка стрика (profile-кнопка + cooldown + atomic
+покупка), 👥 friends system (`/friends` команда + 👥 Друзья кнопка в
+профиле + add по @username/Telegram ID + accept/reject/remove +
+deep-link invite-links через `/share_friend` + friends-tab по weekly
+score). Бот переименован с StudyBuddy в Palph (internals retained
+for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
+[TODO.md](TODO.md) и [session_notes.md](session_notes.md).
+Tests: 476 passing.
 
 ---
 
@@ -257,7 +263,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**469 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers) |
+| [tests/](tests/) | Юнит-тесты (**476 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation) |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
