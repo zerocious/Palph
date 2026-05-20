@@ -672,24 +672,60 @@ class ReminderService:
                     uid, type(e).__name__, e,
                 )
 
+    # Evening-reminder texts. Sad-pet variant is the default expected path
+    # (filter подразумевает has_studied_today=0 → derive_emotion даёт "sad").
+    # Fallback variant сохраняется как defensive: если эмоция вдруг
+    # не "sad" (например, edge case в filter), text остаётся осмысленным.
+    _EVENING_SAD_PET_TEXT = (
+        "🌙 Вечер.\n"
+        "🐾😢 Питомец загрустил — ты сегодня ещё не учился.\n"
+        "Поучись хотя бы 5 минут до полуночи, и стрик сохранится 🔥"
+    )
+    _EVENING_FALLBACK_TEXT = (
+        "🌙 Вечер!\n"
+        "Сегодня ещё не было ни одной учебной сессии — "
+        "успей хотя бы 5 минут до полуночи, чтобы сохранить стрик 🔥"
+    )
+
     async def _send_evening(self, tz: str, hhmm: str) -> None:
+        """
+        Evening reminders с sad-pet интеграцией (TODO #16, последний остаток).
+        Per-user now_local + derive_emotion → выбор копи. По спеке reminder
+        фильтрует на has_studied_today=0, и derive_emotion вернёт 'sad'
+        (или 'sleepy' если ≥22:00, но reminder обычно стреляет в 21:00).
+        """
+        import pytz
         users = await self.user_repo.get_users_due_for_evening(tz, hhmm)
-        if users:
-            logger.info(
-                "reminder.evening.dispatched tz=%s hhmm=%s count=%s",
-                tz, hhmm, len(users),
-            )
+        if not users:
+            return
+        logger.info(
+            "reminder.evening.dispatched tz=%s hhmm=%s count=%s",
+            tz, hhmm, len(users),
+        )
+        try:
+            now_local = datetime.now(pytz.timezone(tz))
+        except Exception:
+            # Defensive: unknown TZ → fallback на naive datetime,
+            # эмоция всё равно вычислится корректно по полям user'а.
+            now_local = datetime.now()
+
         for u in users:
             uid = u["user_id"]
+            # has_studied_today из SQL — int 0/1; конвертим в bool
+            studied = bool(u.get("has_studied_today", 0))
+            emotion = derive_emotion(
+                is_studying=False,  # FSM-state не доступен из scheduler'а
+                recently_excited=False,
+                has_studied_today=studied,
+                now_local=now_local,
+            )
+            text = (
+                self._EVENING_SAD_PET_TEXT
+                if emotion == "sad"
+                else self._EVENING_FALLBACK_TEXT
+            )
             try:
-                await self.bot.send_message(
-                    chat_id=uid,
-                    text=(
-                        "🌙 Вечер!\n"
-                        "Сегодня ещё не было ни одной учебной сессии — "
-                        "успей хотя бы 5 минут до полуночи, чтобы сохранить стрик 🔥"
-                    ),
-                )
+                await self.bot.send_message(chat_id=uid, text=text)
             except TelegramForbiddenError:
                 logger.info(
                     "reminder.send_failed kind=evening uid=%s reason=blocked", uid
