@@ -15,15 +15,27 @@ class UserRepository:
     # ------------------------------------------------------------
     # 1. Создание пользователя
     # ------------------------------------------------------------
-    async def create_user(self, user_id: int, timezone: str = "Europe/Moscow") -> None:
+    async def create_user(
+        self,
+        user_id: int,
+        timezone: str = "Europe/Moscow",
+        username: str | None = None,
+    ) -> None:
         """
         Создаёт запись в users и дефолтные настройки уведомлений.
         Если пользователь уже существует — ничего не делает.
+
+        username — опциональный Telegram @handle. Передаётся caller'ом
+        из message.from_user.username, чтобы first-message gap не
+        наступал (см. UsernameSyncMiddleware: middleware UPDATE
+        выполняется ДО создания строки, поэтому без явной передачи
+        новый user получил бы NULL username до второй активности).
         """
         # INSERT OR IGNORE гарантирует идемпотентность
         await self.db.execute(
-            "INSERT OR IGNORE INTO users (user_id, timezone) VALUES (?, ?)",
-            (user_id, timezone)
+            "INSERT OR IGNORE INTO users (user_id, timezone, username) "
+            "VALUES (?, ?, ?)",
+            (user_id, timezone, username),
         )
         await self.db.execute(
             "INSERT OR IGNORE INTO notification_settings (user_id) VALUES (?)",
@@ -137,6 +149,60 @@ class UserRepository:
             (tz, user_id),
         )
         await self.db.commit()
+
+    async def set_hidden_from_leaderboards(self, user_id: int, hidden: bool) -> None:
+        """Скрывает/возвращает пользователя на публичные лидерборды
+        (LEADERBOARD.md §Privacy). Не влияет на накопление очков и rewards."""
+        await self.db.execute(
+            "UPDATE users SET hidden_from_leaderboards = ? WHERE user_id = ?",
+            (1 if hidden else 0, user_id),
+        )
+        await self.db.commit()
+
+    async def is_hidden_from_leaderboards(self, user_id: int) -> bool:
+        """Текущее состояние privacy-флага."""
+        async with self.db.execute(
+            "SELECT hidden_from_leaderboards FROM users WHERE user_id=?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row["hidden_from_leaderboards"]) if row else False
+
+    # ------------------------------------------------------------
+    # Username (Telegram @handle) — для friends-search
+    # ------------------------------------------------------------
+    async def refresh_username(self, user_id: int, username) -> None:
+        """
+        Обновляет users.username. Безусловный UPDATE — допускает и
+        смену handle (str → str), и сброс в NULL (если пользователь
+        удалил публичный handle на стороне Telegram).
+
+        Принимает username как str или None. Вызывается из
+        UsernameSyncMiddleware на каждый Message/CallbackQuery,
+        чтобы кеш для friends-search не дрейфовал.
+        """
+        await self.db.execute(
+            "UPDATE users SET username = ? WHERE user_id = ?",
+            (username, user_id),
+        )
+        await self.db.commit()
+
+    async def find_user_id_by_username(self, username: str):
+        """
+        Case-insensitive lookup по users.username. Caller отвечает за
+        очистку входной строки от leading '@' и лишних пробелов.
+
+        Возвращает user_id (int) или None если username не найден.
+        Пустая строка → None defensively.
+        """
+        if not username:
+            return None
+        async with self.db.execute(
+            "SELECT user_id FROM users WHERE username = ? COLLATE NOCASE",
+            (username,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["user_id"] if row else None
 
     async def get_distinct_timezones(self) -> list[str]:
         """Возвращает все часовые пояса, которые используются хотя бы одним пользователем."""
@@ -894,3 +960,811 @@ class PetRepository:
             (user_id,),
         )
         await self.db.commit()
+
+
+class LeaderboardRepository:
+    """
+    Score-инкременты для weekly leaderboard (LEADERBOARD.md Phase 1).
+
+    Все grant_-методы lock-free. Безопасность к гонкам обеспечивается
+    атомарностью самих UPDATE-выражений ("UPDATE … WHERE quiz_count < 25"
+    + проверка rowcount). Для grant_time_pts реальный read-modify-write
+    остаётся, но практически невозможна одновременная отметка двух
+    session_completed для одного user'а — таймер пользователя один.
+
+    Helper'ы из services.py (piecewise_time_pts, user_calendar_keys)
+    импортируются лениво внутри методов, чтобы не создавать circular
+    dependency (services уже импортирует repository).
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    # ------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------
+    async def _now_local_for_user(self, user_id: int):
+        """
+        datetime.now() в локальном TZ пользователя (из users.timezone).
+        Fallback: Europe/Moscow при отсутствии user'а или неизвестном TZ.
+        Используется grant_-методами, когда caller не передал now_local
+        явно. Тесты обычно передают свой now_local для детерминизма.
+        """
+        import pytz
+        from datetime import datetime
+        async with self.db.execute(
+            "SELECT timezone FROM users WHERE user_id=?", (user_id,)
+        ) as c:
+            row = await c.fetchone()
+        tz_name = row["timezone"] if row else "Europe/Moscow"
+        try:
+            return datetime.now(pytz.timezone(tz_name))
+        except pytz.UnknownTimeZoneError:
+            return datetime.now(pytz.timezone("Europe/Moscow"))
+
+    async def _ensure_rows(self, user_id: int, local_date: str, week_iso: str) -> None:
+        """INSERT OR IGNORE для daily + weekly строк текущего дня/недели."""
+        await self.db.execute(
+            "INSERT OR IGNORE INTO daily_score_counters (user_id, local_date) "
+            "VALUES (?, ?)",
+            (user_id, local_date),
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO weekly_scores (user_id, week_iso) "
+            "VALUES (?, ?)",
+            (user_id, week_iso),
+        )
+
+    # ------------------------------------------------------------
+    # 1. Time pts — piecewise по дневным минутам (LEADERBOARD.md §1)
+    # ------------------------------------------------------------
+    async def grant_time_pts(
+        self, user_id: int, duration_min: int, now_local=None
+    ) -> float:
+        """
+        Начисляет time pts за сессию длиной duration_min, исходя из того,
+        сколько минут уже было сегодня (для корректного piecewise).
+        Хранимый time_minutes capped at 240; излишек не приносит pts.
+
+        Возвращает фактически начисленные pts (REAL, неокруглённые).
+        Вызов с duration_min <= 0 — no-op, возвращает 0.0.
+        """
+        from services import piecewise_time_pts, user_calendar_keys
+        if duration_min <= 0:
+            return 0.0
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        async with self.db.execute(
+            "SELECT time_minutes FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            row = await c.fetchone()
+        start = row["time_minutes"]
+        end = start + duration_min
+        pts = piecewise_time_pts(start, end)
+
+        # Cap stored time_minutes at 240 — за пределом всё равно 0 pts,
+        # хранить точное значение не нужно.
+        new_time_minutes = min(end, 240)
+        await self.db.execute(
+            "UPDATE daily_score_counters "
+            "SET time_minutes=?, time_pts = time_pts + ? "
+            "WHERE user_id=? AND local_date=?",
+            (new_time_minutes, pts, user_id, local_date),
+        )
+        await self.db.execute(
+            "UPDATE weekly_scores SET time_pts = time_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return pts
+
+    # ------------------------------------------------------------
+    # 2. Math task pts — 40/correct, daily cap 5 (LEADERBOARD.md §2)
+    # ------------------------------------------------------------
+    async def grant_task_pts(self, user_id: int, now_local=None) -> bool:
+        """
+        Начисляет 40 pts за решённую math task, если daily cap (5) не превышен.
+        Атомарная проверка cap через WHERE task_count < 5 + rowcount.
+        Возвращает True если начислено, False если capped.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters SET task_count = task_count + 1 "
+            "WHERE user_id=? AND local_date=? AND task_count < 5",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return False
+
+        await self.db.execute(
+            "UPDATE weekly_scores SET task_pts = task_pts + 40 "
+            "WHERE user_id=? AND week_iso=?",
+            (user_id, week_iso),
+        )
+        await self.db.commit()
+        return True
+
+    # ------------------------------------------------------------
+    # 3. Quiz correct — 5 pts + series bonus +15/3 (LEADERBOARD.md §3)
+    # ------------------------------------------------------------
+    async def grant_quiz_pts_correct(
+        self, user_id: int, now_local=None
+    ) -> tuple:
+        """
+        Начисляет pts за правильный quiz/MCQ-ответ. MCQ считается quiz'ом
+        для scoring (§3). Daily cap 25 correct. Series bonus +15 каждые
+        3 правильных подряд (3, 6, 9, …).
+
+        Возвращает (pts_awarded, series_bonus_fired). Если capped:
+        (0, False).
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters "
+            "SET quiz_count = quiz_count + 1, "
+            "    quiz_series_running = quiz_series_running + 1 "
+            "WHERE user_id=? AND local_date=? AND quiz_count < 25",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return (0, False)
+
+        async with self.db.execute(
+            "SELECT quiz_series_running FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            new_series = (await c.fetchone())["quiz_series_running"]
+
+        pts = 5
+        series_bonus = (new_series % 3 == 0)
+        if series_bonus:
+            pts += 15
+
+        await self.db.execute(
+            "UPDATE weekly_scores SET quiz_pts = quiz_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return (pts, series_bonus)
+
+    # ------------------------------------------------------------
+    # 4. Quiz wrong — сброс серии (без pts)
+    # ------------------------------------------------------------
+    async def reset_quiz_series(self, user_id: int, now_local=None) -> None:
+        """
+        Сбрасывает quiz_series_running в 0. Вызывается при wrong answer
+        в quiz/MCQ. Никаких pts не начисляет и не отнимает.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, _ = user_calendar_keys(now_local)
+        # daily-row может ещё не существовать — создаём перед UPDATE,
+        # чтобы reset «работал» даже как первое действие дня (хотя
+        # серия и так 0 у новой строки).
+        await self.db.execute(
+            "INSERT OR IGNORE INTO daily_score_counters (user_id, local_date) "
+            "VALUES (?, ?)",
+            (user_id, local_date),
+        )
+        await self.db.execute(
+            "UPDATE daily_score_counters SET quiz_series_running = 0 "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        )
+        await self.db.commit()
+
+    # ------------------------------------------------------------
+    # 5. Card pts — +3 new / +5 review, daily cap 8 (LEADERBOARD.md §4)
+    # ------------------------------------------------------------
+    async def grant_card_pts(
+        self, user_id: int, is_new: bool, now_local=None
+    ) -> int:
+        """
+        Начисляет pts за УСПЕШНО (quality ≥ 3) повторённую/изученную карту.
+        Caller отвечает за фильтрацию по quality — repo не знает SM-2.
+        +3 для new (нет строки в flashcard_progress), +5 для review.
+        Daily cap 8 successful reviews.
+
+        Возвращает pts (0, 3 или 5). 0 = capped.
+        """
+        from services import user_calendar_keys
+        if now_local is None:
+            now_local = await self._now_local_for_user(user_id)
+        local_date, week_iso = user_calendar_keys(now_local)
+        await self._ensure_rows(user_id, local_date, week_iso)
+
+        cursor = await self.db.execute(
+            "UPDATE daily_score_counters SET cards_count = cards_count + 1 "
+            "WHERE user_id=? AND local_date=? AND cards_count < 8",
+            (user_id, local_date),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return 0
+
+        pts = 3 if is_new else 5
+        await self.db.execute(
+            "UPDATE weekly_scores SET card_pts = card_pts + ? "
+            "WHERE user_id=? AND week_iso=?",
+            (pts, user_id, week_iso),
+        )
+        await self.db.commit()
+        return pts
+
+    # ------------------------------------------------------------
+    # 6. Read helpers (для UI, тестов, backtest)
+    # ------------------------------------------------------------
+    async def get_daily_counters(
+        self, user_id: int, local_date: str
+    ) -> Optional[Dict[str, Any]]:
+        """Возвращает dict с дневными счётчиками или None если строки нет."""
+        async with self.db.execute(
+            "SELECT * FROM daily_score_counters "
+            "WHERE user_id=? AND local_date=?",
+            (user_id, local_date),
+        ) as c:
+            row = await c.fetchone()
+        return dict(row) if row else None
+
+    async def get_weekly_score(
+        self, user_id: int, week_iso: str
+    ) -> Optional[Dict[str, Any]]:
+        """Возвращает dict с weekly-компонентами или None если строки нет."""
+        async with self.db.execute(
+            "SELECT * FROM weekly_scores WHERE user_id=? AND week_iso=?",
+            (user_id, week_iso),
+        ) as c:
+            row = await c.fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------
+    # 7. Ranked-сегмент + rank lookup (для /leaderboard + rollover)
+    # ------------------------------------------------------------
+    async def get_ranked_segment(
+        self,
+        week_iso: str,
+        segment: str,
+        *,
+        exclude_hidden: bool = True,
+    ) -> list:
+        """
+        Возвращает список dict'ов всех пользователей в сегменте, отсортированный
+        по total_final DESC. Каждая запись:
+          user_id, time_pts, task_pts, quiz_pts, card_pts,
+          current_streak, multiplier, total_base, total_final, hidden
+
+        segment ∈ {'newbie', 'main'}.
+        - newbie: julianday(now) - julianday(u.created_at) < 7
+        - main:   julianday(now) - julianday(u.created_at) >= 7
+
+        Сортировка — в Python, после применения streak_multiplier; SQL-side
+        ORDER BY total_base некорректен из-за multiplier'а (1.20× для 14+
+        дней может перевернуть top-3).
+
+        exclude_hidden=False — для get_user_rank, где hidden юзер должен
+        видеть свою позицию.
+        """
+        from services import streak_multiplier
+        if segment == "newbie":
+            seg_cond = "julianday('now') - julianday(u.created_at) < 7"
+        elif segment == "main":
+            seg_cond = "julianday('now') - julianday(u.created_at) >= 7"
+        else:
+            raise ValueError(f"Unknown segment: {segment!r}")
+        hide_cond = "AND u.hidden_from_leaderboards = 0" if exclude_hidden else ""
+
+        sql = (
+            "SELECT ws.user_id, ws.time_pts, ws.task_pts, ws.quiz_pts, ws.card_pts, "
+            "       u.current_streak, u.hidden_from_leaderboards "
+            "FROM weekly_scores ws "
+            "JOIN users u ON ws.user_id = u.user_id "
+            f"WHERE ws.week_iso = ? AND {seg_cond} {hide_cond}"
+        )
+        async with self.db.execute(sql, (week_iso,)) as c:
+            rows = await c.fetchall()
+
+        result = []
+        for r in rows:
+            mult = streak_multiplier(r["current_streak"])
+            base = (
+                r["time_pts"] + r["task_pts"] + r["quiz_pts"] + r["card_pts"]
+            )
+            result.append({
+                "user_id": r["user_id"],
+                "time_pts": r["time_pts"],
+                "task_pts": r["task_pts"],
+                "quiz_pts": r["quiz_pts"],
+                "card_pts": r["card_pts"],
+                "current_streak": r["current_streak"],
+                "multiplier": mult,
+                "total_base": base,
+                "total_final": base * mult,
+                "hidden": bool(r["hidden_from_leaderboards"]),
+            })
+        result.sort(key=lambda x: x["total_final"], reverse=True)
+        return result
+
+    async def get_user_rank(
+        self, user_id: int, week_iso: str, segment: str
+    ) -> tuple:
+        """
+        Возвращает (rank, entry_dict) для user в указанном segment'е,
+        или (None, None) если user не в сегменте или не имеет weekly-row.
+
+        exclude_hidden=False внутри — чтобы hidden user мог увидеть
+        свой rank (только себе). Для публичной leaderboard caller
+        дополнительно фильтрует.
+        """
+        ranked = await self.get_ranked_segment(
+            week_iso, segment, exclude_hidden=False
+        )
+        for idx, entry in enumerate(ranked):
+            if entry["user_id"] == user_id:
+                return (idx + 1, entry)
+        return (None, None)
+
+    # ------------------------------------------------------------
+    # 8. Weekly badges — атомарное awarding + чтение активных
+    # ------------------------------------------------------------
+    async def award_badge(
+        self,
+        user_id: int,
+        badge_id: str,
+        awarded_for_week: str,
+        *,
+        duration_days: int = 7,
+    ) -> bool:
+        """
+        Идемпотентное awarding: INSERT OR IGNORE на PK (user_id, badge_id,
+        awarded_for_week). Возвращает True если бэдж впервые выдан этой
+        операцией, False если уже был (например, при повторном rollover'е).
+
+        Используется и для cosmetic badges (top_1/top_2/top_3/breakthrough),
+        и для маркеров coin-бонусов (badge_id='top10_pct_bonus') — caller
+        проверяет return и начисляет coins только если True.
+        """
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        expires = now + timedelta(days=duration_days)
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO weekly_badges "
+            "(user_id, badge_id, awarded_for_week, awarded_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                user_id, badge_id, awarded_for_week,
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                expires.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "leaderboard.badge_awarded user_id=%s badge=%s week=%s",
+                user_id, badge_id, awarded_for_week,
+            )
+        return cursor.rowcount > 0
+
+    async def get_active_badges(self, user_id: int) -> list:
+        """
+        Возвращает не-истёкшие бэджи пользователя, последние первыми.
+        Используется для profile-отображения и /leaderboard'а.
+        """
+        async with self.db.execute(
+            "SELECT badge_id, awarded_for_week, awarded_at, expires_at "
+            "FROM weekly_badges "
+            "WHERE user_id=? AND expires_at > datetime('now') "
+            "ORDER BY awarded_at DESC",
+            (user_id,),
+        ) as c:
+            rows = await c.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------
+    # 9. Streak freeze (LEADERBOARD.md §Streak Freeze)
+    # ------------------------------------------------------------
+    async def purchase_freeze(self, user_id: int, current_streak: int) -> str:
+        """
+        Атомарная покупка заморозки стрика под self.db.lock. Цена считается
+        из `services.freeze_cost(current_streak)` (500 / 750 / 1000).
+
+        Спека: «one freeze per 7 days max» — cooldown enforced через
+        MAX(granted_at) > now - 7 days; даже если предыдущий freeze
+        ещё не consumed, новый купить нельзя.
+
+        Возвращает статус-строку для UI:
+          - 'purchased'           — успешно
+          - 'cooldown_active'     — freeze покупался в последние 7 дней
+          - 'insufficient_coins'  — не хватает монет
+        """
+        from services import freeze_cost
+        cost = freeze_cost(current_streak)
+
+        async with self.db.lock:
+            # Cooldown
+            async with self.db.execute(
+                "SELECT 1 FROM streak_freezes "
+                "WHERE user_id=? AND granted_at > datetime('now', '-7 days') "
+                "LIMIT 1",
+                (user_id,),
+            ) as c:
+                if await c.fetchone():
+                    return "cooldown_active"
+
+            # Balance
+            async with self.db.execute(
+                "SELECT total_coins FROM users WHERE user_id=?", (user_id,),
+            ) as c:
+                row = await c.fetchone()
+            balance = row["total_coins"] if row else 0
+            if balance < cost:
+                return "insufficient_coins"
+
+            # Deduct + record
+            await self.db.execute(
+                "UPDATE users SET total_coins = total_coins - ? "
+                "WHERE user_id=?",
+                (cost, user_id),
+            )
+            await self.db.execute(
+                "INSERT INTO streak_freezes "
+                "(user_id, granted_at, streak_at_grant, cost_paid) "
+                "VALUES (?, datetime('now'), ?, ?)",
+                (user_id, current_streak, cost),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "streak.freeze_purchased user_id=%s streak=%s cost=%s "
+                "balance_after=%s",
+                user_id, current_streak, cost, balance - cost,
+            )
+            return "purchased"
+
+    async def has_active_freeze(self, user_id: int) -> bool:
+        """True если у пользователя есть купленный, но ещё не использованный freeze."""
+        async with self.db.execute(
+            "SELECT 1 FROM streak_freezes "
+            "WHERE user_id=? AND consumed_for_date IS NULL LIMIT 1",
+            (user_id,),
+        ) as c:
+            return (await c.fetchone()) is not None
+
+    async def consume_freeze_if_active(
+        self, user_id: int, today_local: str
+    ) -> bool:
+        """
+        Если у пользователя есть unused freeze — отмечает его как
+        использованный (consumed_for_date=today_local). Используется в
+        StreakService на missed-day path: вместо reset стрика, скармливаем
+        ему накопленный freeze.
+
+        Возвращает True если freeze был consumed (стрик сохраняется);
+        False если активного freeze не было (caller сбрасывает стрик).
+        """
+        cursor = await self.db.execute(
+            "UPDATE streak_freezes SET consumed_for_date=? "
+            "WHERE user_id=? AND consumed_for_date IS NULL",
+            (today_local, user_id),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "streak.freeze_consumed user_id=%s date=%s rows=%s",
+                user_id, today_local, cursor.rowcount,
+            )
+        return cursor.rowcount > 0
+
+    async def get_freeze_cooldown_remaining_days(self, user_id: int) -> int:
+        """
+        Возвращает сколько ПОЛНЫХ дней осталось до возможности купить
+        следующий freeze. 0 = можно покупать прямо сейчас.
+        """
+        async with self.db.execute(
+            "SELECT CAST(7 - (julianday('now') - julianday(MAX(granted_at))) "
+            "       AS INTEGER) AS remaining "
+            "FROM streak_freezes "
+            "WHERE user_id=? AND granted_at > datetime('now', '-7 days')",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+        remaining = row["remaining"] if row else None
+        return max(0, remaining) if remaining is not None else 0
+
+
+class FriendRepository:
+    """
+    Friends system (Phase 4 / LEADERBOARD.md §Segments → Friends).
+
+    Хранит pending requests + accepted friendships в нормализованной
+    форме (user_a < user_b — одна строка на дружбу). Reverse-direction
+    request на existing pending → auto-accept (cross-fires the friendship).
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    @staticmethod
+    def _norm_pair(a: int, b: int) -> tuple:
+        """Returns (smaller, larger). Используется для friendship-PK."""
+        return (a, b) if a < b else (b, a)
+
+    # ------------------------------------------------------------
+    # Request lifecycle: send → accept / reject / cancel
+    # ------------------------------------------------------------
+    async def send_request(self, from_uid: int, to_uid: int) -> str:
+        """
+        Атомарно (под self.db.lock) отправляет friend-request. Возвращает
+        статус-строку для UI:
+          - 'self_target'     — попытка дружить с самим собой
+          - 'user_not_found'  — target user'а нет в таблице users
+          - 'already_friends' — дружба уже существует
+          - 'already_pending' — same-direction request уже отправлен
+          - 'auto_accepted'   — reverse-direction request от target существовал;
+                                автоматически создаём friendship и удаляем
+                                reverse-request (обоюдность достигнута)
+          - 'sent'            — новый pending request создан
+        """
+        if from_uid == to_uid:
+            return "self_target"
+
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT 1 FROM users WHERE user_id=?", (to_uid,),
+            ) as c:
+                if not await c.fetchone():
+                    return "user_not_found"
+
+            ua, ub = self._norm_pair(from_uid, to_uid)
+            async with self.db.execute(
+                "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+                (ua, ub),
+            ) as c:
+                if await c.fetchone():
+                    return "already_friends"
+
+            # Reverse direction pending → auto-accept
+            async with self.db.execute(
+                "SELECT 1 FROM friend_requests "
+                "WHERE from_user_id=? AND to_user_id=?",
+                (to_uid, from_uid),
+            ) as c:
+                if await c.fetchone():
+                    await self.db.execute(
+                        "DELETE FROM friend_requests "
+                        "WHERE from_user_id=? AND to_user_id=?",
+                        (to_uid, from_uid),
+                    )
+                    await self.db.execute(
+                        "INSERT INTO friendships (user_a, user_b) "
+                        "VALUES (?, ?)",
+                        (ua, ub),
+                    )
+                    await self.db.commit()
+                    self._logger.info(
+                        "friends.auto_accepted user_a=%s user_b=%s "
+                        "via_from=%s",
+                        ua, ub, from_uid,
+                    )
+                    return "auto_accepted"
+
+            # New request (INSERT OR IGNORE — PK предотвращает дубль)
+            cursor = await self.db.execute(
+                "INSERT OR IGNORE INTO friend_requests "
+                "(from_user_id, to_user_id) VALUES (?, ?)",
+                (from_uid, to_uid),
+            )
+            await self.db.commit()
+            if cursor.rowcount == 0:
+                return "already_pending"
+            self._logger.info(
+                "friends.request_sent from=%s to=%s",
+                from_uid, to_uid,
+            )
+            return "sent"
+
+    async def accept_request(self, from_uid: int, to_uid: int) -> bool:
+        """
+        to_uid принимает request от from_uid. Транзакционно
+        (под self.db.lock): DELETE pending + INSERT friendship.
+        Возвращает True если accept'ed, False если pending request
+        не существовал.
+        """
+        ua, ub = self._norm_pair(from_uid, to_uid)
+        async with self.db.lock:
+            cursor = await self.db.execute(
+                "DELETE FROM friend_requests "
+                "WHERE from_user_id=? AND to_user_id=?",
+                (from_uid, to_uid),
+            )
+            if cursor.rowcount == 0:
+                await self.db.commit()
+                return False
+            await self.db.execute(
+                "INSERT OR IGNORE INTO friendships (user_a, user_b) "
+                "VALUES (?, ?)",
+                (ua, ub),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "friends.accepted from=%s to=%s normalized=(%s,%s)",
+                from_uid, to_uid, ua, ub,
+            )
+            return True
+
+    async def reject_request(self, from_uid: int, to_uid: int) -> bool:
+        """to_uid отклоняет request от from_uid. Returns True если был pending."""
+        cursor = await self.db.execute(
+            "DELETE FROM friend_requests "
+            "WHERE from_user_id=? AND to_user_id=?",
+            (from_uid, to_uid),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "friends.rejected from=%s to=%s", from_uid, to_uid,
+            )
+        return cursor.rowcount > 0
+
+    async def cancel_request(self, from_uid: int, to_uid: int) -> bool:
+        """from_uid отменяет отправленный им request. Same SQL as reject."""
+        return await self.reject_request(from_uid, to_uid)
+
+    # ------------------------------------------------------------
+    # Read helpers
+    # ------------------------------------------------------------
+    async def get_pending_received(self, to_uid: int) -> list:
+        """Список pending requests, полученных пользователем (отсорт. по дате)."""
+        async with self.db.execute(
+            "SELECT from_user_id, created_at FROM friend_requests "
+            "WHERE to_user_id=? ORDER BY created_at ASC",
+            (to_uid,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_pending_sent(self, from_uid: int) -> list:
+        """Список pending requests, отправленных пользователем."""
+        async with self.db.execute(
+            "SELECT to_user_id, created_at FROM friend_requests "
+            "WHERE from_user_id=? ORDER BY created_at ASC",
+            (from_uid,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_friends(self, user_id: int) -> list:
+        """Все user_id-друзей пользователя. UNION над обеими сторонами PK."""
+        async with self.db.execute(
+            "SELECT user_b AS friend_id FROM friendships WHERE user_a=? "
+            "UNION "
+            "SELECT user_a AS friend_id FROM friendships WHERE user_b=?",
+            (user_id, user_id),
+        ) as c:
+            return [r["friend_id"] for r in await c.fetchall()]
+
+    async def are_friends(self, a: int, b: int) -> bool:
+        if a == b:
+            return False
+        ua, ub = self._norm_pair(a, b)
+        async with self.db.execute(
+            "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+            (ua, ub),
+        ) as c:
+            return (await c.fetchone()) is not None
+
+    async def remove_friend(self, a: int, b: int) -> bool:
+        """Удалить дружбу bidirectional. Returns True если что-то удалено."""
+        ua, ub = self._norm_pair(a, b)
+        cursor = await self.db.execute(
+            "DELETE FROM friendships WHERE user_a=? AND user_b=?",
+            (ua, ub),
+        )
+        await self.db.commit()
+        if cursor.rowcount > 0:
+            self._logger.info(
+                "friends.removed user_a=%s user_b=%s", ua, ub,
+            )
+        return cursor.rowcount > 0
+
+    # ------------------------------------------------------------
+    # Invite-links (BACKLOG → ship): t.me/Bot?start=friend_<token>
+    # ------------------------------------------------------------
+    async def create_invite_token(self, from_uid: int) -> str:
+        """
+        Создаёт новый invite-token для пользователя. TTL 30 дней.
+        Multiuse: токен можно отдать многим людям, каждый клик → новая
+        дружба. Возвращает сам токен (URL-safe строка ~16 символов).
+        """
+        import secrets
+        token = secrets.token_urlsafe(12)
+        await self.db.execute(
+            "INSERT INTO friend_invite_tokens (token, from_user_id, expires_at) "
+            "VALUES (?, ?, datetime('now', '+30 days'))",
+            (token, from_uid),
+        )
+        await self.db.commit()
+        self._logger.info(
+            "friends.invite_token_created user_id=%s token=%s",
+            from_uid, token,
+        )
+        return token
+
+    async def find_invite_token(self, token: str):
+        """
+        Резолвит токен в from_user_id. Истёкшие токены трактуются как
+        несуществующие — возвращает None.
+        """
+        if not token:
+            return None
+        async with self.db.execute(
+            "SELECT from_user_id FROM friend_invite_tokens "
+            "WHERE token=? AND expires_at > datetime('now')",
+            (token,),
+        ) as c:
+            row = await c.fetchone()
+        return row["from_user_id"] if row else None
+
+    async def accept_invite(self, from_uid: int, invitee_uid: int) -> str:
+        """
+        Создаёт дружбу invitee + creator напрямую (skip pending state).
+        Семантика: shared link = consent creator'а; click = consent
+        invitee. Оба согласились → atomic INSERT в friendships.
+
+        Идемпотентно: повторный вызов возвращает 'already_friends'.
+        Self-invite (invitee == creator) запрещён.
+
+        Также cleans up pending requests в обе стороны (если в это время
+        был отправлен «обычный» request, deep-link его перекрывает).
+
+        Returns статус: 'accepted' / 'already_friends' / 'self'.
+        """
+        if from_uid == invitee_uid:
+            return "self"
+        ua, ub = self._norm_pair(from_uid, invitee_uid)
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+                (ua, ub),
+            ) as c:
+                if await c.fetchone():
+                    return "already_friends"
+            await self.db.execute(
+                "INSERT INTO friendships (user_a, user_b) VALUES (?, ?)",
+                (ua, ub),
+            )
+            # Если был pending request в любую сторону — удалим
+            # (deep-link обходит pending state)
+            await self.db.execute(
+                "DELETE FROM friend_requests "
+                "WHERE (from_user_id=? AND to_user_id=?) "
+                "   OR (from_user_id=? AND to_user_id=?)",
+                (from_uid, invitee_uid, invitee_uid, from_uid),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "friends.invite_accepted creator=%s invitee=%s normalized=(%s,%s)",
+                from_uid, invitee_uid, ua, ub,
+            )
+            return "accepted"

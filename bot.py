@@ -32,13 +32,14 @@ from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
-    EventRepository, PetRepository,
+    EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
-    BackupService, AnalyticsService, UserRateLimiter, sm2_update,
+    BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
+    freeze_cost, parse_friend_query, derive_emotion, render_pet,
 )
-from tasks import streak_scheduler, reminder_scheduler
+from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
 # ------------------------------------------------------------
 # Настройки окружения
@@ -134,6 +135,43 @@ active_timers: dict[int, asyncio.Task] = {}
 rate_limiter: UserRateLimiter = None
 
 
+class UsernameSyncMiddleware(BaseMiddleware):
+    """
+    Обновляет users.username из event_from_user.username на каждом
+    Message/CallbackQuery. Telegram-юзер может менять @handle в любой
+    момент, и friends-search должен находить актуальное значение.
+
+    Безусловный UPDATE (1 SQL/event) — приемлемая цена для бота
+    <100 пользователей. Если cost станет проблемой — можно перейти
+    на in-memory cache + write-only-if-changed.
+
+    Sync failure тихо логируется и НЕ должна прерывать handler.
+    Username — вспомогательное поле, его недоступность не должна
+    лишать пользователя возможности учиться.
+    """
+
+    def __init__(self, user_repo: UserRepository):
+        self.user_repo = user_repo
+        super().__init__()
+
+    async def __call__(self, handler, event, data):
+        try:
+            user = data.get("event_from_user")
+            if user is not None and user.id:
+                # user.username — str или None; передаём как есть.
+                # refresh_username безусловный UPDATE; если строки
+                # пользователя нет (ещё не /start'нул), no-op
+                # (rowcount=0, никаких ошибок).
+                await self.user_repo.refresh_username(user.id, user.username)
+        except Exception as e:
+            logger.warning(
+                "username.sync_failed user_id=%s reason=%s",
+                getattr(getattr(event, "from_user", None), "id", None),
+                type(e).__name__,
+            )
+        return await handler(event, data)
+
+
 class RateLimitMiddleware(BaseMiddleware):
     """
     Sliding-window rate-limit на каждое Message/CallbackQuery.
@@ -212,6 +250,16 @@ class SetupStates(StatesGroup):
     setting_morning = State()
     setting_evening = State()
     confirming = State()
+
+
+class FriendStates(StatesGroup):
+    """FSM для добавления друга по Telegram ID (Phase 4)."""
+    waiting_for_user_id = State()
+
+
+class PetStates(StatesGroup):
+    """FSM для переименования питомца (TODO #16 Phase B)."""
+    waiting_for_name = State()
 
 
 class SettingsStates(StatesGroup):
@@ -843,8 +891,17 @@ async def get_next_quiz_term(user_id: int, all_terms: list[QuizTerm]) -> QuizTer
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
+
+    # Telegram передаёт deep-link arg как «/start <arg>». Парсим до создания
+    # пользователя — нужен для invite-link flow.
+    text = message.text or ""
+    parts = text.split(maxsplit=1)
+    deep_link_arg = parts[1].strip() if len(parts) > 1 else None
+
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
         logger.info("user.registered user_id=%s", user_id)
         await event_repo.log(user_id, "user_registered", {
             "language_code": message.from_user.language_code,
@@ -854,7 +911,7 @@ async def cmd_start(message: Message, state: FSMContext):
         keyboard.button(text="🚀 Начать сразу")
         keyboard.adjust(1)
         await message.answer(
-            "🐾 Привет! Я — StudyBuddy, твой цифровой питомец для учёбы!\n\n"
+            "🐾 Привет! Я — Palph, твой цифровой питомец для учёбы!\n\n"
             "✨ Я помогу тебе учиться регулярно и без стресса. "
             "Даже 5 минут в день — это уже победа!\n\n"
             "Хочешь сначала настроить уведомления под себя или начать сразу?",
@@ -871,6 +928,53 @@ async def cmd_start(message: Message, state: FSMContext):
             f"• Твой стрик: {user['current_streak']} дней подряд 🔥\n\n"
             f"Чем займёмся сегодня?",
             reply_markup=get_main_keyboard()
+        )
+
+    # Обработка deep-link invite после стандартного welcome.
+    # Существующий FSM-стейт onboarding'а не трогаем — invite — side effect.
+    if deep_link_arg and deep_link_arg.startswith("friend_"):
+        await _process_friend_invite_link(message, deep_link_arg)
+
+
+async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> None:
+    """
+    Обрабатывает /start friend_<token>: резолвит токен, создаёт дружбу
+    invitee + creator (skip pending state), уведомляет обе стороны.
+    Вызывается из cmd_start после стандартного welcome flow.
+    """
+    invitee_id = message.from_user.id
+    token = deep_link_arg[len("friend_"):]
+    creator_id = await friend_repo.find_invite_token(token)
+    if creator_id is None:
+        await message.answer(
+            "⏳ Ссылка-приглашение недействительна или истекла."
+        )
+        return
+
+    result = await friend_repo.accept_invite(creator_id, invitee_id)
+    if result == "accepted":
+        await message.answer(
+            f"🎉 Ты добавлен в друзья к пользователю "
+            f"<code>{creator_id}</code>!",
+            parse_mode="HTML",
+        )
+        try:
+            await bot.send_message(
+                creator_id,
+                f"🎉 Пользователь <code>{invitee_id}</code> присоединился "
+                f"к тебе по ссылке-приглашению!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.invite_notify_creator_failed creator=%s reason=%s",
+                creator_id, type(e).__name__,
+            )
+    elif result == "already_friends":
+        await message.answer("👥 Вы уже друзья.")
+    elif result == "self":
+        await message.answer(
+            "🙂 Это твоя собственная ссылка — отправь её другим пользователям."
         )
 
 @router.message(SetupStates.choosing_path, F.text == "🚀 Начать сразу")
@@ -995,7 +1099,7 @@ FAQ_ITEMS: list[dict[str, str]] = [
         "btn":   "1️⃣ Миссия проекта",
         "title": "1️⃣ Какая миссия у проекта?",
         "body": (
-            "StudyBuddy создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
+            "Palph создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
             "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки) с "
             "научно проверенными техниками запоминания (интервальное повторение, "
             "SM-2, active recall, Pomodoro). Получается система, которая:\n"
@@ -1221,7 +1325,12 @@ async def cmd_profile(message: Message):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    inline_kb.adjust(2, 1)
+    # Питомец: image preview + customization picker (TODO #16 Phase B).
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
+    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1, 1)
     await message.answer(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1508,6 +1617,7 @@ class NotificationSettings:
         settings = await self.load()
         user = await self.repo.get_user(self.user_id)
         tz = (user or {}).get("timezone") or "Europe/Moscow"
+        hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
         lines = ["⚙️ Настройки уведомлений\n"]
         emoji_on = {"morning": "🌅", "evening": "🌙", "streak": "🔥", "achievements": "🎉"}
         emoji_off = {"morning": "🌚", "evening": "🌚", "streak": "❄️", "achievements": "🔕"}
@@ -1523,10 +1633,15 @@ class NotificationSettings:
             status = "✅ Включено" if enabled else "❌ Отключено"
             lines.append(f"{emoji} {labels[key]}{time_str}: {status}")
         lines.append(f"\n🌍 Часовой пояс: {tz_label(tz)}")
+        lines.append(
+            f"👤 Лидерборды: "
+            f"{'❌ Скрыт (рейтинги не видны другим)' if hidden else '✅ Виден'}"
+        )
         return "\n".join(lines)
 
     async def get_keyboard(self) -> InlineKeyboardMarkup:
         settings = await self.load()
+        hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
         kb = InlineKeyboardBuilder()
         labels = {"morning": "Утро", "evening": "Вечер", "streak": "Стрик", "achievements": "Достижения"}
         # Утро: переключатель + кнопка изменения времени
@@ -1548,8 +1663,13 @@ class NotificationSettings:
                 callback_data=f"settings_toggle:{key}:{self.user_id}",
             )
         kb.button(text="🌍 Часовой пояс", callback_data=f"settings_tz_picker:{self.user_id}")
+        # Privacy toggle: единственная кнопка для leaderboards (LEADERBOARD.md §Privacy).
+        kb.button(
+            text=f"👤 Лидерборды: {'Скрыт' if hidden else 'Виден'}",
+            callback_data=f"settings_privacy:{self.user_id}",
+        )
         kb.button(text="⬅️ Назад в профиль", callback_data=f"back_to_profile:{self.user_id}")
-        kb.adjust(2, 2, 2, 1, 1)
+        kb.adjust(2, 2, 2, 1, 1, 1)
         return kb.as_markup()
 
 @router.callback_query(F.data.startswith("settings_menu:"))
@@ -1576,6 +1696,131 @@ async def toggle_notification_setting(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error toggling setting: {e}")
         await callback.answer("Ошибка переключения", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("freeze_menu:"))
+async def freeze_menu(callback: CallbackQuery):
+    """
+    Экран details + confirm для покупки заморозки стрика
+    (LEADERBOARD.md §Streak Freeze). Показывает текущий стрик, цену
+    и баланс. Кнопка «Купить» появляется только когда покупка
+    действительно возможна; иначе экран объясняет почему нет.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    current_streak = user["current_streak"]
+    balance = user["total_coins"]
+    cost = freeze_cost(current_streak)
+
+    has_active = await leaderboard_repo.has_active_freeze(user_id)
+    cooldown_days = await leaderboard_repo.get_freeze_cooldown_remaining_days(user_id)
+
+    lines = [
+        "❄️ <b>Заморозка стрика</b>",
+        "",
+        f"🔥 Текущий стрик: <b>{current_streak}</b> дн.",
+        f"💰 Баланс: <b>{balance}</b> 🪙",
+        f"💸 Цена: <b>{cost}</b> 🪙",
+        "",
+    ]
+
+    kb = InlineKeyboardBuilder()
+    can_purchase = (
+        not has_active and cooldown_days == 0 and balance >= cost
+    )
+
+    if has_active:
+        lines.append(
+            "✅ У тебя уже есть активная заморозка — "
+            "сработает при следующем пропущенном дне."
+        )
+    elif cooldown_days > 0:
+        lines.append(
+            f"⏳ Кулдаун: следующая заморозка через "
+            f"<b>{cooldown_days}</b> дн."
+        )
+    elif balance < cost:
+        lines.append(f"❌ Не хватает <b>{cost - balance}</b> 🪙.")
+    else:
+        lines.append(
+            "Заморозка сохранит стрик при ОДНОМ пропущенном дне. "
+            "Покупка действует до использования."
+        )
+
+    if can_purchase:
+        kb.button(
+            text=f"✅ Купить за {cost} 🪙",
+            callback_data=f"freeze_confirm:{user_id}",
+        )
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
+    kb.adjust(1)
+
+    try:
+        await callback.message.edit_text(
+            "\n".join(lines),
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(
+            "freeze.menu_render_failed user=%s err=%s", user_id, e,
+        )
+
+
+@router.callback_query(F.data.startswith("freeze_confirm:"))
+async def freeze_confirm(callback: CallbackQuery):
+    """
+    Атомарная покупка заморозки. Двойной тап безопасен:
+    LeaderboardRepository.purchase_freeze под self.db.lock проверяет
+    cooldown заново и вернёт 'cooldown_active' при повторе.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    current_streak = user["current_streak"]
+    result = await leaderboard_repo.purchase_freeze(user_id, current_streak)
+
+    if result == "purchased":
+        text = (
+            f"❄️ Заморозка куплена за <b>{freeze_cost(current_streak)}</b> 🪙.\n\n"
+            f"🔥 Стрик: <b>{current_streak}</b> дн. — сохранится при "
+            f"следующем пропущенном дне."
+        )
+    elif result == "insufficient_coins":
+        text = "❌ Не хватает монет."
+    elif result == "cooldown_active":
+        text = "⏳ Заморозка уже покупалась в последние 7 дней."
+    else:
+        text = "Что-то пошло не так. Попробуй позже."
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        logger.warning("freeze.confirm_render_failed user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("settings_privacy:"))
+async def toggle_privacy(callback: CallbackQuery):
+    """Переключает users.hidden_from_leaderboards (LEADERBOARD.md §Privacy)."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    current = await user_repo.is_hidden_from_leaderboards(user_id)
+    await user_repo.set_hidden_from_leaderboards(user_id, not current)
+    ns = NotificationSettings(user_id, user_repo)
+    try:
+        await callback.message.edit_text(
+            await ns.get_display_text(),
+            reply_markup=await ns.get_keyboard(),
+        )
+    except Exception as e:
+        logger.warning("settings.privacy_toggle_render_failed user=%s err=%s", user_id, e)
 
 
 @router.callback_query(F.data.startswith("settings_time:"))
@@ -1716,7 +1961,12 @@ async def back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    inline_kb.adjust(2, 1)
+    # Питомец: image preview + customization picker (TODO #16 Phase B).
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
+    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1, 1)
     await callback.message.edit_text(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1876,7 +2126,9 @@ async def send_achievement_notification(user_id: int, achievement_ids: list):
 async def handle_standard_timer(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
     current_state = await state.get_state()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
@@ -1937,7 +2189,9 @@ async def process_duration(message: Message, state: FSMContext):
         return
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(user_id)
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
     await message.answer(
@@ -2240,10 +2494,14 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
             "question_index": cur_idx,
         })
     if is_correct:
+        # Leaderboard: MCQ считается quiz'ом (LEADERBOARD.md §3).
+        await leaderboard_repo.grant_quiz_pts_correct(user_id)
         await user_repo.add_coins(user_id, 1)
         feedback = "✅ Верно! +1 🪙"
         await state.update_data(mcq_correct_count=data.get("mcq_correct_count", 0) + 1)
     else:
+        # Wrong → сбрасываем series counter (LEADERBOARD.md §3).
+        await leaderboard_repo.reset_quiz_series(user_id)
         feedback = f"❌ Неверно.\nПравильный ответ: {correct_text}"
 
     # Убираем inline-кнопки + дописываем feedback, чтобы повторный тап не сработал
@@ -2413,6 +2671,9 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await task_repo.record_attempt(
             user_id, task["id"], attempts_used=attempts + 1, succeeded=True
         )
+        # Leaderboard: 40 pts за math task (mission lever, LEADERBOARD.md §2).
+        # Daily cap 5 — grant_task_pts вернёт False сверх лимита, тихо.
+        await leaderboard_repo.grant_task_pts(user_id)
         await event_repo.log(user_id, "task_attempted", {
             "subject_id": data.get("task_subject_id"),
             "task_id": task["id"],
@@ -2664,8 +2925,15 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = callback.from_user.id
 
-    # Текущее состояние карты в БД (или дефолты для новой)
+    # Текущее состояние карты в БД (или дефолты для новой).
+    # is_new_card фиксируется ЗДЕСЬ (до upsert_progress), потому что
+    # `reps_before == 0` в логе события неоднозначен: 0 может означать
+    # либо «карту впервые видим», либо «строка есть, но сбросилась
+    # после неверного ответа». Для leaderboard-scoring (LEADERBOARD.md §4:
+    # +3 pts за новую, +5 за review) нужна точная семантика «нет строки
+    # на момент ответа = new».
     progress = await flashcard_repo.get_progress(user_id, card_hash)
+    is_new_card = progress is None
     if progress:
         ef = float(progress["ease_factor"])
         reps = int(progress["repetitions"])
@@ -2687,10 +2955,16 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
         next_review=next_review,
     )
     await user_repo.add_coins(user_id, FLASH_COINS_PER_CARD)
+    # Leaderboard: pts только за УСПЕШНЫЙ review (LEADERBOARD.md §4).
+    # quality 1 (❌ Не знал) → no pts; quality 3 (😐) / 5 (✅) → grant.
+    # +3 для new, +5 для review. Daily cap 8 successful (внутри repo).
+    if quality >= 3:
+        await leaderboard_repo.grant_card_pts(user_id, is_new=is_new_card)
     await event_repo.log(user_id, "flashcard_reviewed", {
         "subject_id": data.get("flash_subject_id"),
         "card_hash": card_hash,
         "quality": quality,
+        "is_new": is_new_card,
         "reps_before": reps, "reps_after": new_reps,
         "ef_before": round(ef, 3), "ef_after": round(new_ef, 3),
         "interval_before": interval, "interval_after": new_interval,
@@ -2787,8 +3061,11 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
     if is_correct:
         streak += 1
         feedback += f"\n\n🔥 Термин будет повторён через {quiz_interval_days(streak)} дн."
+        # Leaderboard: 5 pts + возможный series-bonus (LEADERBOARD.md §3).
+        await leaderboard_repo.grant_quiz_pts_correct(user_id)
     else:
         streak = 0
+        await leaderboard_repo.reset_quiz_series(user_id)
     await update_quiz_progress(user_id, term["hash"], is_correct, streak)
     await event_repo.log(user_id, "quiz_answered", {
         "subject_id": data.get("subject_id", "industrial-management"),
@@ -3446,7 +3723,7 @@ async def _send_all_tables_zip(reply_target) -> None:
         logger.error("export.all_failed reason=%s detail=%s", type(e).__name__, e)
         await reply_target.answer(f"❌ Export-all failed: {type(e).__name__}: {e}")
         return
-    filename = f"studybuddy-export-{datetime.now().strftime('%Y-%m-%d')}.zip"
+    filename = f"palph-export-{datetime.now().strftime('%Y-%m-%d')}.zip"
     size_kb = len(zip_bytes) / 1024
     total_rows = sum(metadata["row_counts"].values())
     logger.info(
@@ -3953,6 +4230,796 @@ async def cmd_listadmins(message: Message):
     )
 
 
+@router.message(Command("leaderboard"))
+async def cmd_leaderboard(message: Message):
+    """Показывает недельный лидерборд: auto-routing newbie vs main + собственный ранг.
+    См. LEADERBOARD.md."""
+    user_id = message.from_user.id
+    try:
+        text = await leaderboard_service.render_leaderboard(user_id)
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(
+            "leaderboard.render_failed user=%s err=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+        await message.answer("Не удалось загрузить лидерборд. Попробуй позже.")
+
+
+# ============================================================
+# Pet customization (TODO #16 Phase B): detail screen + picker UI
+# ============================================================
+async def _compute_pet_emotion_for_user(user_id: int) -> tuple:
+    """
+    Возвращает (emotion_str, FSInputFile | None). image=None если
+    asset не найден — caller graceful'но fallback'нет на text-only.
+
+    FSM-state не доступна тут (профиль обычно открывается вне таймера),
+    поэтому is_studying=False. recently_excited вычисляется из
+    pet.last_excited_at (в окне 5 минут).
+    """
+    from datetime import datetime, timedelta
+    import pytz
+    user = await user_repo.get_user(user_id)
+    pet = await pet_repo.get_pet(user_id)
+
+    recently_excited = False
+    if pet and pet.get("last_excited_at"):
+        try:
+            last = datetime.strptime(
+                pet["last_excited_at"], "%Y-%m-%d %H:%M:%S"
+            )
+            recently_excited = (datetime.now() - last) < timedelta(minutes=5)
+        except (ValueError, TypeError):
+            pass
+
+    has_studied_today = bool(user["has_studied_today"]) if user else False
+    tz_name = (user or {}).get("timezone") or "Europe/Moscow"
+    try:
+        now_local = datetime.now(pytz.timezone(tz_name))
+    except Exception:
+        now_local = datetime.now()
+
+    emotion = derive_emotion(
+        is_studying=False,
+        recently_excited=recently_excited,
+        has_studied_today=has_studied_today,
+        now_local=now_local,
+    )
+    try:
+        path = render_pet(pet, emotion)
+        return emotion, FSInputFile(str(path))
+    except FileNotFoundError:
+        return emotion, None
+
+
+def _picker_button_label(value: str, catalog: dict, user_pet, owned: set,
+                          item_type: str) -> tuple:
+    """
+    Возвращает (button_text, callback_data) для одной кнопки picker'а.
+    4 состояния по спеке: ⭐ equipped / ✓ owned / 💰 buyable / 🔒 locked.
+
+    item_type ∈ {'color', 'accessory'} — для построения callback_data.
+    """
+    unlock_level, price = catalog[value]
+    user_level = user_pet["level"] if user_pet else 1
+    is_equipped = user_pet and user_pet.get(item_type) == value
+    is_owned = value in owned
+
+    if is_equipped:
+        return (f"⭐ {value}", "pet_locked:equipped")
+    if is_owned:
+        return (f"✓ {value}", f"pet_equip:{item_type}:{value}")
+    if user_level < unlock_level:
+        return (
+            f"🔒 ур.{unlock_level} · 💰{price} {value}",
+            f"pet_locked:level:{unlock_level}",
+        )
+    return (f"💰{price} {value}", f"pet_buy:{item_type}:{value}")
+
+
+@router.callback_query(F.data.startswith("pet_menu:"))
+async def pet_menu(callback: CallbackQuery):
+    """
+    Pet detail screen: фото питомца + name/level/xp/color/accessory +
+    customization кнопки. Авто-создаёт pet (с дефолтами) если ещё нет.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    pet = await pet_repo.get_pet(user_id)
+    if pet is None:
+        await pet_repo.create_pet_with_defaults(user_id)
+        pet = await pet_repo.get_pet(user_id)
+
+    user = await user_repo.get_user(user_id)
+    emotion, image = await _compute_pet_emotion_for_user(user_id)
+
+    caption = (
+        f"🐾 <b>{pet['name']}</b>\n\n"
+        f"Уровень: <b>{pet['level']}</b>\n"
+        f"XP: {pet['xp']}\n"
+        f"Цвет: {pet['color']}  ·  Аксессуар: {pet['accessory']}\n"
+        f"Эмоция сейчас: {emotion}\n\n"
+        f"💰 Баланс: {user['total_coins']} 🪙"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎨 Цвета", callback_data=f"pet_colors:{user_id}")
+    kb.button(text="🎁 Аксессуары", callback_data=f"pet_accessories:{user_id}")
+    kb.button(text="✏️ Переименовать", callback_data=f"pet_rename:{user_id}")
+    kb.button(text="◀️ Профиль", callback_data=f"pet_back_to_profile:{user_id}")
+    kb.adjust(2, 1, 1)
+
+    # Pet menu приходит из ТЕКСТОВОГО профиля → нужно удалить старое
+    # сообщение и отправить новое (фото). Photo + caption + inline kb.
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    if image is not None:
+        try:
+            await bot.send_photo(
+                chat_id=callback.message.chat.id,
+                photo=image,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+            return
+        except Exception as e:
+            logger.warning("pet.menu_send_photo_failed user=%s err=%s", user_id, e)
+
+    # Fallback: text-only если asset отсутствует
+    await bot.send_message(
+        chat_id=callback.message.chat.id,
+        text=caption + f"\n\n<i>(изображение питомца недоступно)</i>",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _render_picker(callback: CallbackQuery, item_type: str) -> None:
+    """Generic picker renderer для colors/accessories."""
+    user_id = callback.from_user.id
+    pet = await pet_repo.get_pet(user_id)
+    if pet is None:
+        await pet_repo.create_pet_with_defaults(user_id)
+        pet = await pet_repo.get_pet(user_id)
+
+    if item_type == "color":
+        catalog = PetRepository.COLOR_CATALOG
+        title = "🎨 Цвета"
+    else:
+        catalog = PetRepository.ACCESSORY_CATALOG
+        title = "🎁 Аксессуары"
+
+    inventory = await pet_repo.get_inventory(user_id)
+    owned = {i["item_value"] for i in inventory if i["item_type"] == item_type}
+
+    kb = InlineKeyboardBuilder()
+    for value in catalog.keys():
+        text, cb_data = _picker_button_label(value, catalog, pet, owned, item_type)
+        kb.button(text=text, callback_data=cb_data)
+    kb.button(text="◀️ Назад к питомцу", callback_data=f"pet_menu:{user_id}")
+    kb.adjust(1)
+
+    msg = (
+        f"<b>{title}</b>\n\n"
+        f"⭐ — надето\n"
+        f"✓ — куплено (нажми чтобы надеть)\n"
+        f"💰 — доступно к покупке\n"
+        f"🔒 — заблокировано до указанного уровня\n\n"
+        f"Уровень: <b>{pet['level']}</b>"
+    )
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+        else:
+            await callback.message.edit_text(
+                msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+    except Exception as e:
+        logger.warning("pet.picker_render_failed user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("pet_colors:"))
+async def pet_colors(callback: CallbackQuery):
+    await callback.answer()
+    await _render_picker(callback, "color")
+
+
+@router.callback_query(F.data.startswith("pet_accessories:"))
+async def pet_accessories(callback: CallbackQuery):
+    await callback.answer()
+    await _render_picker(callback, "accessory")
+
+
+@router.callback_query(F.data.startswith("pet_locked:"))
+async def pet_locked(callback: CallbackQuery):
+    """Alert на нажатие locked / already-equipped кнопки."""
+    data = callback.data
+    if data.startswith("pet_locked:level:"):
+        try:
+            lvl = int(data.split(":", 2)[2])
+            await callback.answer(
+                f"🔒 Открывается на уровне {lvl}. Учись больше!",
+                show_alert=True,
+            )
+        except (ValueError, IndexError):
+            await callback.answer()
+    elif data == "pet_locked:equipped":
+        await callback.answer("⭐ Уже надето!")
+    else:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pet_equip:"))
+async def pet_equip(callback: CallbackQuery):
+    """Надеть уже купленный предмет (color/accessory)."""
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer()
+        return
+    success = await pet_repo.equip(user_id, item_type, item_value)
+    await callback.answer(
+        f"⭐ Надето: {item_value}" if success else "❌ Не удалось надеть",
+        show_alert=not success,
+    )
+    if success:
+        await _render_picker(callback, item_type)
+
+
+@router.callback_query(F.data.startswith("pet_buy:"))
+async def pet_buy_confirm_dialog(callback: CallbackQuery):
+    """Confirm dialog перед покупкой."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        return
+    catalog = (
+        PetRepository.COLOR_CATALOG if item_type == "color"
+        else PetRepository.ACCESSORY_CATALOG if item_type == "accessory"
+        else None
+    )
+    if catalog is None or item_value not in catalog:
+        return
+    unlock_level, price = catalog[item_value]
+    user = await user_repo.get_user(user_id)
+
+    msg = (
+        f"💰 <b>Купить {item_type} «{item_value}»?</b>\n\n"
+        f"Цена: <b>{price}</b> 🪙\n"
+        f"Твой баланс: {user['total_coins']} 🪙\n"
+        f"После покупки: <b>{user['total_coins'] - price}</b> 🪙\n\n"
+        f"После покупки предмет автоматически надевается."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=f"✅ Купить за {price} 🪙",
+        callback_data=f"pet_buy_do:{item_type}:{item_value}",
+    )
+    back_cb = (
+        f"pet_colors:{user_id}" if item_type == "color"
+        else f"pet_accessories:{user_id}"
+    )
+    kb.button(text="◀️ Отмена", callback_data=back_cb)
+    kb.adjust(1)
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+        else:
+            await callback.message.edit_text(
+                msg, parse_mode="HTML", reply_markup=kb.as_markup(),
+            )
+    except Exception as e:
+        logger.warning("pet.buy_confirm_failed user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("pet_buy_do:"))
+async def pet_buy_do(callback: CallbackQuery):
+    """Атомарная покупка через PetRepository.purchase_item."""
+    user_id = callback.from_user.id
+    try:
+        _, item_type, item_value = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer()
+        return
+    result = await pet_repo.purchase_item(user_id, item_type, item_value)
+    feedback_map = {
+        "purchased": f"✅ Куплено и надето: {item_value}!",
+        "already_owned": "👌 У тебя уже есть этот предмет.",
+        "insufficient_coins": "❌ Не хватает монет.",
+        "insufficient_level": "🔒 Уровень слишком низкий.",
+        "unknown_item": "❌ Такого предмета не существует.",
+        "no_pet": "❌ Питомец ещё не создан — сделай первую сессию.",
+    }
+    await callback.answer(
+        feedback_map.get(result, "Что-то пошло не так."),
+        show_alert=(result != "purchased"),
+    )
+    await _render_picker(callback, item_type)
+
+
+@router.callback_query(F.data.startswith("pet_rename:"))
+async def pet_rename_start(callback: CallbackQuery, state: FSMContext):
+    """Войти в FSM ожидания нового имени."""
+    await callback.answer()
+    await state.set_state(PetStates.waiting_for_name)
+    prompt = (
+        "✏️ <b>Переименовать питомца</b>\n\n"
+        "Введи новое имя (до 20 символов).\n"
+        "Для отмены отправь /cancel."
+    )
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(caption=prompt, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(prompt, parse_mode="HTML")
+    except Exception:
+        await bot.send_message(callback.message.chat.id, prompt, parse_mode="HTML")
+
+
+@router.message(PetStates.waiting_for_name, Command("cancel"))
+async def pet_rename_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Переименование отменено.")
+
+
+@router.message(PetStates.waiting_for_name)
+async def pet_rename_process(message: Message, state: FSMContext):
+    """Принимает новое имя и переименовывает питомца."""
+    user_id = message.from_user.id
+    new_name = (message.text or "").strip()
+    if not new_name:
+        await message.answer(
+            "Имя не может быть пустым. Попробуй ещё раз или /cancel."
+        )
+        return
+    if len(new_name) > 20:
+        await message.answer(
+            f"Слишком длинное ({len(new_name)} симв., максимум 20). Попробуй короче или /cancel."
+        )
+        return
+    ok = await pet_repo.rename(user_id, new_name)
+    await state.clear()
+    if ok:
+        await message.answer(f"✅ Питомец теперь называется «{new_name}».")
+    else:
+        await message.answer(
+            "Не удалось переименовать — возможно, питомец ещё не создан. "
+            "Сделай первую сессию через /start."
+        )
+
+
+@router.callback_query(F.data.startswith("pet_back_to_profile:"))
+async def pet_back_to_profile(callback: CallbackQuery):
+    """
+    Возврат из photo-based pet detail в text-based профиль.
+    Удаляем фото-сообщение и шлём свежее текстовое сообщение профиля.
+    Отдельный handler (не общий back_to_profile), потому что
+    callback.message здесь photo — edit_text не работает.
+    """
+    await callback.answer()
+    user_id = callback.from_user.id
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    user = await user_repo.get_user(user_id)
+    if not user:
+        return
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
+    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
+    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
+    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.adjust(2, 1, 1, 1)
+    await bot.send_message(
+        callback.message.chat.id,
+        f"📊 Твой профиль:\n"
+        f"🆔 ID: {user_id}\n"
+        f"📚 Всего сессий: {user['total_sessions']}\n"
+        f"💰 Всего монет: {user['total_coins']} 🪙\n"
+        f"🔥 Стрик: {user['current_streak']} дней подряд\n"
+        f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
+        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
+        reply_markup=inline_kb.as_markup(),
+    )
+
+
+# ============================================================
+# Friends system (Phase 4 / LEADERBOARD.md §Segments → Friends)
+# ============================================================
+def _friends_menu_keyboard(user_id: int, pending_count: int = 0) -> InlineKeyboardMarkup:
+    """Inline-клавиатура для friends-tab: 3 действия + опциональный badge на pending."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить друга", callback_data=f"friend_add_start:{user_id}")
+    pending_label = (
+        f"📩 Запросы ({pending_count})" if pending_count > 0 else "📩 Запросы"
+    )
+    kb.button(text=pending_label, callback_data=f"friend_pending:{user_id}")
+    kb.button(text="➖ Удалить друга", callback_data=f"friend_remove_list:{user_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+@router.message(Command("share_friend"))
+async def cmd_share_friend(message: Message):
+    """
+    Создаёт invite-token и шлёт пользователю deep-link, которым тот
+    может поделиться. Кто откроет ссылку — автоматически становится
+    другом (skip pending). 30-day TTL, multiuse.
+    """
+    user_id = message.from_user.id
+    if not await user_repo.user_exists(user_id):
+        await message.answer("Сначала отправь /start.")
+        return
+    if not bot_username:
+        await message.answer(
+            "⚠️ Бот ещё не определил свой @username (не удалось получить "
+            "его при старте). Попробуй позже."
+        )
+        return
+    token = await friend_repo.create_invite_token(user_id)
+    link = f"https://t.me/{bot_username}?start=friend_{token}"
+    await message.answer(
+        f"👥 <b>Поделись этой ссылкой с друзьями:</b>\n\n"
+        f"<code>{link}</code>\n\n"
+        f"Кто откроет ссылку — автоматически станет твоим другом 🎉\n"
+        f"Срок действия: 30 дней.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("friends"))
+async def cmd_friends(message: Message):
+    """Friends-tab: weekly-ранжированный список друзей + меню действий."""
+    user_id = message.from_user.id
+    try:
+        text = await leaderboard_service.render_friends_tab(user_id)
+        pending = await friend_repo.get_pending_received(user_id)
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(user_id, len(pending)),
+        )
+    except Exception as e:
+        logger.warning(
+            "friends.render_failed user=%s err=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+        await message.answer("Не удалось загрузить друзей. Попробуй позже.")
+
+
+@router.callback_query(F.data.startswith("friends_back:"))
+async def friends_back(callback: CallbackQuery):
+    """Возврат к friends-tab из любого вложенного экрана."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    text = await leaderboard_service.render_friends_tab(user_id)
+    pending = await friend_repo.get_pending_received(user_id)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(user_id, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.back_render_failed user=%s err=%s", user_id, e)
+
+
+# ------------------------------------------------------------
+# Add friend — FSM (waiting for user_id)
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_add_start:"))
+async def friend_add_start(callback: CallbackQuery, state: FSMContext):
+    """Просит ввести @username ИЛИ Telegram ID."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    await state.set_state(FriendStates.waiting_for_user_id)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Отмена", callback_data=f"friends_back:{user_id}")
+    try:
+        await callback.message.edit_text(
+            "🆔 Введи <b>@username</b> или <b>Telegram ID</b> пользователя.\n\n"
+            "Примеры:\n"
+            "  • <code>@alice</code>\n"
+            "  • <code>alice</code> (без @)\n"
+            "  • <code>123456789</code>\n\n"
+            "💡 Username сработает, только если пользователь хотя бы раз "
+            "взаимодействовал с ботом — на /start мы запоминаем его @handle. "
+            "Если поиск не нашёл — попроси прислать тебе свой Telegram ID "
+            "через @userinfobot.\n\n"
+            "Для отмены отправь /cancel.",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.add_start_render_failed user=%s err=%s", user_id, e)
+
+
+@router.message(FriendStates.waiting_for_user_id, Command("cancel"))
+async def friend_add_cancel(message: Message, state: FSMContext):
+    """Отмена add-friend FSM (через /cancel)."""
+    await state.clear()
+    await message.answer("Добавление отменено.")
+
+
+@router.message(FriendStates.waiting_for_user_id)
+async def friend_add_process(message: Message, state: FSMContext):
+    """
+    Парсит введённый @username ИЛИ Telegram ID, резолвит к user_id и
+    отправляет request. Если успешно — шлёт notification target'у
+    (с inline-кнопками Accept/Reject).
+    """
+    user_id = message.from_user.id
+    text_input = message.text or ""
+
+    username, target_id = parse_friend_query(text_input)
+    if username is None and target_id is None:
+        await message.answer(
+            "❌ Не понял ввод. Введи @username или числовой Telegram ID "
+            "(или /cancel)."
+        )
+        return
+
+    # Username path — резолвим к user_id через кеш users.username
+    if username is not None:
+        target_id = await user_repo.find_user_id_by_username(username)
+        if target_id is None:
+            await message.answer(
+                f"❌ Пользователь <code>@{username}</code> не найден.\n"
+                f"Возможно, он ещё не открывал бота, скрыл @handle или "
+                f"имя написано с опечаткой. Попроси его прислать тебе "
+                f"свой числовой Telegram ID и попробуй снова через /friends.",
+                parse_mode="HTML",
+            )
+            await state.clear()
+            return
+
+    await state.clear()
+    result = await friend_repo.send_request(user_id, target_id)
+
+    feedback_map = {
+        "self_target": "🙂 Нельзя добавить самого себя.",
+        "user_not_found": "❌ Пользователь с таким ID не зарегистрирован в боте.",
+        "already_friends": "👥 Вы уже друзья.",
+        "already_pending": "📩 Запрос уже отправлен; ждём ответа.",
+        "auto_accepted": (
+            "🎉 У этого пользователя уже был запрос к тебе — "
+            "вы автоматически стали друзьями!"
+        ),
+        "sent": "✅ Запрос отправлен. Жди подтверждения.",
+    }
+    feedback = feedback_map.get(result, "Что-то пошло не так. Попробуй позже.")
+
+    # Notify target если был отправлен новый request или произошёл auto-accept.
+    if result == "sent":
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять", callback_data=f"friend_accept:{user_id}")
+        kb.button(text="❌ Отклонить", callback_data=f"friend_reject:{user_id}")
+        kb.adjust(2)
+        try:
+            await bot.send_message(
+                target_id,
+                f"👥 Пользователь <code>{user_id}</code> хочет добавить тебя в друзья.",
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_target user=%s reason=%s",
+                target_id, type(e).__name__,
+            )
+            feedback += "\n\n⚠️ Не удалось доставить уведомление — возможно, пользователь заблокировал бота."
+    elif result == "auto_accepted":
+        try:
+            await bot.send_message(
+                target_id,
+                f"🎉 Пользователь <code>{user_id}</code> отправил тебе запрос — "
+                f"вы автоматически стали друзьями (у тебя был встречный запрос).",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_auto_accept user=%s reason=%s",
+                target_id, type(e).__name__,
+            )
+
+    await message.answer(feedback)
+
+
+# ------------------------------------------------------------
+# Pending received requests — Accept / Reject
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_pending:"))
+async def friend_pending_list(callback: CallbackQuery):
+    """Список входящих запросов; для каждого — Accept/Reject inline."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    pending = await friend_repo.get_pending_received(user_id)
+    if not pending:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+        try:
+            await callback.message.edit_text(
+                "📩 Входящих запросов нет.",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.warning("friends.pending_empty_render user=%s err=%s", user_id, e)
+        return
+
+    lines = ["📩 <b>Входящие запросы:</b>", ""]
+    kb = InlineKeyboardBuilder()
+    for req in pending:
+        fid = req["from_user_id"]
+        lines.append(f"• id=<code>{fid}</code>")
+        kb.button(text=f"✅ Принять id={fid}", callback_data=f"friend_accept:{fid}")
+        kb.button(text=f"❌ Отклонить id={fid}", callback_data=f"friend_reject:{fid}")
+    kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+    kb.adjust(2)  # 2 кнопки на ряд (accept+reject пары)
+    try:
+        await callback.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.pending_list_render user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("friend_accept:"))
+async def friend_accept(callback: CallbackQuery):
+    """Принять входящий request. callback_data = friend_accept:<from_user_id>"""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        from_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    accepted = await friend_repo.accept_request(from_uid, me)
+    if not accepted:
+        await callback.answer("Запрос уже не активен.", show_alert=True)
+    else:
+        # Notify requester
+        try:
+            await bot.send_message(
+                from_uid,
+                f"🎉 Пользователь <code>{me}</code> принял твой запрос — "
+                f"теперь вы друзья!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.notify_failed_accept user=%s reason=%s",
+                from_uid, type(e).__name__,
+            )
+    # Возврат к friends-tab
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.accept_render user=%s err=%s", me, e)
+
+
+@router.callback_query(F.data.startswith("friend_reject:"))
+async def friend_reject(callback: CallbackQuery):
+    """Отклонить входящий request. callback_data = friend_reject:<from_user_id>"""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        from_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await friend_repo.reject_request(from_uid, me)
+    # Молча возвращаемся в friends-tab (без уведомления отправителю — спека)
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.reject_render user=%s err=%s", me, e)
+
+
+# ------------------------------------------------------------
+# Remove friend (with confirm)
+# ------------------------------------------------------------
+@router.callback_query(F.data.startswith("friend_remove_list:"))
+async def friend_remove_list(callback: CallbackQuery):
+    """Список текущих друзей с inline-кнопками для удаления."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    friends = await friend_repo.get_friends(user_id)
+    if not friends:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+        try:
+            await callback.message.edit_text(
+                "У тебя пока нет друзей, которых можно удалить.",
+                reply_markup=kb.as_markup(),
+            )
+        except Exception as e:
+            logger.warning("friends.remove_empty_render user=%s err=%s", user_id, e)
+        return
+
+    kb = InlineKeyboardBuilder()
+    for fid in friends:
+        kb.button(text=f"➖ id={fid}", callback_data=f"friend_remove_confirm:{fid}")
+    kb.button(text="◀️ Назад", callback_data=f"friends_back:{user_id}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(
+            "Выбери друга для удаления:",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_list_render user=%s err=%s", user_id, e)
+
+
+@router.callback_query(F.data.startswith("friend_remove_confirm:"))
+async def friend_remove_confirm(callback: CallbackQuery):
+    """Confirm-диалог перед удалением."""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        target = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, удалить", callback_data=f"friend_remove_do:{target}")
+    kb.button(text="◀️ Отмена", callback_data=f"friends_back:{me}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(
+            f"Удалить пользователя <code>{target}</code> из друзей?",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_confirm_render user=%s err=%s", me, e)
+
+
+@router.callback_query(F.data.startswith("friend_remove_do:"))
+async def friend_remove_do(callback: CallbackQuery):
+    """Реально удаляет дружбу + возврат в friends-tab."""
+    await callback.answer()
+    me = callback.from_user.id
+    try:
+        target = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    await friend_repo.remove_friend(me, target)
+    text = await leaderboard_service.render_friends_tab(me)
+    pending = await friend_repo.get_pending_received(me)
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=_friends_menu_keyboard(me, len(pending)),
+        )
+    except Exception as e:
+        logger.warning("friends.remove_do_render user=%s err=%s", me, e)
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     """Админская справка по командам. Обычным пользователям советует открыть FAQ."""
@@ -4187,7 +5254,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, ach_service, study_service, streak_service, backup_service, analytics_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4199,9 +5266,17 @@ async def main():
     subject_stats_repo = SubjectStatsRepository(db)
     event_repo = EventRepository(db)
     pet_repo = PetRepository(db)
+    leaderboard_repo = LeaderboardRepository(db)
+    friend_repo = FriendRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
-    study_service = StudyService(user_repo, session_repo, ach_service, pet_repo)
     bot = Bot(token=BOT_TOKEN)
+    study_service = StudyService(
+        user_repo, session_repo, ach_service,
+        pet_repo, leaderboard_repo, bot=bot,
+    )
+    leaderboard_service = LeaderboardService(user_repo, leaderboard_repo, friend_repo=friend_repo)
+    # bot создан выше для передачи в StudyService (level-up notifications).
+    # streak_service ниже также получит leaderboard_repo для consume_freeze_if_active.
     dp = Dispatcher(storage=SQLiteStorage(db))
     # Rate-limit middleware: тротлим не-админских пользователей
     # ≥ 30 actions / 60 секунд (warn на 70%, hard block на 100%).
@@ -4209,10 +5284,17 @@ async def main():
     # ко всем хендлерам в роутере.
     rate_limiter = UserRateLimiter(max_actions=30, window_seconds=60)
     rl_middleware = RateLimitMiddleware(rate_limiter)
+    # Username sync — обновляем users.username из event_from_user.username
+    # перед всеми handler'ами. Регистрируем ДО rl_middleware, потому что
+    # rate-limit может silently drop event (return None), а username хотим
+    # обновить ВСЕГДА, пока юзер активен.
+    username_sync = UsernameSyncMiddleware(user_repo)
+    dp.message.middleware(username_sync)
+    dp.callback_query.middleware(username_sync)
     dp.message.middleware(rl_middleware)
     dp.callback_query.middleware(rl_middleware)
     dp.include_router(router)
-    streak_service = StreakService(user_repo, bot)
+    streak_service = StreakService(user_repo, bot, leaderboard_repo=leaderboard_repo)
     reminder_service = ReminderService(user_repo, bot)
     # Backup сервис: snapshot БД раз в сутки после streak processing.
     # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;
@@ -4260,13 +5342,28 @@ async def main():
     background_tasks = [
         asyncio.create_task(streak_scheduler(streak_service, user_repo, backup_service)),
         asyncio.create_task(reminder_scheduler(reminder_service, user_repo)),
+        # Weekly leaderboard rollover (UTC Tuesday 00:00 anchor). См. LEADERBOARD.md §Rewards.
+        asyncio.create_task(leaderboard_scheduler(leaderboard_service)),
     ]
     logger.info(
         "app.start admins=%s main_admin_id=%s server_tz=%s log_level=%s",
         len(ADMINS), MAIN_ADMIN_ID, SERVER_TIMEZONE,
         os.getenv("LOG_LEVEL", "INFO").upper(),
     )
-    logger.info("✅ StudyBuddy запущен")
+    # Кеш @username бота для построения t.me/<name>?start=friend_<token>
+    # deep-link'ов. get_me() — один HTTP round-trip за весь lifetime бота.
+    try:
+        me = await bot.get_me()
+        bot_username = me.username
+        logger.info("app.bot_username @%s", bot_username)
+    except Exception as e:
+        bot_username = None
+        logger.warning(
+            "app.bot_username_fetch_failed reason=%s — invite-links disabled",
+            type(e).__name__,
+        )
+
+    logger.info("✅ Palph запущен")
     try:
         await dp.start_polling(bot)
     finally:

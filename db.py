@@ -200,6 +200,116 @@ async def init_db(db: aiosqlite.Connection):
             purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (user_id, item_type, item_value)
         );
+
+        -- Daily-cap счётчики per (user, local_date в TZ пользователя).
+        -- Хранят intra-day состояние для score-инкрементов:
+        --   time_minutes / time_pts — для piecewise time pts
+        --   task_count — для daily cap 5 на math tasks
+        --   quiz_count + quiz_series_running — для cap 25 + series bonus
+        --   cards_count — для cap 8 на successful card reviews
+        -- Series counter resets на следующий день естественно (новая PK row).
+        -- См. LEADERBOARD.md §3, §4.
+        CREATE TABLE IF NOT EXISTS daily_score_counters (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            local_date TEXT NOT NULL,                       -- 'YYYY-MM-DD' в TZ user'а
+            time_minutes INTEGER NOT NULL DEFAULT 0,
+            time_pts REAL NOT NULL DEFAULT 0,
+            task_count INTEGER NOT NULL DEFAULT 0,
+            quiz_count INTEGER NOT NULL DEFAULT 0,
+            quiz_series_running INTEGER NOT NULL DEFAULT 0,
+            cards_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, local_date)
+        );
+
+        -- Per-user weekly totals (что читает /leaderboard).
+        -- week_iso = 'YYYY-Www' (ISO неделя в TZ пользователя). PK на (user_id, week_iso)
+        -- партиционирует естественно: past-week строки никогда не обновляются после
+        -- rollover в новую неделю. Multiplier НЕ хранится — вычисляется на read-time
+        -- из users.current_streak (см. services.streak_multiplier).
+        CREATE TABLE IF NOT EXISTS weekly_scores (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            week_iso TEXT NOT NULL,
+            time_pts REAL NOT NULL DEFAULT 0,
+            task_pts INTEGER NOT NULL DEFAULT 0,
+            quiz_pts INTEGER NOT NULL DEFAULT 0,
+            card_pts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, week_iso)
+        );
+        CREATE INDEX IF NOT EXISTS idx_weekly_scores_week
+            ON weekly_scores(week_iso);
+
+        -- Streak freeze events: история купленных заморозок стрика.
+        -- Cooldown enforced через MAX(granted_at) < now - 7 days.
+        -- consumed_for_date = 'YYYY-MM-DD' пропущенного дня (если использована),
+        -- иначе NULL (ещё не активна или активна и ждёт пропуска).
+        CREATE TABLE IF NOT EXISTS streak_freezes (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            granted_at TEXT NOT NULL,                       -- datetime('now')
+            streak_at_grant INTEGER NOT NULL,               -- audit: длина стрика при покупке
+            cost_paid INTEGER NOT NULL,                     -- 500 / 750 / 1000
+            consumed_for_date TEXT,                         -- 'YYYY-MM-DD' пропущенного дня
+            PRIMARY KEY (user_id, granted_at)
+        );
+        -- Index для быстрого поиска активной (неиспользованной) заморозки user'а.
+        CREATE INDEX IF NOT EXISTS idx_freezes_user_unused
+            ON streak_freezes(user_id, consumed_for_date)
+            WHERE consumed_for_date IS NULL;
+
+        -- Weekly leaderboard-награды с expiration.
+        -- badge_id ∈ {'top_1', 'top_2', 'top_3', 'breakthrough'}.
+        -- awarded_for_week — 'YYYY-Www' (на какую неделю выдан).
+        -- expires_at — обычно awarded_at + 7 days (1-week badges по спеке).
+        CREATE TABLE IF NOT EXISTS weekly_badges (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            badge_id TEXT NOT NULL,
+            awarded_for_week TEXT NOT NULL,
+            awarded_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, badge_id, awarded_for_week)
+        );
+
+        -- Pending friend requests (Phase 4, LEADERBOARD.md §Segments → Friends).
+        -- Хранятся только pending: на accept строка удаляется и появляется
+        -- friendship; на reject/cancel — просто удаляется. PK (from, to)
+        -- предотвращает дубль-отправку. CHECK исключает self-request.
+        CREATE TABLE IF NOT EXISTS friend_requests (
+            from_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            to_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (from_user_id, to_user_id),
+            CHECK (from_user_id != to_user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_friend_requests_to
+            ON friend_requests(to_user_id);
+
+        -- Подтверждённые дружбы (Phase 4). Нормализованное хранение:
+        -- ВСЕГДА user_a < user_b. Это гарантирует одну строку на дружбу
+        -- (а не две a→b и b→a), упрощает уникальность и поиск
+        -- "are A and B friends?".
+        CREATE TABLE IF NOT EXISTS friendships (
+            user_a INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            user_b INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_a, user_b),
+            CHECK (user_a < user_b)
+        );
+        CREATE INDEX IF NOT EXISTS idx_friendships_user_b
+            ON friendships(user_b);
+
+        -- Friend invite tokens — Telegram deep-link «t.me/Bot?start=friend_<token>».
+        -- Создаются через /share_friend, multiuse (один токен → много друзей),
+        -- expires_at = created_at + 30 days. При клике на ссылку invitee
+        -- автоматически становится другом creator'а (skip pending state),
+        -- т.к. ссылка = consent от creator, click = consent от invitee.
+        -- BACKLOG → ship 2026-05-19.
+        CREATE TABLE IF NOT EXISTS friend_invite_tokens (
+            token TEXT PRIMARY KEY,
+            from_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_friend_invite_tokens_from
+            ON friend_invite_tokens(from_user_id);
     """)
     await db.commit()
 
@@ -208,6 +318,29 @@ async def init_db(db: aiosqlite.Connection):
     # ошибку "duplicate column" — в свежей БД её не будет, в старой будет.
     try:
         await db.execute("ALTER TABLE study_sessions ADD COLUMN score INTEGER")
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
+    # Миграция: privacy opt-out для лидербордов (LEADERBOARD.md §Privacy).
+    # 0 (default) = виден на публичных лидербордах; 1 = скрыт.
+    # Score-аккумуляция и право на rewards не зависят от этого флага,
+    # только публичная видимость.
+    try:
+        await db.execute(
+            "ALTER TABLE users ADD COLUMN "
+            "hidden_from_leaderboards INTEGER NOT NULL DEFAULT 0"
+        )
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
+    # Миграция: Telegram @username для friends-search (BACKLOG → ship).
+    # Nullable: пользователи без публичного @handle имеют NULL.
+    # Обновляется UsernameSyncMiddleware на каждый Message/CallbackQuery,
+    # т.к. Telegram может менять username в любой момент.
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN username TEXT")
         await db.commit()
     except Exception:
         pass  # колонка уже есть

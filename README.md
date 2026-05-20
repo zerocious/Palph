@@ -1,13 +1,31 @@
-# StudyBuddy
+# Palph
 
 Telegram-бот для формирования регулярных учебных привычек у студентов через
 геймификацию (монеты, ачивки, стрики), Pomodoro-таймер, квизы и
 цифрового питомца.
 
+> **Имя проекта.** Бот переименован из **StudyBuddy** в **Palph**
+> 2026-05-19. Все user-facing строки и документация обновлены. Для
+> операционной стабильности (logs, backups, deployment) сохранены
+> исторические внутренние имена: `studybuddy.db` (default DB-файл),
+> `studybuddy_bot` (logger name), `studybuddy-{date}.db` (backup
+> filename pattern), `studybuddy-bot` (docker-compose container_name).
+> Переименование этих имён сломало бы existing production deployment'ы
+> (миграция БД, monitoring tools индексирующие по logger name,
+> docker-compose up при сохранённых volumes). Если нужен полный rename
+> внутренних имён — это отдельная migration-задача с явным
+> backup/restore шагом.
+
 **Статус:** MVP в эксплуатации; спринт v0.7 закрыт на 5 из 6 пунктов
-(4 учебных режима + SM-2 + админ-CRUD + резюм таймера). Остался только
-полноценный цифровой питомец. См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md).
+(4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **data-layer
+цифрового питомца merged 2026-05-19** (остаётся art/UI трек). Weekly
+leaderboard — **все 4 фазы shipped** (PR #3): `/leaderboard` command,
+segment auto-routing, privacy opt-out, UTC-anchored weekly rollover с
+top-3/breakthrough/top-10% наградами, ❄️ заморозка стрика
+(profile-кнопка + cooldown + atomic покупка), 👥 friends system
+(`/friends` с add/accept/reject/remove + friends-tab по weekly score).
+Спек: [LEADERBOARD.md](LEADERBOARD.md). См. [TODO.md](TODO.md) и
+[session_notes.md](session_notes.md). Tests: 469 passing.
 
 ---
 
@@ -23,7 +41,7 @@ Telegram-бот для формирования регулярных учебн�
 
 ```bash
 git clone <repo-url>
-cd studybuddy
+cd Palph
 python -m venv venv
 # Windows PowerShell:
 .\venv\Scripts\Activate.ps1
@@ -114,8 +132,34 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
   termы с `streak ≥ 3`, флэш-карты с `repetitions ≥ 3`, MCQ-вопросы
   отвеченные хотя бы раз верно, решённые задачи.
-- **Цифровой питомец** (пока простой; настроение по стрику; полный
-  переработка с эмоциями/кастомизацией/уровнями — в v0.7 #16)
+- **Цифровой питомец** — data-layer ([PR #2 merged](https://github.com/zerocious/Palph/pull/2))
+  + art/UI track в PR #3: один дизайн, **5 derived эмоций**
+  (`studying / excited / sad / sleepy / happy` — выводятся в момент
+  рендера), 1 XP/мин, `level = floor(sqrt(xp/10)) + 1`,
+  `user_pet_inventory` под кастомизацию, атомарная покупка под `db.lock`,
+  **level-up notification** со списком новых разблокированных предметов,
+  **pet detail screen** в профиле (фото-превью + name + level + xp),
+  **4-state customization picker** (⭐ надето / ✓ куплено / 💰 N доступно /
+  🔒 lv.N заблокировано) для 5 цветов и 5 аксессуаров с confirm-диалогом
+  на покупку, **переименование** через FSM. Pillow build-script
+  (`scripts/build_pet_assets.py`) генерирует 125 PNG + 5 GIF placeholder
+  ассетов (programmer-art) — real artwork как отдельный track-замена
+  файлов в `assets/pet/`. Sad-pet image в evening reminder — follow-up.
+- **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
+  `(time + math_task + quiz + card) × streak_multiplier`, daily caps,
+  ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
+  по `created_at < 7 days`. Команды: `/leaderboard` (свой сегмент +
+  ранг), `/friends` (👥 ранжированный лист друзей + add/accept/reject
+  по **@username или Telegram ID** + remove с confirm; username
+  кешируется через middleware на каждый Message), `/share_friend` —
+  **deep-link виральный invite** (`t.me/Bot?start=friend_<token>`,
+  multiuse, 30-day TTL; клик = auto-friendship без pending state).
+  👤 Privacy opt-out в настройках. ❄️ **Streak freeze** — coins-gated
+  кнопка в профиле, тиры 500/750/1000, 7-day cooldown, потребляется
+  в miss-day path вместо reset стрика. Top-3 / breakthrough / top-10%
+  coin bonus раздаются автоматически на rollover, идемпотентно.
+  Backtest notebook `analysis/leaderboard_backtest.ipynb` валидирует
+  формулу на исторических `events` до боевого запуска.
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user
 - **❓ FAQ** — интерактивное меню с 9 вопросами + кнопка техподдержки.
@@ -201,6 +245,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [BACKLOG.md](BACKLOG.md) | Сырые идеи без приоритета — отстойник перед TODO |
 | [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
+| [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
 
 ## Файлы инфраструктуры
 
@@ -210,9 +255,10 @@ study_materials/    # Учебные материалы — data-driven дере
 | [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
 | [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
-| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio |
+| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (185 штук: SM-2, services, progress repos, BackupService, AnalyticsService (включая segments/content_stats/event_timeline/heatmap), RateLimiter, EventRepository, log parser) |
+| [tests/](tests/) | Юнит-тесты (**469 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers) |
+| [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
@@ -235,19 +281,41 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **185 тестов** (~13 сек):
+Покрытие — **437 тестов** (~28 сек):
+
+**Pre-leaderboard baseline (185):**
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
 | `test_sm2.py` | 24 | SM-2: стандартные переходы, fail-path, EF floor, parametrized properties |
 | `test_achievement_service.py` | 14 | Все 9 ачивок, multi-award, идемпотентность |
-| `test_streak_service.py` | 11 | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation |
+| `test_streak_service.py` | 11 (→13 после freeze hook) | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation; +freeze-integration (Phase 3) |
 | `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
-| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments (5 buckets + churn-priority over active), content stats (hardest terms, popular MCQ, EF distribution), event timeline (filter + limit + malformed JSON), heatmap (7×8 grid, bucket math, peak detection), single-CSV + ZIP export-all |
-| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
-| `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
-| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values (next=YYYY-MM-DD HH:MM:SS) / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
+| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments, content stats, event timeline, heatmap, single-CSV + ZIP export-all |
+| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases |
+| `test_event_repository.py` | 15 | Append-only insert, JSON serialization, null user_id, multi-event ordering, user isolation, error swallowing |
+| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
+
+**Pet data layer (47, PR #2 merged):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_pet_repository.py` | 32 | create/get/inventory + xp formula (parametrized) + atomic purchase under db.lock + insufficient coins/level/already-owned/unknown-item + equip ownership / rename / mark_excited |
+| `test_derive_emotion.py` | 15 | 5 priority branches + 10 hour-boundary cases (sleepy `[22:00, 06:00)`) |
+
+**Leaderboard + friends + invite-links (205, PR #3 in flight):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_leaderboard_helpers.py` | 40 | piecewise_time_pts (12 tier-boundary cases), streak_multiplier (12 tiers), freeze_cost (9 tiers), user_calendar_keys (ISO week + year-boundary) |
+| `test_leaderboard_repository.py` | 24 | grant_time/task/quiz/card + caps + series bonus (5/15) + reset_quiz_series + read helpers + default-TZ resolution |
+| `test_leaderboard_service.py` | 49 | render_leaderboard segments + privacy + ranked-segment multiplier-vs-base flip + get_user_rank + award_badge idempotency + active_badges expiration + privacy flag + render_friends_tab + **run_rollover** (top-3 main / breakthrough newbie / top-10% bonus, threshold + idempotency + hidden eligibility) + _compute_ended_week_iso (year boundary) + **purchase_freeze + has/consume_freeze + cooldown** |
+| `test_friend_repository.py` | 25 | send_request status paths incl. **auto_accepted-via-reverse-pending**, accept transactional, reject/cancel, get_friends UNION, symmetric are_friends/remove_friend, pending lists |
+| `test_username_search.py` | 25 | parse_friend_query (11 input variants), refresh_username (set/change/clear-to-NULL/no-op), find_by_username (case-insensitive COLLATE NOCASE), **create_user(username=) closes first-message gap** (3) |
+| `test_friend_invite_tokens.py` | 17 | create_invite_token (uniqueness + 30-day expiry), find (valid / unknown / empty / None / expired), accept_invite (happy / self / already-friends / normalized storage / pending cleanup), multi-use, end-to-end |
+| `test_username_sync_middleware.py` | 8 | UsernameSyncMiddleware: happy path + change persists + NULL handling + graceful degradation (no event_from_user / refresh_failure / falsy user_id) + missing-user no-op |
+| `test_integration_flows.py` | 9 | End-to-end: full leaderboard journey (study → score → rollover → badge), friends lifecycle (send→accept→render→remove), freeze cycle, privacy effect both POVs, username search e2e, multiplier reordering (A=1000@0-streak vs B=900@14-streak → B wins) |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.

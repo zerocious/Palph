@@ -4,6 +4,87 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-19
+
+Goal: design and ship the weekly leaderboard. Multi-phase build across one
+long session: spec → Phase 0 audit → Phase 1 data layer → Phase 2a
+user-facing view + privacy → Phase 2b rollover scheduler + rewards.
+Pet PR (#2) merged early in the session to unblock leaderboard wiring.
+
+**Итог:** Phase 2 целиком закрыт (a + b); **332 теста** зелёных
+(185 baseline + 47 pet + 100 leaderboard); пет PR #2 squash-merged в
+`main` как `9203aab`; PR #3 на `claude/leaderboard-system` содержит
+весь leaderboard-стек. Phase 3 (streak freeze UI), Phase 4 (friends)
+остаются deferred с прокладкой (схемы + repo-методы + design notes)
+для следующих сессий.
+
+Plan / spec файл: [LEADERBOARD.md](LEADERBOARD.md) (v1.1)
+
+### Phases shipped
+
+| Phase | Commit | What landed |
+|-------|--------|-------------|
+| Spec v1.1 | `3c46644` | LEADERBOARD.md — formula, segments, privacy, anti-abuse, rewards, phasing |
+| Phase 0 — Event audit | `53e8c79` | Single patch: `flashcard_reviewed.is_new` added at the rate-handler call site, captured BEFORE `upsert_progress` writes the row. Other 4 scoring events already had what backtest needs. |
+| Phase 1 — Data layer | `930a2e8` | 4 tables (`daily_score_counters`, `weekly_scores`, `streak_freezes`, `weekly_badges`) + `users.hidden_from_leaderboards`; 4 pure scoring helpers in services.py; `LeaderboardRepository` (7 methods) with lock-free atomic-UPDATE cap enforcement; wiring into 4 hooks in bot.py + `StudyService.complete_session`; 64 tests; `analysis/leaderboard_backtest.ipynb` |
+| Phase 2a — Visibility | `9ab3ff1` | `LeaderboardRepository.get_ranked_segment` / `get_user_rank` / `award_badge` / `get_active_badges`; `UserRepository.set_hidden_from_leaderboards` / `is_hidden_from_leaderboards`; `LeaderboardService.render_leaderboard` (segment auto-routing, hidden-user marker); `/leaderboard` slash command; "Лидерборды: Виден/Скрыт" toggle in settings menu; 23 tests |
+| Phasing doc | `a25655d` | LEADERBOARD.md phasing section updated to reflect shipped vs deferred |
+| Docs refresh | `5626c6a` | README + TODO + session_notes synced after Phase 2a |
+| Phase 2b — Rollover + rewards | `25c25b3` | `LeaderboardService.run_rollover` (top-3 main + breakthrough newbie + top-10% coin bonus, gated by `award_badge` INSERT OR IGNORE rowcount → idempotent on re-run); `leaderboard_scheduler` in `tasks.py` (UTC Tuesday 00:00 anchor — all global TZs have crossed local Mon by then); `_compute_ended_week_iso` pure helper; bot.py wires scheduler into `background_tasks`; 13 tests cover correctness, idempotency, top-10% threshold, hidden eligibility, ISO year boundaries |
+| Phase 3 — Streak freeze | `2912da4` | `LeaderboardRepository.purchase_freeze` (atomic под `db.lock`, cooldown через `granted_at > now - 7 days`, returns `purchased`/`insufficient_coins`/`cooldown_active`); `has_active_freeze`, `consume_freeze_if_active(user_id, today_local)`, `get_freeze_cooldown_remaining_days`; `StreakService` принимает optional `leaderboard_repo` и на miss-day сначала consume freeze (если есть) перед reset; profile-кнопка «❄️ Заморозить стрик» + confirm-экран с cost/balance/availability; 17 тестов покрывают purchase atomicity, cooldown, consume, streak integration |
+| Phase 4 — Friends system | `473006f` | 2 новые таблицы: `friend_requests` + нормализованные `friendships` (user_a<user_b, одна строка на дружбу). `FriendRepository` с полным lifecycle: `send_request` (включая auto-accept на reverse pending), accept (transactional DELETE+INSERT), reject/cancel, get_friends UNION, are_friends/remove_friend (symmetric). `LeaderboardService.render_friends_tab` (top-3 medals + (Вы) маркер). `/friends` команда + add-by-ID FSM + 📩 запросы с accept/reject + ➖ remove с confirm; cross-user notifications через bot.send_message с graceful exception handling. 29 тестов. |
+| Docs sweep | `43b8901` | README features list + LEADERBOARD.md link added; BACKLOG entries для username-search + invite-links добавлены; admin_commands.md header note о user-facing командах. |
+| Username-search для /friends | `25c5b27` + `6870bab` (fix) | BACKLOG-идея поднятая до ship в той же сессии. `users.username TEXT` migration + `UserRepository.refresh_username` / `find_user_id_by_username` (case-insensitive COLLATE NOCASE). `UsernameSyncMiddleware` обновляет username на каждом Message/CallbackQuery (graceful exception handling — sync-failure НЕ ломает handler). `services.parse_friend_query` — pure parser (`@alice`/`alice`/`12345`/`-12345`/empty). `friend_add_process` сначала пытается username path, fallback на numeric. 22 теста + fix-commit 3 теста (first-message gap). |
+| New tests sweep (middleware + integration) | `49d392a` | Closed the "I claimed it works but never tested" middleware gap (8 tests) + 9 cross-component end-to-end integration flows (full leaderboard journey, friends lifecycle, freeze cycle, privacy effect, username search e2e, multiplier reordering). |
+| Friend invite-links via deep links | `a2bf5bd` | Second BACKLOG-promotion ship. `friend_invite_tokens` table (token PK, 30-day TTL). `FriendRepository.create_invite_token` (secrets.token_urlsafe, ~16 char), `find_invite_token` (rejects expired), `accept_invite` (atomic, skip pending, clean up any reverse pending). `/share_friend` команда → формирует `t.me/<bot_username>?start=friend_<token>`. `/start friend_<token>` deep-link → `_process_friend_invite_link` резолвит токен, создаёт auto-friendship, уведомляет обе стороны. `bot_username` кеш через bot.get_me() на старте. 17 тестов: token uniqueness/expiry, find resolution, accept happy/self/already, multi-use (одна ссылка → N друзей), pending-request cleanup, end-to-end flow. |
+| Rename: StudyBuddy → Palph | `a386ff8` | User-visible strings (welcome, FAQ, log message), doc titles (README, LEADERBOARD, admin_commands), export filename `palph-export-`, docker-compose comment. Kept legacy `studybuddy_bot` logger, `studybuddy.db` DB filename, `studybuddy-{date}.db` backup pattern, `container_name: studybuddy-bot` for ops-stability. New README "Имя проекта" callout документирует split. |
+| Pet art track Phase A | `9421d0a` | Pillow placeholder generator (125 PNG + 5 GIF programmer-art), `services.render_pet` path-resolver с fallback chain, level-up notification в `StudyService.complete_session` со списком разблокированных предметов через `_notify_level_up`. 21 теста (render_pet path resolution + animated + fallbacks; level-up fires/skips/unlocks logic). |
+| Pet art track Phase B | (pending commit) | Customization UI: pet detail screen (фото + name + level + xp), color/accessory pickers с 4-state buttons (⭐/✓/💰/🔒), confirm dialog для покупки, equip-from-owned instant, rename через FSM. Helper `_picker_button_label` инкапсулирует 4-state logic; pure function. 11 тестов покрывают каждое из 4 состояний + edge cases (no pet, precedence). |
+
+### Key design calls captured
+
+- **Tasks at 40 pts** (math problems = mission lever). Single-tier instead of original "3@50 + 5@10" — same daily cap of 200 pts, one rule to communicate.
+- **Streak as weekly multiplier** (1.00 / 1.05 / 1.10 / 1.20 by tier) replacing useless flat `streak_days × 10`. Two users with same activity differ by streak-driven multiplier — meaningful ranking signal that rewards consistency without competing with the math-focus headline number.
+- **Streak freeze cost tiered** (500 / 750 / 1000 by current streak length) — scales with what you have to lose.
+- **All caps are daily** (LLM in original spec said "weekly" — corrected).
+- **Cards: pts only on `quality >= 3`** (successful review). Wrong answers neither grant pts nor burn the daily-8 cap.
+- **"New" card definition** = no existing row in `flashcard_progress` (NOT `repetitions == 0`, which is ambiguous after a reset). Captured at the call site before upsert.
+- **MCQ counts as quiz** for scoring (single +5/correct surface, shared series counter).
+- **Series counter resets at midnight local TZ** (clean daily slate, matches the daily-cap pattern).
+- **Privacy opt-out** as single toggle in settings; hidden users still earn rewards, just don't appear in others' public top.
+- **`now_local` optional** on all `grant_*` methods. Production callers pass `user_id` only (repo looks up TZ); tests pass explicit `now_local` for determinism.
+- **No locks inside `grant_*`.** Atomic `UPDATE … WHERE counter < cap` enforces cap-safety. `grant_time_pts` is the one real read-modify-write but per-user race is impossible by app logic (one timer at a time).
+- **Backtest notebook** validates the formula on existing `events` + `study_sessions` data before any user sees scores. Drives pandas/matplotlib/jupyter into requirements-dev.txt.
+
+### Sequence + pet PR merge
+
+Pet PR (TODO #16 data layer) was already a PR from the earlier session; merged via `gh pr merge --squash` (`9203aab`). Leaderboard branch rebased onto new main → `claude/elastic-mirzakhani-0b7ce0` (pet worktree) is now stale and can be deleted at convenience.
+
+### Files modified this session (leaderboard branch only)
+
+- **New:** `LEADERBOARD.md`, `analysis/leaderboard_backtest.ipynb`, `tests/test_leaderboard_helpers.py`, `tests/test_leaderboard_repository.py`, `tests/test_leaderboard_service.py`
+- **Modified:** `db.py` (+108 lines, 4 tables + privacy column migration), `repository.py` (+440 lines, LeaderboardRepository + UserRepository.is_hidden* + set_hidden*), `services.py` (+215 lines, 4 helpers + LeaderboardService), `bot.py` (+73 lines, imports + globals + privacy toggle + /leaderboard command + 4 hook patches + `is_new_card` capture), `requirements-dev.txt` (+3 deps for notebook)
+
+### Verification
+
+- `python -m py_compile bot.py db.py repository.py services.py` — clean
+- `python -m pytest tests/` — **319 passed** (185 → +47 pet → +64 Phase 1 → +23 Phase 2a)
+- Schema smoke-test: `init_db` creates all 4 leaderboard tables + `hidden_from_leaderboards` column on `users`; idempotent on second run
+- Notebook JSON validates with `json.load`
+
+### Deferred to follow-up sessions
+
+(Empty — LEADERBOARD.md spec полностью закрыт. Все 4 фазы shipped в PR #3.)
+
+### Out of leaderboard scope but still open
+
+- **Pet UI / art track** — TODO #16 в TODO.md. Data layer уже в `main` после
+  PR #2. Остаётся UI кастомизации в профиле, Pillow build-script для 125
+  PNG-ассетов, render_pet функция, level-up notification, sad-pet hook
+  в ReminderService.
+
+---
+
 ## Session — 2026-05-18
 
 Goal: data layer slice of TODO #16 (полноценный питомец) — schema +

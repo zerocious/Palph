@@ -1,4 +1,7 @@
-# StudyBuddy Telegram bot — single-service compose.
+# Palph Telegram bot — single-service compose.
+# Note: container_name + DB_PATH retain legacy "studybuddy" prefixes for
+# backward compatibility with running production deployments (renaming
+# would force docker-compose down + DB rename). See README "Имя проекта".
 # Запуск:   docker compose up -d --build
 # Логи:     docker compose logs -f bot
 # Статус:   docker compose ps

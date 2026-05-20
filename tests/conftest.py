@@ -20,6 +20,12 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# Test-only fallback: bot.py raises RuntimeError if BOT_TOKEN is unset
+# at import time. Тесты, импортирующие из bot.py (например,
+# UsernameSyncMiddleware), полагаются на этот fallback. Не переопределяет
+# реальный BOT_TOKEN в env, если он уже установлен.
+os.environ.setdefault("BOT_TOKEN", "test-token-for-pytest-imports")
+
 from db import get_db, init_db  # noqa: E402
 from repository import UserRepository, SessionRepository  # noqa: E402
 

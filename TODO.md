@@ -14,14 +14,35 @@ Example:
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
 
-**Прогресс:** 5 из 6 пунктов закрыты (меню 2×2, новости, FAQ, /help, admins→БД,
-резюм таймера, study_materials, MCQ, photo tasks, SM-2 флэш-карты). Пункт 16 в
-процессе — **data layer landed 2026-05-18** (schema + PetRepository +
-derive_emotion + XP-grant в complete_session + 47 тестов; см. session_notes от
-2026-05-18). Осталось: UI кастомизации, level-up notification, render_pet,
+**Прогресс:** 5 из 6 пунктов закрыты + **пункт 16 data-layer ✅ merged в `main`
+2026-05-19** (PR #2 = `9203aab`: schema + PetRepository + derive_emotion +
+XP-grant в complete_session + 47 тестов). Остаток v0.7 #16 — отдельный
+art/UI трек, разбит на: UI кастомизации, level-up notification, render_pet,
 Pillow-сборка ассетов, sad-pet интеграция в reminder.
 
-16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer готов**  
+### ✅ Weekly Leaderboard — закрыт полностью
+
+Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). **Все 4 фазы shipped
+2026-05-19** в PR #3 (Phase 0 audit, Phase 1 data layer, Phase 2a view +
+privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
+**username-search для /friends** (BACKLOG → ship) +
+**deep-link invite-links** через `/share_friend` (BACKLOG → ship).
+**437 тестов** покрывают всю систему (включая middleware и
+end-to-end integration flows). После merge PR #3 — никакой
+открытой работы по leaderboard'у.
+
+Sad-pet reminder hook (последний бит TODO #16 на data-layer треке)
+вышел отдельным PR #4 на ветке `claude/pet-sad-reminder`, off main.
+
+16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
+- `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);
+- level-up notification со списком разблокированных предметов;
+- pet detail screen с image preview;
+- 4-state customization picker (⭐/✓/💰/🔒) для цветов и аксессуаров;
+- покупка через confirm dialog (атомарная под db.lock);
+- equip уже купленного — instant;
+- переименование через FSM.
+Real artwork — отдельный art-track (placeholder PNG functional, но programmer-art ugly). Sad-pet image в reminder — отдельный follow-up после merge PR #4.  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
 Готовность:  
 — Один дизайн питомца (не 5 видов). Таблица `user_pet(user_id, name, color, accessory, level, xp, created_at)` без `species` и без хранения эмоции. Поле `accessory NOT NULL` с sentinel-значением `"none"` (вместо nullable).  

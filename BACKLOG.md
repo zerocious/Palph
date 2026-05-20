@@ -49,6 +49,55 @@
 
 ---
 
+## Username-search для /friends ✅ shipped 2026-05-19
+
+Поднято с defer на ship в той же сессии (после Phase 4 friends).
+Реализация:
+- `users.username TEXT` колонка + migration.
+- `UsernameSyncMiddleware` обновляет username на каждом Message/CallbackQuery (FK-safe; failures swallow'ятся).
+- `UserRepository.refresh_username` + `find_user_id_by_username` (case-insensitive `COLLATE NOCASE`).
+- `services.parse_friend_query` — pure parser, принимает `@alice` / `alice` / `12345` / `-12345`.
+- `friend_add_process` сначала пытается username path → fallback на numeric.
+- 22 теста: parser variants + repo round-trips + case-insensitive lookup.
+
+Privacy-toggle (opt-out из username discovery) НЕ добавлен — спор был о том, нужен ли отдельный privacy-канал кроме `hidden_from_leaderboards`. Defer до user-feedback'а.
+
+Re-validation на stale username (A удалил @foo, B взял) тоже НЕ реализована — Telegram API через `bot.get_chat(username)` мог бы валидировать, но это добавляет round-trip и API rate-limit. v1 принимает stale-cache риск; если станет реальной проблемой — поднять в backlog.
+
+---
+
+## Friend invite-link через deep links ✅ shipped 2026-05-19
+
+Поднято с defer на ship сразу после username-search (одна сессия).
+Финальная реализация:
+- `friend_invite_tokens` (token PK, from_user_id, created_at, expires_at).
+  Многоразовый токен с 30-day TTL.
+- `FriendRepository.create_invite_token` (16-char token из `secrets.token_urlsafe`),
+  `find_invite_token` (отсекает истёкшие), `accept_invite` (atomic под
+  `db.lock`, skip pending state — deep-link клик это уже согласие обеих сторон).
+- `/share_friend` команда → создаёт токен, формирует `t.me/<bot_username>?start=friend_<token>`,
+  шлёт пользователю.
+- `/start friend_<token>` deep-link → `_process_friend_invite_link`:
+  резолвит токен, accept_invite, уведомляет invitee + creator.
+- 17 тестов: token uniqueness/expiry, find resolution, accept happy/self/already,
+  multi-use, pending request cleanup, end-to-end flow.
+
+Решение про **прямую дружбу вместо pending request**: deep-link клик
+семантически = двустороннее consent (creator shared, invitee clicked).
+Конвертация в pending-state добавила бы ненужный шаг для viral-кейса.
+
+Рисков, которые НЕ адресованы в v1:
+- Спам-vector: Alice расшарила в публичный группу → 100 человек кликнули → Alice
+  получила 100 друзей. Mitigation (rate limit per-day) не добавили — для
+  маленького русскоязычного uni-бота это нереалистичный сценарий. Если
+  жалобы появятся — поднять в backlog.
+- Per-token usage cap: токен можно использовать неограниченно. Тот же сценарий
+  выше. Mitigation = добавить `max_uses` колонку и декремент при accept.
+
+---
+
+---
+
 ## Индивидуальный учебный план на основе диагностики и прогресса (2026-05-18)
 
 **Идея**: при первом входе в предмет — короткий входной тест (5-10 смешанных вопросов: теория + задачи), на основе которого + накопленных данных прогресса бот собирает **персональный план дня**: «сегодня изучи это, повтори это, попробуй эту задачу». План адаптируется по мере того, как пользователь учится.
