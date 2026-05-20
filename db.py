@@ -295,6 +295,21 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_friendships_user_b
             ON friendships(user_b);
+
+        -- Friend invite tokens — Telegram deep-link «t.me/Bot?start=friend_<token>».
+        -- Создаются через /share_friend, multiuse (один токен → много друзей),
+        -- expires_at = created_at + 30 days. При клике на ссылку invitee
+        -- автоматически становится другом creator'а (skip pending state),
+        -- т.к. ссылка = consent от creator, click = consent от invitee.
+        -- BACKLOG → ship 2026-05-19.
+        CREATE TABLE IF NOT EXISTS friend_invite_tokens (
+            token TEXT PRIMARY KEY,
+            from_user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_friend_invite_tokens_from
+            ON friend_invite_tokens(from_user_id);
     """)
     await db.commit()
 

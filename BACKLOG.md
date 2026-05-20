@@ -66,27 +66,35 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 
 ---
 
-## Friend invite-link через deep links (2026-05-19)
+## Friend invite-link через deep links ✅ shipped 2026-05-19
 
-**Идея**: каждый user генерирует ссылку `t.me/StudyBuddyBot?start=friend_<token>`; кто-то открывает → автоматический отправленный friend-request от sharer'а. Сейчас единственный способ добавить — знать Telegram ID получателя.
+Поднято с defer на ship сразу после username-search (одна сессия).
+Финальная реализация:
+- `friend_invite_tokens` (token PK, from_user_id, created_at, expires_at).
+  Многоразовый токен с 30-day TTL.
+- `FriendRepository.create_invite_token` (16-char token из `secrets.token_urlsafe`),
+  `find_invite_token` (отсекает истёкшие), `accept_invite` (atomic под
+  `db.lock`, skip pending state — deep-link клик это уже согласие обеих сторон).
+- `/share_friend` команда → создаёт токен, формирует `t.me/<bot_username>?start=friend_<token>`,
+  шлёт пользователю.
+- `/start friend_<token>` deep-link → `_process_friend_invite_link`:
+  резолвит токен, accept_invite, уведомляет invitee + creator.
+- 17 тестов: token uniqueness/expiry, find resolution, accept happy/self/already,
+  multi-use, pending request cleanup, end-to-end flow.
 
-**Зачем**:
-- Social loop: «отправь мою ссылку» в WhatsApp/Telegram → 1-click конверсия. Существующий friends-flow с ID этого не даёт.
-- Возможный driver вирального роста.
+Решение про **прямую дружбу вместо pending request**: deep-link клик
+семантически = двустороннее consent (creator shared, invitee clicked).
+Конвертация в pending-state добавила бы ненужный шаг для viral-кейса.
 
-**Подход (черновой)**:
-- Таблица `friend_invite_tokens(token TEXT PK, from_user_id INTEGER, created_at TEXT, used_by INTEGER)`.
-- `/share_friend` команда → создаёт токен, шлёт ссылку.
-- Handler `/start friend_<token>` → парсит → проверяет токен → если новый user, регистрирует + auto-send_request; если существующий, просто send_request.
-- TTL ~30 дней; reusable (один токен — много новых friends).
+Рисков, которые НЕ адресованы в v1:
+- Спам-vector: Alice расшарила в публичный группу → 100 человек кликнули → Alice
+  получила 100 друзей. Mitigation (rate limit per-day) не добавили — для
+  маленького русскоязычного uni-бота это нереалистичный сценарий. Если
+  жалобы появятся — поднять в backlog.
+- Per-token usage cap: токен можно использовать неограниченно. Тот же сценарий
+  выше. Mitigation = добавить `max_uses` колонку и декремент при accept.
 
-**Риски**:
-- Спам-vector: один user генерирует токен → раздаёт массам → флуд friend-requests. Rate limit на send_request per user/day решит (5–10/day разумно).
-- Tracking-сложность: если deep-link открыли несколько раз, дедуплицировать или нет?
-
-**Стоимость**: код ~120–150 строк (table + token gen + handler + UI button + tests).
-
-**Решение**: defer. Username-search покрывает 80% случая «как добавить друга». Deep-link добавляет 20% но за высокую implementation cost. Вернуться если username-search всё же мало.
+---
 
 ---
 

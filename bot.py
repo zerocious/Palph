@@ -886,6 +886,13 @@ async def get_next_quiz_term(user_id: int, all_terms: list[QuizTerm]) -> QuizTer
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
+
+    # Telegram передаёт deep-link arg как «/start <arg>». Парсим до создания
+    # пользователя — нужен для invite-link flow.
+    text = message.text or ""
+    parts = text.split(maxsplit=1)
+    deep_link_arg = parts[1].strip() if len(parts) > 1 else None
+
     if not await user_repo.user_exists(user_id):
         await user_repo.create_user(
             user_id, username=message.from_user.username
@@ -916,6 +923,53 @@ async def cmd_start(message: Message, state: FSMContext):
             f"• Твой стрик: {user['current_streak']} дней подряд 🔥\n\n"
             f"Чем займёмся сегодня?",
             reply_markup=get_main_keyboard()
+        )
+
+    # Обработка deep-link invite после стандартного welcome.
+    # Существующий FSM-стейт onboarding'а не трогаем — invite — side effect.
+    if deep_link_arg and deep_link_arg.startswith("friend_"):
+        await _process_friend_invite_link(message, deep_link_arg)
+
+
+async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> None:
+    """
+    Обрабатывает /start friend_<token>: резолвит токен, создаёт дружбу
+    invitee + creator (skip pending state), уведомляет обе стороны.
+    Вызывается из cmd_start после стандартного welcome flow.
+    """
+    invitee_id = message.from_user.id
+    token = deep_link_arg[len("friend_"):]
+    creator_id = await friend_repo.find_invite_token(token)
+    if creator_id is None:
+        await message.answer(
+            "⏳ Ссылка-приглашение недействительна или истекла."
+        )
+        return
+
+    result = await friend_repo.accept_invite(creator_id, invitee_id)
+    if result == "accepted":
+        await message.answer(
+            f"🎉 Ты добавлен в друзья к пользователю "
+            f"<code>{creator_id}</code>!",
+            parse_mode="HTML",
+        )
+        try:
+            await bot.send_message(
+                creator_id,
+                f"🎉 Пользователь <code>{invitee_id}</code> присоединился "
+                f"к тебе по ссылке-приглашению!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.info(
+                "friends.invite_notify_creator_failed creator=%s reason=%s",
+                creator_id, type(e).__name__,
+            )
+    elif result == "already_friends":
+        await message.answer("👥 Вы уже друзья.")
+    elif result == "self":
+        await message.answer(
+            "🙂 Это твоя собственная ссылка — отправь её другим пользователям."
         )
 
 @router.message(SetupStates.choosing_path, F.text == "🚀 Начать сразу")
@@ -4199,6 +4253,34 @@ def _friends_menu_keyboard(user_id: int, pending_count: int = 0) -> InlineKeyboa
     return kb.as_markup()
 
 
+@router.message(Command("share_friend"))
+async def cmd_share_friend(message: Message):
+    """
+    Создаёт invite-token и шлёт пользователю deep-link, которым тот
+    может поделиться. Кто откроет ссылку — автоматически становится
+    другом (skip pending). 30-day TTL, multiuse.
+    """
+    user_id = message.from_user.id
+    if not await user_repo.user_exists(user_id):
+        await message.answer("Сначала отправь /start.")
+        return
+    if not bot_username:
+        await message.answer(
+            "⚠️ Бот ещё не определил свой @username (не удалось получить "
+            "его при старте). Попробуй позже."
+        )
+        return
+    token = await friend_repo.create_invite_token(user_id)
+    link = f"https://t.me/{bot_username}?start=friend_{token}"
+    await message.answer(
+        f"👥 <b>Поделись этой ссылкой с друзьями:</b>\n\n"
+        f"<code>{link}</code>\n\n"
+        f"Кто откроет ссылку — автоматически станет твоим другом 🎉\n"
+        f"Срок действия: 30 дней.",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("friends"))
 async def cmd_friends(message: Message):
     """Friends-tab: weekly-ранжированный список друзей + меню действий."""
@@ -4773,7 +4855,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -4866,6 +4948,19 @@ async def main():
         len(ADMINS), MAIN_ADMIN_ID, SERVER_TIMEZONE,
         os.getenv("LOG_LEVEL", "INFO").upper(),
     )
+    # Кеш @username бота для построения t.me/<name>?start=friend_<token>
+    # deep-link'ов. get_me() — один HTTP round-trip за весь lifetime бота.
+    try:
+        me = await bot.get_me()
+        bot_username = me.username
+        logger.info("app.bot_username @%s", bot_username)
+    except Exception as e:
+        bot_username = None
+        logger.warning(
+            "app.bot_username_fetch_failed reason=%s — invite-links disabled",
+            type(e).__name__,
+        )
+
     logger.info("✅ StudyBuddy запущен")
     try:
         await dp.start_polling(bot)

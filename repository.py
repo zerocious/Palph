@@ -1687,3 +1687,84 @@ class FriendRepository:
                 "friends.removed user_a=%s user_b=%s", ua, ub,
             )
         return cursor.rowcount > 0
+
+    # ------------------------------------------------------------
+    # Invite-links (BACKLOG → ship): t.me/Bot?start=friend_<token>
+    # ------------------------------------------------------------
+    async def create_invite_token(self, from_uid: int) -> str:
+        """
+        Создаёт новый invite-token для пользователя. TTL 30 дней.
+        Multiuse: токен можно отдать многим людям, каждый клик → новая
+        дружба. Возвращает сам токен (URL-safe строка ~16 символов).
+        """
+        import secrets
+        token = secrets.token_urlsafe(12)
+        await self.db.execute(
+            "INSERT INTO friend_invite_tokens (token, from_user_id, expires_at) "
+            "VALUES (?, ?, datetime('now', '+30 days'))",
+            (token, from_uid),
+        )
+        await self.db.commit()
+        self._logger.info(
+            "friends.invite_token_created user_id=%s token=%s",
+            from_uid, token,
+        )
+        return token
+
+    async def find_invite_token(self, token: str):
+        """
+        Резолвит токен в from_user_id. Истёкшие токены трактуются как
+        несуществующие — возвращает None.
+        """
+        if not token:
+            return None
+        async with self.db.execute(
+            "SELECT from_user_id FROM friend_invite_tokens "
+            "WHERE token=? AND expires_at > datetime('now')",
+            (token,),
+        ) as c:
+            row = await c.fetchone()
+        return row["from_user_id"] if row else None
+
+    async def accept_invite(self, from_uid: int, invitee_uid: int) -> str:
+        """
+        Создаёт дружбу invitee + creator напрямую (skip pending state).
+        Семантика: shared link = consent creator'а; click = consent
+        invitee. Оба согласились → atomic INSERT в friendships.
+
+        Идемпотентно: повторный вызов возвращает 'already_friends'.
+        Self-invite (invitee == creator) запрещён.
+
+        Также cleans up pending requests в обе стороны (если в это время
+        был отправлен «обычный» request, deep-link его перекрывает).
+
+        Returns статус: 'accepted' / 'already_friends' / 'self'.
+        """
+        if from_uid == invitee_uid:
+            return "self"
+        ua, ub = self._norm_pair(from_uid, invitee_uid)
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT 1 FROM friendships WHERE user_a=? AND user_b=?",
+                (ua, ub),
+            ) as c:
+                if await c.fetchone():
+                    return "already_friends"
+            await self.db.execute(
+                "INSERT INTO friendships (user_a, user_b) VALUES (?, ?)",
+                (ua, ub),
+            )
+            # Если был pending request в любую сторону — удалим
+            # (deep-link обходит pending state)
+            await self.db.execute(
+                "DELETE FROM friend_requests "
+                "WHERE (from_user_id=? AND to_user_id=?) "
+                "   OR (from_user_id=? AND to_user_id=?)",
+                (from_uid, invitee_uid, invitee_uid, from_uid),
+            )
+            await self.db.commit()
+            self._logger.info(
+                "friends.invite_accepted creator=%s invitee=%s normalized=(%s,%s)",
+                from_uid, invitee_uid, ua, ub,
+            )
+            return "accepted"
