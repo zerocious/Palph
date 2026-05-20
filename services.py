@@ -719,13 +719,30 @@ class ReminderService:
                 has_studied_today=studied,
                 now_local=now_local,
             )
-            text = (
-                self._EVENING_SAD_PET_TEXT
-                if emotion == "sad"
-                else self._EVENING_FALLBACK_TEXT
-            )
             try:
-                await self.bot.send_message(chat_id=uid, text=text)
+                if emotion == "sad":
+                    # Sad-path: пробуем отправить sad.gif с caption. Если
+                    # asset отсутствует (FileNotFoundError из render_pet) —
+                    # graceful fallback на text-only sad-pet копи.
+                    try:
+                        from aiogram.types import FSInputFile
+                        gif_path = render_pet(None, "sad", animated=True)
+                        await self.bot.send_animation(
+                            chat_id=uid,
+                            animation=FSInputFile(str(gif_path)),
+                            caption=self._EVENING_SAD_PET_TEXT,
+                        )
+                    except FileNotFoundError:
+                        await self.bot.send_message(
+                            chat_id=uid, text=self._EVENING_SAD_PET_TEXT,
+                        )
+                else:
+                    # Non-sad emotion path → text-only fallback копи.
+                    # Defensive: SQL filter гарантирует has_studied_today=0,
+                    # так что эта ветка достижима только при странных edge cases.
+                    await self.bot.send_message(
+                        chat_id=uid, text=self._EVENING_FALLBACK_TEXT,
+                    )
             except TelegramForbiddenError:
                 logger.info(
                     "reminder.send_failed kind=evening uid=%s reason=blocked", uid

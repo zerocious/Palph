@@ -1327,10 +1327,14 @@ async def cmd_profile(message: Message):
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
     # Питомец: image preview + customization picker (TODO #16 Phase B).
     inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    # Друзья: open friends-tab. Использует существующий friends_back-handler
+    # (тот же, что callback'и accept/reject/remove). callback_data prefix
+    # 'friends_back' семантически означает «main friends-tab view».
+    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
     # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1)
+    inline_kb.adjust(2, 1, 1, 1, 1)
     await message.answer(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -1963,10 +1967,14 @@ async def back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
     # Питомец: image preview + customization picker (TODO #16 Phase B).
     inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    # Друзья: open friends-tab. Использует существующий friends_back-handler
+    # (тот же, что callback'и accept/reject/remove). callback_data prefix
+    # 'friends_back' семантически означает «main friends-tab view».
+    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
     # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1)
+    inline_kb.adjust(2, 1, 1, 1, 1)
     await callback.message.edit_text(
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
@@ -4621,8 +4629,9 @@ async def pet_back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
     inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
     inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
+    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1)
+    inline_kb.adjust(2, 1, 1, 1, 1)
     await bot.send_message(
         callback.message.chat.id,
         f"📊 Твой профиль:\n"
