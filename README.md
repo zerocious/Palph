@@ -264,19 +264,41 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **185 тестов** (~13 сек):
+Покрытие — **437 тестов** (~28 сек):
+
+**Pre-leaderboard baseline (185):**
 
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
 | `test_sm2.py` | 24 | SM-2: стандартные переходы, fail-path, EF floor, parametrized properties |
 | `test_achievement_service.py` | 14 | Все 9 ачивок, multi-award, идемпотентность |
-| `test_streak_service.py` | 11 | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation |
+| `test_streak_service.py` | 11 (→13 после freeze hook) | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation; +freeze-integration (Phase 3) |
 | `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
 | `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
-| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments (5 buckets + churn-priority over active), content stats (hardest terms, popular MCQ, EF distribution), event timeline (filter + limit + malformed JSON), heatmap (7×8 grid, bucket math, peak detection), single-CSV + ZIP export-all |
-| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases (zero/high threshold, unknown user) |
-| `test_event_repository.py` | 15 | Append-only insert, JSON serialization (dict/None/empty/unicode/nested), null user_id (system events), multi-event ordering, user isolation, error swallowing (analytics never breaks bot flow) |
-| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values (next=YYYY-MM-DD HH:MM:SS) / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
+| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments, content stats, event timeline, heatmap, single-CSV + ZIP export-all |
+| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases |
+| `test_event_repository.py` | 15 | Append-only insert, JSON serialization, null user_id, multi-event ordering, user isolation, error swallowing |
+| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
+
+**Pet data layer (47, PR #2 merged):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_pet_repository.py` | 32 | create/get/inventory + xp formula (parametrized) + atomic purchase under db.lock + insufficient coins/level/already-owned/unknown-item + equip ownership / rename / mark_excited |
+| `test_derive_emotion.py` | 15 | 5 priority branches + 10 hour-boundary cases (sleepy `[22:00, 06:00)`) |
+
+**Leaderboard + friends + invite-links (205, PR #3 in flight):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_leaderboard_helpers.py` | 40 | piecewise_time_pts (12 tier-boundary cases), streak_multiplier (12 tiers), freeze_cost (9 tiers), user_calendar_keys (ISO week + year-boundary) |
+| `test_leaderboard_repository.py` | 24 | grant_time/task/quiz/card + caps + series bonus (5/15) + reset_quiz_series + read helpers + default-TZ resolution |
+| `test_leaderboard_service.py` | 49 | render_leaderboard segments + privacy + ranked-segment multiplier-vs-base flip + get_user_rank + award_badge idempotency + active_badges expiration + privacy flag + render_friends_tab + **run_rollover** (top-3 main / breakthrough newbie / top-10% bonus, threshold + idempotency + hidden eligibility) + _compute_ended_week_iso (year boundary) + **purchase_freeze + has/consume_freeze + cooldown** |
+| `test_friend_repository.py` | 25 | send_request status paths incl. **auto_accepted-via-reverse-pending**, accept transactional, reject/cancel, get_friends UNION, symmetric are_friends/remove_friend, pending lists |
+| `test_username_search.py` | 25 | parse_friend_query (11 input variants), refresh_username (set/change/clear-to-NULL/no-op), find_by_username (case-insensitive COLLATE NOCASE), **create_user(username=) closes first-message gap** (3) |
+| `test_friend_invite_tokens.py` | 17 | create_invite_token (uniqueness + 30-day expiry), find (valid / unknown / empty / None / expired), accept_invite (happy / self / already-friends / normalized storage / pending cleanup), multi-use, end-to-end |
+| `test_username_sync_middleware.py` | 8 | UsernameSyncMiddleware: happy path + change persists + NULL handling + graceful degradation (no event_from_user / refresh_failure / falsy user_id) + missing-user no-op |
+| `test_integration_flows.py` | 9 | End-to-end: full leaderboard journey (study → score → rollover → badge), friends lifecycle (send→accept→render→remove), freeze cycle, privacy effect both POVs, username search e2e, multiplier reordering (A=1000@0-streak vs B=900@14-streak → B wins) |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.

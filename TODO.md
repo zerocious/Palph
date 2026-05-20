@@ -24,9 +24,15 @@ Pillow-сборка ассетов, sad-pet интеграция в reminder.
 
 Спек и фазинг: [LEADERBOARD.md](LEADERBOARD.md). **Все 4 фазы shipped
 2026-05-19** в PR #3 (Phase 0 audit, Phase 1 data layer, Phase 2a view +
-privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends).
-378 тестов покрывают всю систему. После merge PR #3 — никакой
+privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
+**username-search для /friends** (BACKLOG → ship) +
+**deep-link invite-links** через `/share_friend` (BACKLOG → ship).
+**437 тестов** покрывают всю систему (включая middleware и
+end-to-end integration flows). После merge PR #3 — никакой
 открытой работы по leaderboard'у.
+
+Sad-pet reminder hook (последний бит TODO #16 на data-layer треке)
+вышел отдельным PR #4 на ветке `claude/pet-sad-reminder`, off main.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **частично, data-layer merged 2026-05-19**  
 Ценность: текущая «эмоция» привязана только к стрику и не персонализирована; полноценный питомец с реальными картинками = эмоциональная привязка → удержание; закрывает [TODO #2] в части «грустит, если сегодня не учился»  
