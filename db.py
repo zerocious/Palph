@@ -324,6 +324,25 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_user_flashcards_lookup
             ON user_flashcards(user_id, subject_id);
+
+        -- Статистика просмотров советов по продуктивности (геймификация).
+        CREATE TABLE IF NOT EXISTS user_tips_stats (
+            user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            total_views INTEGER NOT NULL DEFAULT 0,
+            last_coin_date TEXT,
+            tip_of_day_id TEXT,
+            tip_of_day_date TEXT
+        );
+
+        -- Какие советы уже показывали пользователю (для cooldown N дней).
+        CREATE TABLE IF NOT EXISTS user_tips_seen (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            tip_id TEXT NOT NULL,
+            seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, tip_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_tips_seen_user_time
+            ON user_tips_seen(user_id, seen_at);
     """)
     await db.commit()
 
@@ -368,5 +387,27 @@ async def init_db(db: aiosqlite.Connection):
         await db.commit()
     except Exception:
         pass  # колонка уже есть
+
+    for col_sql in (
+        "ALTER TABLE user_tips_stats ADD COLUMN tip_of_day_id TEXT",
+        "ALTER TABLE user_tips_stats ADD COLUMN tip_of_day_date TEXT",
+    ):
+        try:
+            await db.execute(col_sql)
+            await db.commit()
+        except Exception:
+            pass
+
+    # Миграция: индексируемые поля в events для PA-SQL (subject/mode/tip).
+    for col_sql in (
+        "ALTER TABLE events ADD COLUMN subject_id TEXT",
+        "ALTER TABLE events ADD COLUMN mode TEXT",
+        "ALTER TABLE events ADD COLUMN tip_id TEXT",
+    ):
+        try:
+            await db.execute(col_sql)
+            await db.commit()
+        except Exception:
+            pass
 
     

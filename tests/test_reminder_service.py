@@ -82,6 +82,34 @@ class TestSadPetAnimation:
             assert "🐾😢" in caption
 
 
+class TestReminderEvents:
+    async def test_evening_logs_reminder_sent(self, user_repo, db):
+        from repository import EventRepository
+
+        bot = AsyncMock()
+        bot.send_animation = AsyncMock()
+        event_repo = EventRepository(db)
+        svc = ReminderService(user_repo, bot=bot, event_repo=event_repo)
+
+        async def _evening_stub(tz, hhmm):
+            return [{"user_id": 42, "has_studied_today": 0}]
+
+        async def _morning_stub(tz, hhmm):
+            return []
+
+        svc.user_repo.get_users_due_for_evening = _evening_stub
+        svc.user_repo.get_users_due_for_morning = _morning_stub
+        await user_repo.create_user(42)
+        await svc.tick("Europe/Moscow", "21:00")
+
+        async with db.execute(
+            "SELECT event_name, properties FROM events WHERE user_id=42"
+        ) as c:
+            row = await c.fetchone()
+        assert row["event_name"] == "reminder_sent"
+        assert "evening" in row["properties"]
+
+
 class TestAssetMissingFallback:
     async def test_filenotfound_falls_back_to_text(
         self, reminder_service, monkeypatch

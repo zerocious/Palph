@@ -31,7 +31,7 @@ deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
 for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
 [TODO.md](TODO.md) и [session_notes.md](session_notes.md).
-Tests: 492 passing.
+Tests: 533 passing.
 
 ---
 
@@ -108,7 +108,7 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   пользователь видит сообщение «♻️ Таймер продолжается, осталось N мин»)
 - **Монеты** за каждую минуту учёбы + бонусы за достижения и стрик
 - **Стрики** — ежедневный шедулер в локальном TZ пользователя
-- **9 достижений** (первые сессии, длинные стрики, суммарные минуты)
+- **10 достижений** (сессии, стрики, минуты, **10 советов по продуктивности**)
 - **4 учебных режима** под несколько предметов; flow учёбы:
   **❓ Квизы → предмет → режим** (раньше было режим → предмет).
   Пустые контентом предметы/режимы автоматически скрываются
@@ -175,6 +175,13 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   coin bonus раздаются автоматически на rollover, идемпотентно.
   Backtest notebook `analysis/leaderboard_backtest.ipynb` валидирует
   формулу на исторических `events` до боевого запуска.
+- **🎓 Советы для продуктивности** (📚 Учеба): контент в [`tips/`](tips/)
+  (JSON: заголовок, тело, tags, «Попробуй сегодня»). Категории: ⏰ тайм-менеджмент,
+  🧠 запоминание, **🎯 как пользоваться ботом**, 🔗 ссылки (URL-кнопки).
+  Inline: «Ещё совет», «Все советы» (пагинация). **Контекстный подбор**
+  (таймер / не учился / карточки к повторению), **cooldown 7 дней** на повтор
+  того же `tip_id`. **+1 🪙** за первый совет дня; ачивка **«Любознательный»**
+  за 10 просмотров. **Совет дня** в 🌅 утреннем напоминании.
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user. Там же: источник
   флэш-карт (Микс/Официальные/Свои) и **📇 Мои карточки** (CRUD по предметам)
@@ -213,8 +220,9 @@ bot.py              # Хендлеры aiogram, FSM, study flow (предмет�
 db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
 repository.py       # UserRepository, SessionRepository, AdminRepository,
                     # FlashcardRepository, UserFlashcardRepository,
-                    # McqProgressRepository, TaskProgressRepository,
-                    # SubjectStatsRepository (только CRUD, без бизнес-логики)
+                    # TipsRepository, McqProgressRepository,
+                    # TaskProgressRepository, SubjectStatsRepository
+                    # (только CRUD, без бизнес-логики)
 services.py         # AchievementService, StudyService, StreakService,
                     # ReminderService, BackupService, AnalyticsService,
                     # UserRateLimiter
@@ -224,6 +232,8 @@ tasks.py            # Фоновые asyncio-шедулеры (стрики 23:5
 fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
                     # квизов и мастеров переживает рестарт
 achievements.json   # Каталог ачивок (id, иконка, описание, награда)
+tips/               # Советы по продуктивности (JSON, см. tips/README.md):
+  time-management.json, memory.json, bot-guide.json, links.json
 study_materials/    # Учебные материалы — data-driven дерево:
   industrial-management/
     situational/section-{i,ii,iii,iv}.txt   (термин ‖ опр ‖ ключи ‖ ситуация)
@@ -239,7 +249,9 @@ study_materials/    # Учебные материалы — data-driven дере
 - `user_flashcards` — пользовательские карточки (user_id, subject_id, term,
   definition; UNIQUE по term; лимит 100/subject)
 - `study_sessions` — каждая завершённая сессия (длительность, монеты, рейтинг)
-- `user_achievements` — прогресс по 9 достижениям
+- `user_achievements` — прогресс по 10 достижениям
+- `user_tips_stats` — счётчик просмотров советов, дневная монета, `tip_of_day_id/date`
+- `user_tips_seen` — cooldown: какие `tip_id` показывали (PK user+tip, `seen_at`)
 - `quiz_progress` — SRS для **ситуационных** квизов (fixed intervals)
 - `flashcard_progress` — SM-2 состояние per (user, card): ease_factor,
   interval_days, repetitions, last_review, next_review
@@ -249,7 +261,8 @@ study_materials/    # Учебные материалы — data-driven дере
 - `events` — append-only event log для PA-аналитики (одна строка на каждое
   значимое действие: registration / session_started/completed / mode_picked /
   subject_picked / quiz_answered / mcq_answered / task_attempted /
-  flashcard_reviewed / achievement_unlocked). `properties` — JSON-словарь.
+  flashcard_reviewed / achievement_unlocked / tip_viewed /
+  user_flashcard_created / user_flashcard_deleted). `properties` — JSON.
   Foundation для funnel/cohort/path-анализа.
 - `admins` — список админов (источник истины; in-memory кеш для is_admin())
 - `fsm_storage` — постоянное FSM хранилище для aiogram
@@ -265,6 +278,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
 | [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
+| [tips/README.md](tips/README.md) | Формат JSON-советов, tags, поведение бота (контекст, cooldown, совет дня) |
 
 ## Файлы инфраструктуры
 
@@ -276,7 +290,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**492 штуки**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation + **user flashcards** + flashcard source mixing) |
+| [tests/](tests/) | Юнит-тесты (**533**): baseline + flashcards + tips + **PA analytics** (cohort, funnel, product metrics, export×20) |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
@@ -300,7 +314,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **492 теста** (~28 сек):
+Покрытие — **533 теста** (~50 сек):
 
 **Pre-leaderboard baseline (185):**
 
@@ -342,6 +356,16 @@ pytest tests/test_streak_service.py -v
 |------|--------|--------------|
 | `test_user_flashcards.py` | 11 | CRUD, лимит 100/subject, hash `u{id:07x}`, удаление + cascade SM-2 progress, `flashcard_source` в settings |
 | `test_flashcard_source.py` | 5 | `load_flashcards_for_study`: mix / official / own, изоляция hash-префиксов |
+
+**Productivity tips (26, 2026-05-22):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_productivity_tips_files.py` | 7 | `tips/*.json`, кэш, inline-клавиатуры, legacy `.txt` fallback |
+| `test_tips_content.py` | 5 | JSON schema, HTML-формат, links |
+| `test_tips_gamification.py` | 6 | дневная монета, ачивка `10_tips_read`, cooldown repo |
+| `test_tips_medium_features.py` | 7 | контекстные tags, pick без seen, совет дня, bot-guide |
+| `test_morning_tip_reminder.py` | 1 | утреннее напоминание + блок «Совет дня» |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.
@@ -404,9 +428,9 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 1. **В чате** — `/analytics` показывает все ключевые метрики (cohort retention,
    funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
 2. **Снаружи (single table)** — `/export <alias>` шлёт CSV-файл любой
-   таблицы. 10 алиасов: `users`, `sessions`, `achievements`, `quiz`,
+   таблицы. 20 алиасов: `users`, `sessions`, `events`, `user_flashcards`, …
    `flashcards`, `mcq`, `tasks`, `subject_stats`, `settings`, **`events`**.
-3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 10 таблиц +
+3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 20 таблиц +
    `metadata.json`** одним сообщением. metadata содержит `exported_at`
    (UTC ISO-8601), `schema_version`, `row_counts` по каждой таблице.
    Reproducible export для Jupyter — открывай и сразу анализируй.

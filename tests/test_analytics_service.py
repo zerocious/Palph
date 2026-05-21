@@ -208,41 +208,57 @@ class TestEligibilityFilter:
 
 class TestFunnel:
     async def test_empty_db(self, analytics):
-        steps = await analytics.compute_funnel()
-        assert steps == []
+        funnel = await analytics.compute_funnel()
+        assert funnel["total_registered"] == 0
+        assert funnel["steps"] == []
+        assert funnel["event_steps"] == []
 
     async def test_user_at_first_step_only(self, db, analytics):
         await _create_user_with_signup(db, 1, days_ago=1)
-        # users.total_sessions defaults to 0 → no further funnel progress
-        steps = await analytics.compute_funnel()
-        assert len(steps) == 6
+        funnel = await analytics.compute_funnel()
+        steps = funnel["steps"]
         registered = next(s for s in steps if s["name"] == "Registered")
         started = next(s for s in steps if s["name"] == "Started studying (≥1 session)")
         assert registered["count"] == 1
         assert registered["pct"] == 1.0
+        assert registered["conv_from_prev"] is None
         assert started["count"] == 0
         assert started["pct"] == 0.0
+        assert started["conv_from_prev"] == 0.0
 
     async def test_user_with_5_sessions_advances_funnel(self, db, analytics):
         await _create_user_with_signup(db, 1, days_ago=1)
         await db.execute("UPDATE users SET total_sessions = 5 WHERE user_id = 1")
         await db.commit()
-        steps = await analytics.compute_funnel()
+        steps = (await analytics.compute_funnel())["steps"]
         assert next(s for s in steps if "5+ sessions" in s["name"])["count"] == 1
         assert next(s for s in steps if "10+ sessions" in s["name"])["count"] == 0
 
     async def test_achievement_count_correct(self, db, analytics):
         await _create_user_with_signup(db, 1, days_ago=10)
-        # Mark 3-day streak achievement as completed
         await db.execute(
             "INSERT INTO user_achievements (user_id, achievement_id, completed, progress, target) "
             "VALUES (1, '3_day_streak', 1, 3, 3)"
         )
         await db.commit()
-        steps = await analytics.compute_funnel()
+        steps = (await analytics.compute_funnel())["steps"]
         streak_step = next(s for s in steps if "3-day streak" in s["name"])
         assert streak_step["count"] == 1
         assert streak_step["pct"] == 1.0
+
+    async def test_event_funnel_counts_distinct_users(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await _create_user_with_signup(db, 2, days_ago=1)
+        ts = _ts(0)
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (1, 'session_started', '{}', ?), (2, 'session_started', '{}', ?)",
+            (ts, ts),
+        )
+        await db.commit()
+        ev_steps = (await analytics.compute_funnel())["event_steps"]
+        sess = next(s for s in ev_steps if s["name"] == "session_started")
+        assert sess["count"] == 2
 
 
 class TestEngagement:
@@ -288,6 +304,22 @@ class TestEngagement:
         await _create_user_with_signup(db, 3, days_ago=5)
         data = await analytics.compute_engagement()
         assert data["new_today"] == 2
+
+    async def test_dual_activity_metrics(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=1)
+        await _add_activity(db, 1, days_ago=0, source="study_sessions")
+        ts = _ts(0)
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (1, 'tip_viewed', '{\"tip_id\": \"tm-01\"}', ?)",
+            (ts,),
+        )
+        await db.commit()
+        data = await analytics.compute_engagement()
+        assert data["dau"] == 1
+        assert data["dau_events"] == 1
+        assert "activity_progress" in data["activity_metric_definitions"]
+        assert "activity_events" in data["activity_metric_definitions"]
 
 
 class TestFeatureUsage:
@@ -679,3 +711,116 @@ class TestHeatmap:
         await db.commit()
         data = await analytics.compute_heatmap(days=30)
         assert data["total_events"] == 0
+
+
+class TestActivationMetrics:
+    async def test_empty_db(self, analytics):
+        data = await analytics.compute_activation_metrics()
+        assert data["users_with_signup"] == 0
+        assert data["time_to_hours"] == {}
+
+    async def test_median_hours_to_session(self, db, analytics):
+        signup_ts = (datetime.now() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+        session_ts = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO users (user_id, created_at) VALUES (1, ?)", (signup_ts,)
+        )
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (1, 'session_started', '{}', ?)",
+            (session_ts,),
+        )
+        await db.commit()
+        data = await analytics.compute_activation_metrics()
+        assert data["users_with_first_session"] == 1
+        med = data["time_to_hours"]["session_started"]["median"]
+        assert med is not None
+        assert 23 <= med <= 25
+
+    async def test_pct_within_24h(self, db, analytics):
+        signup_ts = (datetime.now() - timedelta(hours=10)).strftime("%Y-%m-%d %H:%M:%S")
+        session_ts = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.execute(
+            "INSERT INTO users (user_id, created_at) VALUES (1, ?)", (signup_ts,)
+        )
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (1, 'session_started', '{}', ?)",
+            (session_ts,),
+        )
+        await db.commit()
+        data = await analytics.compute_activation_metrics()
+        assert data["pct_first_session_within_24h"] == 1.0
+
+
+class TestExportV08Tables:
+    async def test_new_aliases_exportable(self, analytics):
+        from services import AnalyticsService
+        for alias in (
+            "user_flashcards", "tips_stats", "tips_seen",
+            "pet", "pet_inventory", "friendships", "friend_requests",
+            "weekly_scores", "weekly_badges", "streak_freezes",
+        ):
+            assert alias in AnalyticsService.EXPORTABLE_TABLES
+            csv_bytes, _ = await analytics.export_table_csv(alias)
+            assert csv_bytes
+
+
+class TestContentStatsExtended:
+    async def test_flashcard_hash_split(self, db, analytics):
+        await db.execute(
+            "INSERT INTO flashcard_progress (user_id, card_hash, ease_factor) "
+            "VALUES (1, 'abc12345', 2.5), (1, 'u0000001', 2.0)"
+        )
+        await db.commit()
+        data = await analytics.compute_content_stats()
+        split = data["flashcard_hash_split"]
+        assert split["official_cards"] == 1
+        assert split["user_cards"] == 1
+
+    async def test_top_tips_from_events(self, db, analytics):
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties, created_at) "
+            "VALUES (1, 'tip_viewed', '{\"tip_id\": \"tm-01\"}', datetime('now')), "
+            "       (1, 'tip_viewed', '{\"tip_id\": \"tm-01\"}', datetime('now')), "
+            "       (2, 'tip_viewed', '{\"tip_id\": \"mem-02\"}', datetime('now'))"
+        )
+        await db.commit()
+        data = await analytics.compute_content_stats()
+        assert data["top_tips"][0]["tip_id"] == "tm-01"
+        assert data["top_tips"][0]["views"] == 2
+
+
+class TestProductMetrics:
+    async def test_empty_db(self, analytics):
+        data = await analytics.compute_product_metrics()
+        assert data["total_registered"] == 0
+
+    async def test_strict_funnel_monotonic(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=10)
+        ts = _ts(5)
+        for en in ("session_started", "subject_picked", "mode_picked"):
+            await db.execute(
+                "INSERT INTO events (user_id, event_name, properties, subject_id, mode) "
+                "VALUES (1, ?, '{}', 'math', 'flashcards')",
+                (en,),
+            )
+        await db.commit()
+        data = await analytics.compute_product_metrics()
+        counts = [s["count"] for s in data["strict_event_funnel"]]
+        assert counts == sorted(counts, reverse=True)
+
+    async def test_feature_retention_structure(self, db, analytics):
+        await _create_user_with_signup(db, 1, days_ago=10)
+        await _add_activity(db, 1, days_ago=3, source="study_sessions")
+        await db.execute(
+            "INSERT INTO events (user_id, event_name, properties) "
+            "VALUES (1, 'tip_viewed', '{\"tip_id\": \"tm-01\"}')"
+        )
+        await db.commit()
+        data = await analytics.compute_product_metrics()
+        tips = next(
+            f for f in data["feature_retention_d7"] if f["feature"] == "tips"
+        )
+        assert tips["with_feature"]["eligible"] >= 0
+        assert "rate" in tips["with_feature"]

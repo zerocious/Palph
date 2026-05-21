@@ -7,6 +7,7 @@ import re
 import random
 import hashlib
 import sqlite3
+from html import escape as html_escape
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -32,7 +33,7 @@ from aiogram.fsm.storage.base import StorageKey
 from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
-    UserFlashcardRepository,
+    UserFlashcardRepository, TipsRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
 )
@@ -120,6 +121,7 @@ mcq_repo: McqProgressRepository = None
 task_repo: TaskProgressRepository = None
 subject_stats_repo: SubjectStatsRepository = None
 event_repo: EventRepository = None
+tips_repo: TipsRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -369,6 +371,8 @@ ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="analytics", description="📊 Dashboard PA-аналитики (всё в одном)"),
     BotCommand(command="cohort_stats", description="Retention D1/D7/D30 по когортам"),
     BotCommand(command="funnel", description="Activation funnel"),
+    BotCommand(command="activation", description="Time-to-first-session & features"),
+    BotCommand(command="product_metrics", description="Subject/mode, retention D7, push"),
     BotCommand(command="dau", description="DAU/WAU/MAU + stickiness"),
     BotCommand(command="feature_usage", description="% adoption per feature"),
     BotCommand(command="segments", description="User segmentation (power/active/...)"),
@@ -450,6 +454,7 @@ def get_tips_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.button(text="⏰ Тайм-менеджмент")
     builder.button(text="🧠 Техники запоминания")
+    builder.button(text="🎯 Как пользоваться ботом")
     builder.button(text="🔗 Ссылки на статьи и книги")
     builder.button(text="⬅️ Назад к учебе")
     builder.adjust(2)
@@ -585,9 +590,123 @@ def get_quiz_answer_keyboard() -> ReplyKeyboardMarkup:
 #       └── tasks/
 STUDY_MATERIALS_PATH = Path(__file__).parent / "study_materials"
 BOT_DIR = Path(__file__).parent
+TIPS_DIR = BOT_DIR / "tips"
+
+# Legacy .txt — fallback, если JSON ещё не разложен (контентщик / старые деплои).
 TIME_MANAGEMENT_TIPS_FILE = BOT_DIR / "timemanagement.txt"
 MEMORY_RETENTION_TIPS_FILE = BOT_DIR / "memoryretention.txt"
 PRODUCTIVITY_LINKS_FILE = BOT_DIR / "links-to-productivity-material.txt"
+
+
+def _load_tips_json(filename: str) -> list[dict]:
+    """
+    Читает tips/<filename>. Ожидает {"tips": [{id, title, emoji, body, tags, action}, ...]}.
+    """
+    path = TIPS_DIR / filename
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    tips = data.get("tips", [])
+    return [t for t in tips if t.get("title") and t.get("body")]
+
+
+def _load_links_json() -> list[dict]:
+    path = TIPS_DIR / "links.json"
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [lnk for lnk in data.get("links", []) if lnk.get("title") and lnk.get("url")]
+
+
+def _load_tips_legacy_txt(path: Path, category: str) -> list[dict]:
+    """Конвертирует старый формат «эмодзи Заголовок: тело» в структуру JSON."""
+    if not path.is_file():
+        return []
+    tips: list[dict] = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        idx = line.find(": ")
+        if idx == -1:
+            tips.append({
+                "id": f"{category}-legacy-{i:02d}",
+                "title": line[:60],
+                "emoji": "",
+                "body": line,
+                "tags": ["study"],
+                "action": "",
+            })
+            continue
+        head, body = line[:idx].strip(), line[idx + 2 :].strip()
+        m = re.match(r"^(\S+)\s+(.+)$", head)
+        emoji, title = (m.group(1), m.group(2)) if m else ("", head)
+        tips.append({
+            "id": f"{category}-legacy-{i:02d}",
+            "title": title,
+            "emoji": emoji,
+            "body": body,
+            "tags": ["study"],
+            "action": "",
+        })
+    return tips
+
+
+def _load_category_tips(category: str, json_file: str, legacy_txt: Path) -> list[dict]:
+    tips = _load_tips_json(json_file)
+    if not tips:
+        tips = _load_tips_legacy_txt(legacy_txt, category)
+    return tips
+
+
+# Кэш при импорте (как achievements.json).
+TIME_MANAGEMENT_TIPS = _load_category_tips("tm", "time-management.json", TIME_MANAGEMENT_TIPS_FILE)
+MEMORY_RETENTION_TIPS = _load_category_tips("mem", "memory.json", MEMORY_RETENTION_TIPS_FILE)
+BOT_GUIDE_TIPS = _load_category_tips("bot", "bot-guide.json", BOT_DIR / "tips" / "_noop.txt")
+PRODUCTIVITY_LINKS = _load_links_json()
+if not PRODUCTIVITY_LINKS and PRODUCTIVITY_LINKS_FILE.is_file():
+    _TIP_LINK_LINE_RE = re.compile(r"^(.+?):\s*(https?://\S+)\s*$")
+    for i, line in enumerate(
+        PRODUCTIVITY_LINKS_FILE.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        line = line.strip()
+        if not line:
+            continue
+        m = _TIP_LINK_LINE_RE.match(line)
+        if m:
+            PRODUCTIVITY_LINKS.append({
+                "id": f"link-legacy-{i:02d}",
+                "title": m.group(1).strip(),
+                "url": m.group(2).strip(),
+            })
+        else:
+            url_m = re.search(r"https?://\S+", line)
+            if url_m:
+                PRODUCTIVITY_LINKS.append({
+                    "id": f"link-legacy-{i:02d}",
+                    "title": line[: url_m.start()].strip(" :") or "Ссылка",
+                    "url": url_m.group(0),
+                })
+
+TIP_CATEGORIES: dict[str, dict] = {
+    "tm": {
+        "tips": TIME_MANAGEMENT_TIPS,
+        "emoji": "⏰",
+        "title": "Тайм-менеджмент",
+    },
+    "mem": {
+        "tips": MEMORY_RETENTION_TIPS,
+        "emoji": "🧠",
+        "title": "Техники запоминания",
+    },
+    "bot": {
+        "tips": BOT_GUIDE_TIPS,
+        "emoji": "🎯",
+        "title": "Как пользоваться ботом",
+    },
+}
+TIP_COIN_PER_DAY = 1
+TIPS_SEEN_COOLDOWN_DAYS = 7
 
 # Каталог предметов: (id, label). id = имя папки в study_materials/.
 SUBJECTS: list[tuple[str, str]] = [
@@ -1015,6 +1134,11 @@ async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> N
 
     result = await friend_repo.accept_invite(creator_id, invitee_id)
     if result == "accepted":
+        await event_repo.log(
+            invitee_id,
+            "friend_accepted",
+            {"other_user_id": creator_id, "source": "invite_link"},
+        )
         await message.answer(
             f"🎉 Ты добавлен в друзья к пользователю "
             f"<code>{creator_id}</code>!",
@@ -1162,7 +1286,7 @@ FAQ_ITEMS: list[dict[str, str]] = [
         "title": "1️⃣ Какая миссия у проекта?",
         "body": (
             "Palph создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
-            "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки) с "
+            "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки, советы) с "
             "научно проверенными техниками запоминания (интервальное повторение, "
             "SM-2, active recall, Pomodoro). Получается система, которая:\n"
             "• заменяет унылую зубрёжку на серию маленьких побед,\n"
@@ -1180,6 +1304,7 @@ FAQ_ITEMS: list[dict[str, str]] = [
             "Бот объединяет несколько научно доказанных техник в один цикл: "
             "метод Помодоро (25-минутные сессии = меньше выгорания), "
             "мгновенная мотивация (монеты, достижения, эмоции питомца), "
+            "советы по продуктивности с небольшими наградами, "
             "регулярные напоминания и квизы с интервальным повторением. "
             "Ты получаешь структуру и обратную связь, которые в одиночку легко терять."
         ),
@@ -1218,7 +1343,11 @@ FAQ_ITEMS: list[dict[str, str]] = [
             "• Бонусные монеты за получение достижений (список — в профиле)\n"
             "• +1 монета за каждый правильный MCQ-ответ\n"
             "• +1 монета за каждую просмотренную флэш-карту\n"
-            "• До +3 монет за решение задачи с картинкой (зависит от попытки)"
+            "• До +3 монет за решение задачи с картинкой (зависит от попытки)\n"
+            "• +1 монета за первый совет дня в разделе «🎓 Советы для продуктивности» "
+            "(тайм-менеджмент, запоминание или «как пользоваться ботом»)\n"
+            "• Бонус за достижение «💡 Любознательный» — 10 просмотренных советов (+30 🪙)\n"
+            "• В утреннем напоминании — «совет дня» (один на календарный день)"
         ),
     },
     {
@@ -1257,6 +1386,7 @@ FAQ_ITEMS: list[dict[str, str]] = [
             "active recall встроен в каждый учебный режим:\n"
             "• Ситуационные квизы — вводишь определение по описанию ситуации\n"
             "• Флэш-карты — видишь термин, вспоминаешь, проверяешь себя\n"
+            "• Советы для продуктивности — короткие техники тайм-менеджмента и памяти\n"
             "• Тесты с выбором ответа — выбираешь правильный из 4 вариантов\n"
             "• Задачи с картинкой — решаешь и вводишь ответ\n"
             "Принцип: «если можешь объяснить — значит знаешь»."
@@ -1680,8 +1810,8 @@ class NotificationSettings:
         }
         return bool(new_value), f"{label_map[setting_type]}: {status}"
 
-    async def cycle_flashcard_source(self) -> str:
-        """mix → official → own → mix. Возвращает label нового значения."""
+    async def cycle_flashcard_source(self) -> tuple[str, str]:
+        """mix → official → own → mix. Возвращает (label, source_key)."""
         async with self.repo.db.lock:
             settings = await self.load()
             current = settings.get("flashcard_source", "mix")
@@ -1691,7 +1821,7 @@ class NotificationSettings:
             new_source = FLASHCARD_SOURCE_CYCLE[(idx + 1) % len(FLASHCARD_SOURCE_CYCLE)]
             settings["flashcard_source"] = new_source
             await self.save(settings)
-        return FLASHCARD_SOURCE_LABELS[new_source]
+        return FLASHCARD_SOURCE_LABELS[new_source], new_source
 
     async def set_time(self, slot: str, time_str: str) -> None:
         """Сохраняет утреннее/вечернее время. slot ∈ {'morning','evening'}."""
@@ -1787,7 +1917,21 @@ async def toggle_notification_setting(callback: CallbackQuery):
     _, setting_type, _ = callback.data.split(":")
     ns = NotificationSettings(callback.from_user.id, user_repo)
     try:
-        _, status_text = await ns.toggle(setting_type)
+        new_value, status_text = await ns.toggle(setting_type)
+        key_map = {
+            "morning": "morning_enabled",
+            "evening": "evening_enabled",
+            "streak": "streak_enabled",
+            "achievements": "achievements_enabled",
+        }
+        await event_repo.log(
+            callback.from_user.id,
+            "settings_changed",
+            {
+                "setting": key_map.get(setting_type, setting_type),
+                "value": int(new_value),
+            },
+        )
         await callback.message.edit_text(
             await ns.get_display_text(),
             reply_markup=await ns.get_keyboard()
@@ -1809,7 +1953,12 @@ async def cycle_flashcard_source_setting(callback: CallbackQuery):
         return
     ns = NotificationSettings(target_user_id, user_repo)
     async with db.lock:
-        new_label = await ns.cycle_flashcard_source()
+        new_label, new_source = await ns.cycle_flashcard_source()
+    await event_repo.log(
+        target_user_id,
+        "settings_changed",
+        {"setting": "flashcard_source", "value": new_source},
+    )
     await callback.message.edit_text(
         await ns.get_display_text(),
         reply_markup=await ns.get_keyboard(),
@@ -2148,6 +2297,14 @@ async def freeze_confirm(callback: CallbackQuery):
     result = await leaderboard_repo.purchase_freeze(user_id, current_streak)
 
     if result == "purchased":
+        await event_repo.log(
+            user_id,
+            "freeze_purchased",
+            {
+                "cost": freeze_cost(current_streak),
+                "streak": current_streak,
+            },
+        )
         text = (
             f"❄️ Заморозка куплена за <b>{freeze_cost(current_streak)}</b> 🪙.\n\n"
             f"🔥 Стрик: <b>{current_streak}</b> дн. — сохранится при "
@@ -2174,7 +2331,13 @@ async def toggle_privacy(callback: CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     current = await user_repo.is_hidden_from_leaderboards(user_id)
-    await user_repo.set_hidden_from_leaderboards(user_id, not current)
+    new_hidden = not current
+    await user_repo.set_hidden_from_leaderboards(user_id, new_hidden)
+    await event_repo.log(
+        user_id,
+        "leaderboard_privacy_toggled",
+        {"hidden": new_hidden},
+    )
     ns = NotificationSettings(user_id, user_repo)
     try:
         await callback.message.edit_text(
@@ -2266,6 +2429,11 @@ async def set_user_timezone(callback: CallbackQuery):
         return
     user_id = callback.from_user.id
     await user_repo.set_timezone(user_id, tz_id)
+    await event_repo.log(
+        user_id,
+        "settings_changed",
+        {"setting": "timezone", "value": tz_id},
+    )
     ns = NotificationSettings(user_id, user_repo)
     await callback.message.edit_text(
         await ns.get_display_text(),
@@ -2303,6 +2471,11 @@ async def process_time_input(message: Message, state: FSMContext):
     user_id = message.from_user.id
     ns = NotificationSettings(user_id, user_repo)
     await ns.set_time(slot, normalized)
+    await event_repo.log(
+        user_id,
+        "settings_changed",
+        {"setting": f"{slot}_time", "value": normalized},
+    )
     await state.clear()
 
     label = "утреннее" if slot == "morning" else "вечернее"
@@ -3505,40 +3678,280 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
 # ------------------------------------------------------------
 # Советы
 # ------------------------------------------------------------
+def _format_tip_message(
+    category: str,
+    tip: dict,
+    *,
+    page: int | None = None,
+    total: int | None = None,
+) -> str:
+    """HTML: жирный заголовок, тело, строка «Попробуй сегодня»."""
+    meta = TIP_CATEGORIES[category]
+    emoji = tip.get("emoji") or meta["emoji"]
+    title = html_escape(tip["title"])
+    body = html_escape(tip["body"])
+    if body and body[0].islower():
+        body = body[0].upper() + body[1:]
+    header = f"{emoji} <b>{title}</b>"
+    if page is not None and total is not None:
+        lines = [f"{meta['emoji']} {meta['title']} — {page + 1}/{total}", "", header, "", body]
+    else:
+        lines = [header, "", body]
+    action = (tip.get("action") or "").strip()
+    if action:
+        lines.extend(["", f"💡 <i>Попробуй сегодня:</i> {html_escape(action)}"])
+    return "\n".join(lines)
+
+
+def _tips_inline_keyboard(
+    category: str,
+    *,
+    list_page: int | None = None,
+    list_total: int | None = None,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if list_page is None:
+        kb.button(text="🔄 Ещё совет", callback_data=f"tips:more:{category}")
+        kb.button(text="📋 Все советы", callback_data=f"tips:list:{category}:0")
+        kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+        kb.adjust(2, 1)
+    else:
+        if list_page > 0:
+            kb.button(text="◀️", callback_data=f"tips:list:{category}:{list_page - 1}")
+        kb.button(text="🔄 Случайный", callback_data=f"tips:more:{category}")
+        if list_total and list_page < list_total - 1:
+            kb.button(text="▶️", callback_data=f"tips:list:{category}:{list_page + 1}")
+        kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+        kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def _productivity_links_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for link in PRODUCTIVITY_LINKS:
+        title = link["title"]
+        label = title if len(title) <= 64 else f"{title[:61]}…"
+        kb.button(text=label, url=link["url"])
+    kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def _user_local_date_str(user: dict | None) -> str:
+    tz_name = (user or {}).get("timezone") or "Europe/Moscow"
+    try:
+        return datetime.now(pytz.timezone(tz_name)).date().isoformat()
+    except Exception:
+        return datetime.now(pytz.timezone("Europe/Moscow")).date().isoformat()
+
+
+def _category_key_from_tip_id(tip_id: str) -> str:
+    """tm-01 → tm, bot-03 → bot."""
+    return tip_id.split("-", 1)[0] if tip_id and "-" in tip_id else "tm"
+
+
+def _all_tips_flat() -> list[dict]:
+    out: list[dict] = []
+    for meta in TIP_CATEGORIES.values():
+        out.extend(meta["tips"])
+    return out
+
+
+async def _preferred_tip_tags(user_id: int) -> set[str]:
+    """Контекст пользователя → приоритетные tags для подбора совета."""
+    tags: set[str] = set()
+    if user_id in active_timers:
+        tags.add("timer")
+    user = await user_repo.get_user(user_id)
+    if user and not user.get("has_studied_today"):
+        tags.update({"study", "focus", "timer", "bot"})
+    if await tips_repo.user_has_flashcards_due(user_id):
+        tags.add("flashcards")
+    return tags
+
+
+async def _pick_tip(user_id: int, category: str) -> dict | None:
+    """Совет с учётом cooldown (7 дн.) и контекста (таймер, стрик, карточки)."""
+    tips = TIP_CATEGORIES.get(category, {}).get("tips", [])
+    if not tips:
+        return None
+    seen = await tips_repo.get_recently_seen_tip_ids(user_id, TIPS_SEEN_COOLDOWN_DAYS)
+    pool = [t for t in tips if t["id"] not in seen] or list(tips)
+    preferred = await _preferred_tip_tags(user_id)
+    if preferred:
+        tagged = [t for t in pool if preferred & set(t.get("tags", []))]
+        if tagged:
+            pool = tagged
+    return random.choice(pool)
+
+
+async def build_morning_tip_block(user_id: int, tz: str) -> str:
+    """HTML-блок «совет дня» для утреннего напоминания."""
+    user = await user_repo.get_user(user_id)
+    local_date = _user_local_date_str(user)
+    tip = await tips_repo.resolve_tip_of_day(user_id, local_date, _all_tips_flat())
+    if not tip:
+        return ""
+    cat_key = _category_key_from_tip_id(tip["id"])
+    if cat_key not in TIP_CATEGORIES:
+        cat_key = "tm"
+    body = _format_tip_message(cat_key, tip)
+    return f"\n\n———\n🌟 <b>Совет дня</b>\n\n{body}"
+
+
+async def _on_tip_viewed(user_id: int, category: str, tip_id: str | None = None) -> str:
+    """Монета за первый совет дня, ачивка за 10 советов, событие tip_viewed."""
+    if category not in TIP_CATEGORIES:
+        return ""
+    if tip_id:
+        await tips_repo.record_seen(user_id, tip_id)
+    user = await user_repo.get_user(user_id)
+    local_date = _user_local_date_str(user)
+    total_views, coin_granted = await tips_repo.record_view(user_id, local_date)
+
+    if coin_granted:
+        await user_repo.add_coins(user_id, TIP_COIN_PER_DAY)
+
+    new_ach, ach_bonus = await ach_service.check_tips_award(user_id, total_views)
+    if ach_bonus:
+        await user_repo.add_coins(user_id, ach_bonus)
+
+    await event_repo.log(user_id, "tip_viewed", {
+        "category": category,
+        "tip_id": tip_id,
+        "total_views": total_views,
+        "coin_granted": coin_granted,
+    })
+    for ach_id in new_ach:
+        await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
+    if new_ach:
+        await send_achievement_notification(user_id, new_ach)
+
+    lines: list[str] = []
+    if coin_granted:
+        lines.append(f"\n\n+{TIP_COIN_PER_DAY} 🪙 за совет сегодня")
+    if new_ach:
+        tip_reward = ACHIEVEMENTS.get("10_tips_read", {}).get("reward", 30)
+        lines.append(f"\n🏆 Достижение «Любознательный» — +{tip_reward} 🪙")
+    elif total_views < 10:
+        lines.append(f"\n\n📊 Прочитано советов: {total_views}/10")
+    return "".join(lines)
+
+
+async def _send_random_tip(message: Message, category: str) -> None:
+    tip = await _pick_tip(message.from_user.id, category)
+    if not tip:
+        await message.answer("Советы пока не загружены.")
+        return
+    suffix = await _on_tip_viewed(message.from_user.id, category, tip.get("id"))
+    await message.answer(
+        _format_tip_message(category, tip) + suffix,
+        reply_markup=_tips_inline_keyboard(category),
+        parse_mode="HTML",
+    )
+
+
+async def _edit_or_send_tip(
+    callback: CallbackQuery,
+    category: str,
+    tip: dict,
+    *,
+    page: int | None = None,
+) -> None:
+    tips = TIP_CATEGORIES[category]["tips"]
+    total = len(tips)
+    suffix = await _on_tip_viewed(callback.from_user.id, category, tip.get("id"))
+    body = _format_tip_message(
+        category, tip, page=page, total=total if page is not None else None,
+    ) + suffix
+    markup = _tips_inline_keyboard(
+        category,
+        list_page=page,
+        list_total=total if page is not None else None,
+    )
+    try:
+        await callback.message.edit_text(body, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(body, reply_markup=markup, parse_mode="HTML")
+
+
 @router.message(F.text == "🎓 Советы для продуктивности")
 async def handle_tips_menu(message: Message):
     await message.answer("📚 Выберите категорию:", reply_markup=get_tips_keyboard())
 
+
 @router.message(F.text == "⏰ Тайм-менеджмент")
 async def handle_time_management(message: Message):
-    try:
-        with open(TIME_MANAGEMENT_TIPS_FILE, "r", encoding="utf-8") as f:
-            tips = [line.strip() for line in f if line.strip()]
-        await message.answer(f"⏰ Совет:\n\n{random.choice(tips)}")
-    except FileNotFoundError:
-        await message.answer("Файл с советами не найден.")
-    except (IndexError, ValueError):
-        await message.answer("Файл с советами пуст.")
+    await _send_random_tip(message, "tm")
+
 
 @router.message(F.text == "🧠 Техники запоминания")
 async def handle_memory_retention(message: Message):
-    try:
-        with open(MEMORY_RETENTION_TIPS_FILE, "r", encoding="utf-8") as f:
-            tips = [line.strip() for line in f if line.strip()]
-        await message.answer(f"🧠 Совет:\n\n{random.choice(tips)}")
-    except FileNotFoundError:
-        await message.answer("Файл с советами не найден.")
-    except (IndexError, ValueError):
-        await message.answer("Файл с советами пуст.")
+    await _send_random_tip(message, "mem")
+
+
+@router.message(F.text == "🎯 Как пользоваться ботом")
+async def handle_bot_guide_tips(message: Message):
+    await _send_random_tip(message, "bot")
+
 
 @router.message(F.text == "🔗 Ссылки на статьи и книги")
 async def handle_links(message: Message):
+    if not PRODUCTIVITY_LINKS:
+        await message.answer("Файл со ссылками пуст.")
+        return
+    await message.answer(
+        "📚 Полезные материалы — нажми кнопку, чтобы открыть:",
+        reply_markup=_productivity_links_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("tips:more:"))
+async def handle_tips_more(callback: CallbackQuery):
+    category = callback.data.split(":", 2)[2]
+    if category not in TIP_CATEGORIES:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+    tips = TIP_CATEGORIES[category]["tips"]
+    if not tips:
+        await callback.answer("Советы пусты", show_alert=True)
+        return
+    await callback.answer()
+    tip = await _pick_tip(callback.from_user.id, category)
+    if not tip:
+        await callback.answer("Советы пусты", show_alert=True)
+        return
+    await _edit_or_send_tip(callback, category, tip)
+
+
+@router.callback_query(F.data.startswith("tips:list:"))
+async def handle_tips_list(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer()
+        return
+    category = parts[2]
     try:
-        with open(PRODUCTIVITY_LINKS_FILE, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        await message.answer(f"📚 Полезные материалы:\n\n{content}")
-    except FileNotFoundError:
-        await message.answer("Файл со ссылками не найден.")
+        page = int(parts[3])
+    except ValueError:
+        await callback.answer()
+        return
+    if category not in TIP_CATEGORIES:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+    tips = TIP_CATEGORIES[category]["tips"]
+    if not tips:
+        await callback.answer("Советы пусты", show_alert=True)
+        return
+    page = max(0, min(page, len(tips) - 1))
+    await callback.answer()
+    await _edit_or_send_tip(callback, category, tips[page], page=page)
+
+
+@router.callback_query(F.data == "tips:menu")
+async def handle_tips_menu_callback(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("📚 Выберите категорию:", reply_markup=get_tips_keyboard())
 
 # ------------------------------------------------------------
 # Админка и обратная связь
@@ -3892,6 +4305,33 @@ def _render_content_stats(data: dict) -> str:
         lines.append(f"  • 2.0–2.5:              {ef['2_to_2_5']:>3} ({pct(ef['2_to_2_5'])})")
         lines.append(f"  • EF ≥ 2.5 (лёгкие):    {ef['gte_2_5']:>3} ({pct(ef['gte_2_5'])})")
         lines.append(f"  <i>Чем ниже EF — тем сложнее карта пользователю по SM-2.</i>")
+    lines.append("")
+
+    split = data.get("flashcard_hash_split") or {}
+    lines.append("🃏 <b>Flashcards: official vs user</b> (SM-2 rows):")
+    if not split.get("total"):
+        lines.append("  <i>нет данных</i>")
+    else:
+        lines.append(f"  • Official: {split.get('official_cards', 0)}")
+        lines.append(f"  • User (u* hash): {split.get('user_cards', 0)}")
+    lines.append("")
+
+    lines.append("📚 <b>Subject engagement</b> (visits):")
+    for item in data.get("subject_engagement") or []:
+        lines.append(
+            f"  • {item['subject_id']}: {item['total_visits']} visits, "
+            f"{item['users']} users"
+        )
+    if not data.get("subject_engagement"):
+        lines.append("  <i>нет данных</i>")
+    lines.append("")
+
+    lines.append("🎓 <b>Top tips</b> (tip_viewed events):")
+    if not data.get("top_tips"):
+        lines.append("  <i>нет данных</i>")
+    else:
+        for item in data["top_tips"]:
+            lines.append(f"  • {item['tip_id']}: {item['views']} views")
     return "\n".join(lines)
 
 
@@ -3947,31 +4387,154 @@ def _render_heatmap(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _render_funnel(steps: list[dict]) -> str:
+def _render_funnel(steps: list[dict], *, show_conv: bool = True) -> str:
     if not steps:
         return "Пока нет пользователей."
-    # Самое длинное имя — для выравнивания
     max_name = max(len(s["name"]) for s in steps)
     lines = []
     for s in steps:
         bar_count = int(s["pct"] * 10)
         bar = "█" * bar_count + "░" * (10 - bar_count)
+        conv = s.get("conv_from_prev")
+        conv_str = f"  →{conv*100:4.0f}%" if show_conv and conv is not None else ""
         lines.append(
-            f"{s['name']:<{max_name}} {bar} {s['pct']*100:5.1f}% ({s['count']})"
+            f"{s['name']:<{max_name}} {bar} {s['pct']*100:5.1f}% ({s['count']}){conv_str}"
         )
+    return "\n".join(lines)
+
+
+def _render_activation_metrics(data: dict) -> str:
+    if data.get("users_with_signup", 0) == 0:
+        return "Пока нет пользователей."
+    lines = [
+        f"Users with signup: {data['users_with_signup']}",
+        f"Users with 1st session (events): {data.get('users_with_first_session', 0)}",
+    ]
+    p24 = data.get("pct_first_session_within_24h")
+    p7 = data.get("pct_first_session_within_7d")
+    if p24 is not None:
+        lines.append(f"1st session within 24h: {p24*100:.1f}% of registered")
+    if p7 is not None:
+        lines.append(f"1st session within 7d:  {p7*100:.1f}% of registered")
+    lines.append("")
+    lines.append("Time to first event (hours, median / p75, n):")
+    for en, stats in (data.get("time_to_hours") or {}).items():
+        med = stats.get("median")
+        p75 = stats.get("p75")
+        n = stats.get("n", 0)
+        med_s = f"{med:.1f}" if med is not None else "—"
+        p75_s = f"{p75:.1f}" if p75 is not None else "—"
+        lines.append(f"  {en:<22} {med_s:>6} / {p75_s:>6}  (n={n})")
+    return "\n".join(lines)
+
+
+def _pct_str(rate: float | None) -> str:
+    return f"{rate * 100:.1f}%" if rate is not None else "—"
+
+
+def _render_product_metrics(data: dict) -> str:
+    if data.get("total_registered", 0) == 0:
+        return "Пока нет пользователей."
+    total = data["total_registered"]
+    lines = [f"Registered: {total}", ""]
+
+    lines.append("📚 By subject (subject_picked → mode → quiz):")
+    if not data.get("funnel_by_subject"):
+        lines.append("  (нет данных)")
+    else:
+        for row in data["funnel_by_subject"]:
+            lines.append(
+                f"  {row['subject_id']}: subj {row['picked_subject']} "
+                f"({row['pct_registered']*100:.0f}%) · mode {row['picked_mode']} "
+                f"· quiz {row['quiz_answered']}"
+            )
+    lines.append("")
+
+    lines.append("🎯 By mode (mode_picked):")
+    for row in data.get("funnel_by_mode") or []:
+        lines.append(
+            f"  {row['mode']}: {row['users']} ({row['pct_registered']*100:.0f}%)"
+        )
+    lines.append("")
+
+    lines.append("🔒 Strict event funnel (ever did steps 1..k):")
+    for s in data.get("strict_event_funnel") or []:
+        prev = s.get("pct_of_prev")
+        prev_s = f" →{_pct_str(prev)}" if prev is not None else ""
+        lines.append(
+            f"  {s['name']}: {s['count']} ({s['pct_registered']*100:.0f}%){prev_s}"
+        )
+    lines.append("")
+
+    lines.append("📅 Activation by signup week:")
+    for c in data.get("activation_by_cohort") or []:
+        med = c.get("median_hours_to_session")
+        med_s = f"{med:.0f}h" if med is not None else "—"
+        lines.append(
+            f"  {c['week']}: n={c['users_with_session']} "
+            f"med→session {med_s} · 24h {_pct_str(c.get('pct_session_within_24h'))}"
+        )
+    lines.append("")
+
+    lines.append("📈 Feature retention D7 (active on signup+7):")
+    for fr in data.get("feature_retention_d7") or []:
+        w = fr["with_feature"]
+        wo = fr["without_feature"]
+        lines.append(
+            f"  {fr['feature']}: WITH {_pct_str(w['rate'])} "
+            f"({w['retained_d7']}/{w['eligible']}) · "
+            f"WITHOUT {_pct_str(wo['rate'])} "
+            f"({wo['retained_d7']}/{wo['eligible']})"
+        )
+    lines.append("")
+
+    mre = data.get("morning_reminder_effect") or {}
+    lines.append("🌅 Morning push → session same day:")
+    lines.append(
+        f"  pushes: {mre.get('morning_push_pairs', 0)} · "
+        f"converted: {mre.get('same_day_session', 0)} · "
+        f"rate: {_pct_str(mre.get('conversion_rate'))}"
+    )
+    lines.append("")
+
+    lb = data.get("leaderboard") or {}
+    lines.append("🏆 Leaderboard:")
+    lines.append(
+        f"  weekly_score rows: {lb.get('users_with_weekly_score', 0)} · "
+        f"viewed: {lb.get('leaderboard_viewed_users', 0)} · "
+        f"hidden: {lb.get('hidden_from_leaderboard', 0)} · "
+        f"freezes: {lb.get('freeze_purchases', 0)} "
+        f"({lb.get('users_bought_freeze', 0)} users)"
+    )
+    lines.append("")
+
+    lines.append("🔔 Notification funnel:")
+    for step in data.get("notification_funnel") or []:
+        lines.append(f"  {step['step']}: {step['count']}")
     return "\n".join(lines)
 
 
 def _render_engagement(data: dict) -> str:
     stickiness = data["stickiness"]
     stick_str = f"{stickiness * 100:.1f}%" if stickiness is not None else "—"
+    stick_ev = data.get("stickiness_events")
+    stick_ev_str = f"{stick_ev * 100:.1f}%" if stick_ev is not None else "—"
     lines = [
         f"Today:                  {data['today']}",
         f"New users today:        {data['new_today']}",
-        f"DAU:                    {data['dau']}",
-        f"WAU (last 7 days):      {data['wau']}",
-        f"MAU (last 30 days):     {data['mau']}",
-        f"Stickiness (DAU/MAU):   {stick_str}",
+        "",
+        "activity_progress (progress tables):",
+        f"  DAU:                  {data['dau']}",
+        f"  WAU (7d):             {data['wau']}",
+        f"  MAU (30d):            {data['mau']}",
+        f"  Stickiness:           {stick_str}",
+        "",
+        "activity_events (events table):",
+        f"  DAU:                  {data.get('dau_events', 0)}",
+        f"  WAU (7d):             {data.get('wau_events', 0)}",
+        f"  MAU (30d):            {data.get('mau_events', 0)}",
+        f"  Stickiness:           {stick_ev_str}",
+        "",
         f"Total registered:       {data['total_users']}",
     ]
     return "\n".join(lines)
@@ -3997,14 +4560,16 @@ async def cmd_funnel(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("❌ Команда только для админов.")
         return
-    steps = await analytics_service.compute_funnel()
-    body = _render_funnel(steps)
+    funnel = await analytics_service.compute_funnel()
+    body = _render_funnel(funnel.get("steps") or [])
+    ev_body = _render_funnel(funnel.get("event_steps") or [])
     note = (
-        "\n\n<i>% считается от всех зарегистрированных. Шаги не обязательно strict-subsets "
-        "(3-day streak ≠ subset of 10+ sessions), поэтому пропорции могут не убывать монотонно.</i>"
+        "\n\n<i>% от registered; →% = conversion от предыдущего шага. "
+        "Верхний блок — progress + events mix; нижний — только events.</i>"
     )
     await message.answer(
-        f"📊 <b>Activation funnel</b>\n\n<pre>{body}</pre>{note}",
+        f"📊 <b>Activation funnel</b>\n\n<pre>{body}</pre>\n\n"
+        f"<b>Event funnel</b>\n<pre>{ev_body}</pre>{note}",
         parse_mode="HTML",
     )
 
@@ -4018,11 +4583,47 @@ async def cmd_dau(message: Message):
     data = await analytics_service.compute_engagement()
     body = _render_engagement(data)
     note = (
-        "\n\n<i>Активность = любое событие (Pomodoro / квиз / флэш / MCQ / задача / визит). "
-        "Stickiness ≥20% — типичный benchmark для consumer apps.</i>"
+        "\n\n<i><b>Две метрики:</b> activity_progress (progress tables) — cohort/segments; "
+        "activity_events (events table) — heatmap/timeline. Могут расходиться. "
+        "Stickiness ≥20% — benchmark.</i>"
     )
     await message.answer(
         f"👥 <b>Active users</b>\n\n<pre>{body}</pre>{note}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("activation"))
+async def cmd_activation(message: Message):
+    """Time-to-first-session и time-to-first-feature (из events)."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_activation_metrics()
+    body = _render_activation_metrics(data)
+    await message.answer(
+        f"⏱️ <b>Activation & time-to-value</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>Медиана часов от signup до первого event_name. "
+        f"24h/7d — доля всех registered с session_started в окне.</i>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("product_metrics"))
+async def cmd_product_metrics(message: Message):
+    """Продуктовые метрики: subject/mode, strict funnel, D7 retention, push, LB."""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Команда только для админов.")
+        return
+    data = await analytics_service.compute_product_metrics()
+    body = _render_product_metrics(data)
+    note = (
+        "\n\n<i>Strict funnel = пользователи, у которых ever были ВСЕ шаги 1..k. "
+        "D7 retention = активность ровно на signup+7 (activity_progress). "
+        "Утро: reminder_sent(morning) и session_started в один календарный день.</i>"
+    )
+    await message.answer(
+        f"📈 <b>Product metrics</b>\n\n<pre>{body}</pre>{note}",
         parse_mode="HTML",
     )
 
@@ -4233,6 +4834,8 @@ def _build_analytics_menu_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔁 Cohort retention",                callback_data="anlt:cohort")
     kb.button(text="🎯 Activation funnel",               callback_data="anlt:funnel")
+    kb.button(text="⏱️ Time-to-value",                   callback_data="anlt:activation")
+    kb.button(text="📈 Product metrics",                 callback_data="anlt:product")
     kb.button(text="👥 Active users (DAU/WAU/MAU)",      callback_data="anlt:dau")
     kb.button(text="🎮 Feature adoption",                callback_data="anlt:features")
     kb.button(text="🧑‍🤝‍🧑 User segments",                callback_data="anlt:segments")
@@ -4308,15 +4911,55 @@ async def handle_anlt_cohort(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "anlt:activation")
+async def handle_anlt_activation(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_activation_metrics()
+    body = _render_activation_metrics(data)
+    text = (
+        f"⏱️ <b>Activation & time-to-value</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>Часы от signup до первого события (events table).</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=activation reason=%s", e)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "anlt:product")
+async def handle_anlt_product(callback: CallbackQuery):
+    if not await _anlt_check_admin(callback):
+        return
+    data = await analytics_service.compute_product_metrics()
+    body = _render_product_metrics(data)
+    text = (
+        f"📈 <b>Product metrics</b>\n\n<pre>{body}</pre>\n\n"
+        f"<i>Subject/mode из events; strict funnel; D7 retention; push/LB.</i>"
+    )
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=_build_analytics_back_keyboard(), parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning("anlt.edit_failed view=product reason=%s", e)
+    await callback.answer()
+
+
 @router.callback_query(F.data == "anlt:funnel")
 async def handle_anlt_funnel(callback: CallbackQuery):
     if not await _anlt_check_admin(callback):
         return
-    steps = await analytics_service.compute_funnel()
-    body = _render_funnel(steps)
+    funnel = await analytics_service.compute_funnel()
+    body = _render_funnel(funnel.get("steps") or [])
+    ev_body = _render_funnel(funnel.get("event_steps") or [])
     text = (
         f"🎯 <b>Activation funnel</b>\n\n<pre>{body}</pre>\n\n"
-        f"<i>% считается от total registered. Шаги — не strict-subsets.</i>"
+        f"<b>Event funnel</b>\n<pre>{ev_body}</pre>\n\n"
+        f"<i>% от registered; →% = conv от prev step.</i>"
     )
     try:
         await callback.message.edit_text(
@@ -4335,8 +4978,8 @@ async def handle_anlt_dau(callback: CallbackQuery):
     body = _render_engagement(data)
     text = (
         f"👥 <b>Active users</b>\n\n<pre>{body}</pre>\n\n"
-        f"<i>Активность = любое событие (Pomodoro / квиз / флэш / MCQ / задача). "
-        f"Stickiness ≥20% — benchmark для consumer apps.</i>"
+        f"<i>activity_progress vs activity_events — см. admin_commands.md. "
+        f"Stickiness ≥20% — benchmark.</i>"
     )
     try:
         await callback.message.edit_text(
@@ -4653,6 +5296,7 @@ async def cmd_leaderboard(message: Message):
     try:
         text = await leaderboard_service.render_leaderboard(user_id)
         await message.answer(text, parse_mode="HTML")
+        await event_repo.log(user_id, "leaderboard_viewed", {})
     except Exception as e:
         logger.warning(
             "leaderboard.render_failed user=%s err=%s detail=%s",
@@ -4885,6 +5529,11 @@ async def pet_equip(callback: CallbackQuery):
         show_alert=not success,
     )
     if success:
+        await event_repo.log(
+            user_id,
+            "pet_equipped",
+            {"item_type": item_type, "item_value": item_value},
+        )
         await _render_picker(callback, item_type)
 
 
@@ -4960,6 +5609,12 @@ async def pet_buy_do(callback: CallbackQuery):
         feedback_map.get(result, "Что-то пошло не так."),
         show_alert=(result != "purchased"),
     )
+    if result == "purchased":
+        await event_repo.log(
+            user_id,
+            "pet_purchased",
+            {"item_type": item_type, "item_value": item_value},
+        )
     await _render_picker(callback, item_type)
 
 
@@ -5006,6 +5661,11 @@ async def pet_rename_process(message: Message, state: FSMContext):
     ok = await pet_repo.rename(user_id, new_name)
     await state.clear()
     if ok:
+        await event_repo.log(
+            user_id,
+            "pet_renamed",
+            {"name": new_name[:20]},
+        )
         await message.answer(f"✅ Питомец теперь называется «{new_name}».")
     else:
         await message.answer(
@@ -5204,6 +5864,18 @@ async def friend_add_process(message: Message, state: FSMContext):
 
     await state.clear()
     result = await friend_repo.send_request(user_id, target_id)
+    if result == "sent":
+        await event_repo.log(
+            user_id,
+            "friend_request_sent",
+            {"target_user_id": target_id},
+        )
+    elif result == "auto_accepted":
+        await event_repo.log(
+            user_id,
+            "friend_accepted",
+            {"other_user_id": target_id, "source": "auto_accept"},
+        )
 
     feedback_map = {
         "self_target": "🙂 Нельзя добавить самого себя.",
@@ -5307,6 +5979,11 @@ async def friend_accept(callback: CallbackQuery):
     if not accepted:
         await callback.answer("Запрос уже не активен.", show_alert=True)
     else:
+        await event_repo.log(
+            me,
+            "friend_accepted",
+            {"other_user_id": from_uid, "source": "request_accept"},
+        )
         # Notify requester
         try:
             await bot.send_message(
@@ -5424,6 +6101,11 @@ async def friend_remove_do(callback: CallbackQuery):
     except (ValueError, IndexError):
         return
     await friend_repo.remove_friend(me, target)
+    await event_repo.log(
+        me,
+        "friend_removed",
+        {"other_user_id": target},
+    )
     text = await leaderboard_service.render_friends_tab(me)
     pending = await friend_repo.get_pending_received(me)
     try:
@@ -5461,14 +6143,16 @@ async def cmd_help(message: Message):
         "/analytics — 🎯 единый dashboard со всеми разделами (рекомендую)\n"
         "/cohort_stats — D1/D7/D30 retention по неделям регистрации\n"
         "/funnel — activation funnel (% от регистраций)\n"
-        "/dau — DAU / WAU / MAU + stickiness ratio\n"
+        "/activation — time-to-value (медиана часов до первых событий)\n"
+        "/product_metrics — subject/mode, strict funnel, D7 retention, push, LB\n"
+        "/dau — DAU / WAU / MAU (activity_progress + activity_events)\n"
         "/feature_usage — % adoption per feature\n"
         "/segments — user segmentation (power / active / tried / churned / never_started)\n"
         "/content_stats — hardest terms, popular MCQ, EF distribution\n"
         "/event_timeline [hours] — лента событий за последние N часов (default 24)\n"
         "/heatmap [days] — heatmap активности (часы × дни недели, default 30 дней)\n"
         "/export &lt;alias&gt; — CSV-дамп одной таблицы\n"
-        "/export all — ZIP всех 10 таблиц + metadata.json (для Jupyter)\n"
+        "/export all — ZIP всех таблиц + metadata.json (для Jupyter)\n"
         "/parse_logs — bot.log + rotated → events CSV (historical backfill)\n"
     )
     if is_main:
@@ -5670,7 +6354,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -5682,6 +6366,7 @@ async def main():
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)
     event_repo = EventRepository(db)
+    tips_repo = TipsRepository(db)
     pet_repo = PetRepository(db)
     leaderboard_repo = LeaderboardRepository(db)
     friend_repo = FriendRepository(db)
@@ -5712,7 +6397,11 @@ async def main():
     dp.callback_query.middleware(rl_middleware)
     dp.include_router(router)
     streak_service = StreakService(user_repo, bot, leaderboard_repo=leaderboard_repo)
-    reminder_service = ReminderService(user_repo, bot)
+    reminder_service = ReminderService(
+        user_repo, bot,
+        morning_tip_builder=build_morning_tip_block,
+        event_repo=event_repo,
+    )
     # Backup сервис: snapshot БД раз в сутки после streak processing.
     # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;
     # в Docker — указываются в docker-compose чтобы лежали на mounted /data.

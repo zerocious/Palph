@@ -4,12 +4,56 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-22 (productivity tips — full stack)
+
+Goal: починить «файл не найден», довести советы до production-quality:
+JSON-контент, inline UX, геймификация, контекст + совет дня в утреннем напоминании.
+
+**Итог:** shipped; **518 тестов** зелёных (492 → +26).
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Paths | Загрузка советов через `Path(__file__).parent` (`BOT_DIR`), не cwd | [bot.py](bot.py) |
+| 2 | Content | `tips/*.json` (time-management, memory, links, bot-guide); HTML-формат; `action` line | [tips/](tips/) |
+| 3 | UX | Кэш при старте; inline «🔄 Ещё совет», «📋 Все советы», пагинация, URL-кнопки | [bot.py](bot.py) |
+| 4 | Schema | `user_tips_stats`, `user_tips_seen`; `tip_of_day_id/date` | [db.py](db.py) |
+| 5 | Repository | `TipsRepository`: record_view, record_seen, resolve_tip_of_day, flashcards_due | [repository.py](repository.py) |
+| 6 | Gamification | +1🪙/день; ачивка `10_tips_read` («Любознательный»); event `tip_viewed` | [bot.py](bot.py), [services.py](services.py), [achievements.json](achievements.json) |
+| 7 | Medium | Контекстные tags (timer / not studied / cards due); cooldown 7д; совет дня в 🌅 | [bot.py](bot.py), [services.py](services.py) |
+| 8 | FAQ | earn_coins, mission, efficiency, active_recall — про советы и bot-guide | [bot.py](bot.py) |
+| 9 | Tests | 26 новых: files, content, gamification, medium, morning reminder | [tests/test_productivity_tips_files.py](tests/test_productivity_tips_files.py), … |
+
+### Productivity tips — поведение
+
+- **Категории:** ⏰ тайм-менеджмент, 🧠 память, 🎯 как пользоваться ботом, 🔗 ссылки.
+- **Контекст:** активный таймер → `timer`; не учился сегодня → `study`/`focus`/`bot`; есть due cards → `flashcards`.
+- **Cooldown:** `user_tips_seen` — не повторять тот же `tip_id` 7 календарных дней (если пул пуст — показать снова).
+- **Совет дня:** стабильный `tip_id` на день в TZ пользователя; в утреннем reminder через `ReminderService(morning_tip_builder=...)`.
+- **Монета:** первая «полноценная» просмотр-сессия за день → +1🪙; совет дня в reminder **не** считает view.
+- **Ачивка:** 10 просмотров (`total_views`) → `10_tips_read`, +30🪙.
+
+### Known issue
+
+Пагинация списка (`tips:list` ◀️/▶️) вызывает тот же hook, что random/more → можно нафармить счётчик ачивки быстрее 10 уникальных советов. Монета не эксплуатируется (1/день). Отложено в BACKLOG.
+
+### Verification
+
+- `python -m pytest tests/` — **518 passed** (~53s)
+
+### Docs
+
+- Все 7 `*.md` синхронизированы (518 tests, tips architecture, events).
+
+---
+
 ## Session — 2026-05-22 (user flashcards feature)
 
 Goal: пользовательские флэш-карточки по предметам, новый flow учёбы
 «предмет → режим», настройка источника карточек (микс / официальные / свои).
 
-**Итог:** feature shipped; **492 теста** зелёных (476 baseline + 16 новых).
+**Итог:** feature shipped; **492 теста** зелёных на момент merge (476 baseline + 16 новых); после tips — **518**.
 
 ### Changes
 

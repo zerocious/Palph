@@ -151,3 +151,48 @@ class TestErrorSwallowing:
         async with db.execute("SELECT COUNT(*) FROM events WHERE event_name='fail'") as c:
             row = await c.fetchone()
         assert row[0] == 0
+
+
+class TestIndexedColumns:
+    async def test_subject_id_from_properties(self, event_repo, created_user, db):
+        await event_repo.log(
+            created_user,
+            "subject_picked",
+            {"subject_id": "math"},
+        )
+        async with db.execute(
+            "SELECT subject_id, mode, tip_id FROM events WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            row = await c.fetchone()
+        assert row["subject_id"] == "math"
+        assert row["mode"] is None
+        assert row["tip_id"] is None
+
+    async def test_explicit_dimensions_override_properties(self, event_repo, created_user, db):
+        await event_repo.log(
+            created_user,
+            "tip_viewed",
+            {"tip_id": "from-json", "category": "tm"},
+            tip_id="explicit-id",
+        )
+        async with db.execute(
+            "SELECT tip_id FROM events WHERE user_id=?", (created_user,)
+        ) as c:
+            row = await c.fetchone()
+        assert row["tip_id"] == "explicit-id"
+
+    async def test_mode_column(self, event_repo, created_user, db):
+        await event_repo.log(
+            created_user,
+            "mode_picked",
+            {"mode": "flashcards", "subject_id": "opm"},
+            mode="flashcards",
+            subject_id="opm",
+        )
+        async with db.execute(
+            "SELECT subject_id, mode FROM events WHERE user_id=?", (created_user,)
+        ) as c:
+            row = await c.fetchone()
+        assert row["subject_id"] == "opm"
+        assert row["mode"] == "flashcards"

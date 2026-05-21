@@ -232,6 +232,24 @@ class AchievementService:
 
         return new_achievements, bonus_coins
 
+    async def check_tips_award(self, user_id: int, tips_views: int) -> tuple[list, int]:
+        """
+        Достижение «10 советов по продуктивности» (10_tips_read).
+        Вызывается после каждого просмотра совета; tips_views — накопительный счётчик.
+        """
+        ach_id = "10_tips_read"
+        target = 10
+        if ach_id not in self.definitions:
+            return [], 0
+        user_achievements = await self._load_user_achievements(user_id)
+        if self._is_completed(user_achievements, ach_id):
+            return [], 0
+        if tips_views >= target:
+            await self._complete_achievement(user_id, ach_id, target=target)
+            return [ach_id], self._get_reward(ach_id)
+        await self._update_progress(user_id, ach_id, progress=tips_views, target=target)
+        return [], 0
+
     def _get_reward(self, ach_id: str) -> int:
         return self.definitions[ach_id]["reward"]
 
@@ -634,9 +652,18 @@ class ReminderService:
     Отправка утренних и вечерних напоминаний.
     Вызывается планировщиком раз в минуту для каждого TZ, с локальным hhmm этого TZ.
     """
-    def __init__(self, user_repo: UserRepository, bot):
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        bot,
+        morning_tip_builder=None,
+        event_repo=None,
+    ):
         self.user_repo = user_repo
         self.bot = bot
+        # async (user_id, tz) -> str — HTML-блок «совет дня» (опционально).
+        self.morning_tip_builder = morning_tip_builder
+        self.event_repo = event_repo
 
     async def tick(self, tz: str, hhmm: str) -> None:
         """Отправляет утренние и вечерние напоминания для указанного TZ и hhmm."""
@@ -653,14 +680,32 @@ class ReminderService:
         for u in users:
             uid = u["user_id"]
             try:
+                text = (
+                    "🌅 Доброе утро!\n"
+                    "Твой питомец ждёт первую сессию сегодня 🐾\n"
+                    "Даже 5 минут — это уже победа."
+                )
+                if self.morning_tip_builder:
+                    try:
+                        extra = await self.morning_tip_builder(uid, tz)
+                        if extra:
+                            text += extra
+                    except Exception as e:
+                        logger.warning(
+                            "reminder.morning.tip_of_day_failed uid=%s reason=%s",
+                            uid, e,
+                        )
                 await self.bot.send_message(
                     chat_id=uid,
-                    text=(
-                        "🌅 Доброе утро!\n"
-                        "Твой питомец ждёт первую сессию сегодня 🐾\n"
-                        "Даже 5 минут — это уже победа."
-                    ),
+                    text=text,
+                    parse_mode="HTML" if self.morning_tip_builder else None,
                 )
+                if self.event_repo:
+                    await self.event_repo.log(
+                        uid,
+                        "reminder_sent",
+                        {"kind": "morning", "tz": tz, "hhmm": hhmm},
+                    )
             except TelegramForbiddenError:
                 # Пользователь заблокировал бота — ожидаемо, INFO.
                 logger.info(
@@ -742,6 +787,17 @@ class ReminderService:
                     # так что эта ветка достижима только при странных edge cases.
                     await self.bot.send_message(
                         chat_id=uid, text=self._EVENING_FALLBACK_TEXT,
+                    )
+                if self.event_repo:
+                    await self.event_repo.log(
+                        uid,
+                        "reminder_sent",
+                        {
+                            "kind": "evening",
+                            "tz": tz,
+                            "hhmm": hhmm,
+                            "emotion": emotion,
+                        },
                     )
             except TelegramForbiddenError:
                 logger.info(
@@ -1171,26 +1227,52 @@ class LeaderboardService:
 # таблиц не вводит. Возвращает structured dicts — UI/admin commands
 # их рендерят как text/CSV.
 # ------------------------------------------------------------
+# Две метрики «активности» — не смешивать в отчётах без подписи.
+# См. compute_engagement() и admin_commands.md → «Метрики активности».
+ACTIVITY_METRIC_DEFINITIONS = {
+    "activity_progress": {
+        "label": "activity_progress",
+        "title": "Активность (progress tables)",
+        "used_in": "cohort retention, DAU/WAU/MAU (dau/wau/mau), segments (churn)",
+        "sources": [
+            "study_sessions.created_at",
+            "user_subject_stats.last_activity",
+            "quiz_progress.last_attempt",
+            "flashcard_progress.last_review",
+            "mcq_progress.last_attempt",
+            "task_progress.last_attempt",
+        ],
+        "meaning": "Пользователь сделал учебное действие с записью в progress/sessions.",
+        "caveat": "Визит в предмет без квиза тоже считается (last_activity). Может быть выше, чем events.",
+    },
+    "activity_events": {
+        "label": "activity_events",
+        "title": "Активность (events table)",
+        "used_in": "DAU/WAU/MAU (dau_events/wau_events/mau_events), heatmap, event timeline",
+        "sources": ["events.created_at (любой event_name, user_id NOT NULL)"],
+        "meaning": "Любое залогированное событие в append-only events.",
+        "caveat": "Зависит от полноты hook'ов; до появления events — пусто. Может быть ниже progress.",
+    },
+}
+
+
 class AnalyticsService:
     """
     Cohort retention, funnel, активность пользователей. Все методы
     возвращают structured data — не строки. Это позволяет переиспользовать
     из разных команд (text-render, CSV-export, JSON-dump).
 
-    Что считается «активностью» (для retention/DAU и т.п.):
-      UNION всех timestamp-полей из:
-        study_sessions.created_at        (Pomodoro-сессии)
-        user_subject_stats.last_activity (визит в предмет)
-        quiz_progress.last_attempt       (ответ на ситуац. квиз)
-        flashcard_progress.last_review   (просмотр карточки)
-        mcq_progress.last_attempt        (ответ на MCQ)
-        task_progress.last_attempt       (попытка задачи)
-    Все timestamp'ы — UTC (datetime('now') в SQLite), что упрощает
-    cross-TZ retention за счёт некоторой неточности на границах суток.
+    Две метрики активности — см. ACTIVITY_METRIC_DEFINITIONS и
+    compute_engagement() (поля dau vs dau_events).
     """
 
     def __init__(self, db):
         self.db = db
+
+    @staticmethod
+    def get_activity_metric_definitions() -> dict:
+        """Справочник двух метрик активности для админ-доков и /dau."""
+        return ACTIVITY_METRIC_DEFINITIONS
 
     async def _all_activity_dates_per_user(self) -> dict[int, set]:
         """Возвращает {user_id: set([date, date, ...])} по всем источникам."""
@@ -1221,6 +1303,24 @@ class AnalyticsService:
                 except (ValueError, TypeError):
                     continue
                 activity[row["user_id"]].add(ts.date())
+        return activity
+
+    async def _all_activity_dates_per_user_events(self) -> dict[int, set]:
+        """Активность по таблице events (метрика activity_events)."""
+        activity: dict[int, set] = defaultdict(set)
+        async with self.db.execute(
+            "SELECT user_id, created_at FROM events WHERE user_id IS NOT NULL"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            ts_str = row["created_at"]
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+            activity[row["user_id"]].add(ts.date())
         return activity
 
     async def compute_cohort_retention(self) -> dict:
@@ -1306,21 +1406,45 @@ class AnalyticsService:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
-    async def compute_funnel(self) -> list[dict]:
+    async def compute_funnel(self) -> dict:
         """
-        Activation funnel: каждый шаг = % от total registered (не от предыдущего шага),
-        чтобы метрики оставались сравнимыми и не нужно было заставлять шаги быть
-        strict-subsets (в реале 3-day streak ≠ subset 10+ sessions).
+        Activation funnel (progress-based steps) + event-based steps + step conversion.
 
-        Returns: [{"name": str, "count": int, "pct": float | 0.0}, ...]
+        Returns: {
+            "total_registered": int,
+            "steps": [{"name", "count", "pct", "conv_from_prev"}, ...],
+            "event_steps": [{"name", "count", "pct", "conv_from_prev"}, ...],
+        }
+        pct — от total_registered; conv_from_prev — от предыдущего шага (None для первого).
         """
         total = await self._count("SELECT COUNT(*) FROM users")
         if total == 0:
-            return []
+            return {"total_registered": 0, "steps": [], "event_steps": []}
+
         steps_raw = [
             ("Registered", total),
             ("Started studying (≥1 session)", await self._count(
                 "SELECT COUNT(*) FROM users WHERE total_sessions >= 1"
+            )),
+            ("Picked subject (events)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'subject_picked'"
+            )),
+            ("Picked mode (events)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'mode_picked'"
+            )),
+            ("≥1 quiz answer (events)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'quiz_answered'"
+            )),
+            ("≥1 flashcard review (events)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'flashcard_reviewed'"
+            )),
+            ("≥1 productivity tip (events)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'tip_viewed'"
             )),
             ("Reached 5+ sessions", await self._count(
                 "SELECT COUNT(*) FROM users WHERE total_sessions >= 5"
@@ -1337,10 +1461,58 @@ class AnalyticsService:
                 "WHERE achievement_id = '7_day_streak' AND completed = 1"
             )),
         ]
-        return [
-            {"name": name, "count": count, "pct": count / total}
-            for name, count in steps_raw
+        steps = self._funnel_steps_with_conversion(steps_raw, total)
+
+        event_steps_raw = [
+            ("Registered", total),
+            ("session_started", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'session_started'"
+            )),
+            ("subject_picked", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'subject_picked'"
+            )),
+            ("mode_picked", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'mode_picked'"
+            )),
+            ("quiz_answered", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'quiz_answered'"
+            )),
+            ("flashcard_reviewed", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'flashcard_reviewed'"
+            )),
+            ("tip_viewed", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM events "
+                "WHERE event_name = 'tip_viewed'"
+            )),
         ]
+        event_steps = self._funnel_steps_with_conversion(event_steps_raw, total)
+        return {
+            "total_registered": total,
+            "steps": steps,
+            "event_steps": event_steps,
+        }
+
+    @staticmethod
+    def _funnel_steps_with_conversion(
+        steps_raw: list[tuple[str, int]], total: int
+    ) -> list[dict]:
+        steps = []
+        prev_count = None
+        for name, count in steps_raw:
+            conv = (count / prev_count) if prev_count and prev_count > 0 else None
+            steps.append({
+                "name": name,
+                "count": count,
+                "pct": count / total if total else 0.0,
+                "conv_from_prev": conv,
+            })
+            prev_count = count
+        return steps
 
     async def compute_engagement(self) -> dict:
         """
@@ -1353,19 +1525,29 @@ class AnalyticsService:
           stickiness = DAU / MAU (типичный «good» ~20%+ для consumer apps)
 
         Returns: {
-            "today": "YYYY-MM-DD", "new_today": int, "dau": int, "wau": int,
-            "mau": int, "stickiness": float | None, "total_users": int,
+            "today": str, "new_today": int,
+            "dau", "wau", "mau", "stickiness" — activity_progress,
+            "dau_events", "wau_events", "mau_events", "stickiness_events",
+            "activity_metric_definitions": dict,
+            "total_users": int,
         }
         """
         activity = await self._all_activity_dates_per_user()
+        activity_events = await self._all_activity_dates_per_user_events()
         today = datetime.now().date()
         w_cutoff = today - timedelta(days=6)
         m_cutoff = today - timedelta(days=29)
 
-        dau = sum(1 for dates in activity.values() if today in dates)
-        wau = sum(1 for dates in activity.values() if any(d >= w_cutoff for d in dates))
-        mau = sum(1 for dates in activity.values() if any(d >= m_cutoff for d in dates))
+        def _engagement_counts(act: dict[int, set]) -> tuple[int, int, int]:
+            d = sum(1 for dates in act.values() if today in dates)
+            w = sum(1 for dates in act.values() if any(dd >= w_cutoff for dd in dates))
+            m = sum(1 for dates in act.values() if any(dd >= m_cutoff for dd in dates))
+            return d, w, m
+
+        dau, wau, mau = _engagement_counts(activity)
+        dau_ev, wau_ev, mau_ev = _engagement_counts(activity_events)
         stickiness = (dau / mau) if mau > 0 else None
+        stickiness_events = (dau_ev / mau_ev) if mau_ev > 0 else None
 
         # Используем Python's today() вместо SQL date('now') — иначе SQLite
         # сравнит с UTC, а users.created_at может быть в other TZ context.
@@ -1383,6 +1565,11 @@ class AnalyticsService:
             "wau": wau,
             "mau": mau,
             "stickiness": stickiness,
+            "dau_events": dau_ev,
+            "wau_events": wau_ev,
+            "mau_events": mau_ev,
+            "stickiness_events": stickiness_events,
+            "activity_metric_definitions": ACTIVITY_METRIC_DEFINITIONS,
             "total_users": total_users,
         }
 
@@ -1430,6 +1617,29 @@ class AnalyticsService:
                 "SELECT COUNT(*) FROM notification_settings WHERE "
                 "morning_time != '09:00' OR evening_time != '21:00'"
             )),
+            ("📇 Свои флэш-карточки (≥1)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM user_flashcards"
+            )),
+            ("🎓 Советы (≥1 просмотр)", await self._count(
+                "SELECT COUNT(*) FROM user_tips_stats WHERE total_views > 0"
+            )),
+            ("🐾 Питомец создан", await self._count(
+                "SELECT COUNT(*) FROM user_pet"
+            )),
+            ("👥 ≥1 друг", await self._count(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT user_a AS uid FROM friendships "
+                "  UNION "
+                "  SELECT user_b AS uid FROM friendships"
+                ")"
+            )),
+            ("🏆 Weekly leaderboard (≥1 неделя)", await self._count(
+                "SELECT COUNT(DISTINCT user_id) FROM weekly_scores"
+            )),
+            ("🃏 Источник карт ≠ mix", await self._count(
+                "SELECT COUNT(*) FROM notification_settings "
+                "WHERE flashcard_source IS NOT NULL AND flashcard_source != 'mix'"
+            )),
         ]
         return {
             "total_users": total,
@@ -1451,7 +1661,17 @@ class AnalyticsService:
         "tasks": "task_progress",
         "subject_stats": "user_subject_stats",
         "settings": "notification_settings",
-        "events": "events",  # append-only event log для PA-аналитики
+        "events": "events",
+        "user_flashcards": "user_flashcards",
+        "tips_stats": "user_tips_stats",
+        "tips_seen": "user_tips_seen",
+        "pet": "user_pet",
+        "pet_inventory": "user_pet_inventory",
+        "friendships": "friendships",
+        "friend_requests": "friend_requests",
+        "weekly_scores": "weekly_scores",
+        "weekly_badges": "weekly_badges",
+        "streak_freezes": "streak_freezes",
     }
 
     async def export_table_csv(self, table_alias: str) -> tuple[bytes, int]:
@@ -1628,11 +1848,484 @@ class AnalyticsService:
                 "total":    row["total"] or 0,
             }
 
+        # 5. Subject engagement (visits)
+        async with self.db.execute(
+            "SELECT subject_id, "
+            "       COUNT(DISTINCT user_id) AS users, "
+            "       SUM(visits) AS total_visits "
+            "FROM user_subject_stats "
+            "GROUP BY subject_id "
+            "ORDER BY total_visits DESC "
+            "LIMIT ?",
+            (top_n,),
+        ) as cursor:
+            subject_engagement = [
+                {
+                    "subject_id": r["subject_id"],
+                    "users": r["users"],
+                    "total_visits": r["total_visits"],
+                }
+                for r in await cursor.fetchall()
+            ]
+
+        # 6. Official vs user flashcards (hash prefix u)
+        async with self.db.execute(
+            "SELECT "
+            "  SUM(CASE WHEN card_hash LIKE 'u%' THEN 1 ELSE 0 END) AS user_cards, "
+            "  SUM(CASE WHEN card_hash NOT LIKE 'u%' THEN 1 ELSE 0 END) AS official_cards, "
+            "  COUNT(*) AS total "
+            "FROM flashcard_progress"
+        ) as cursor:
+            fc_row = await cursor.fetchone()
+            flashcard_hash_split = {
+                "user_cards": fc_row["user_cards"] or 0,
+                "official_cards": fc_row["official_cards"] or 0,
+                "total": fc_row["total"] or 0,
+            }
+
+        # 7. Top tips (events)
+        import json
+        top_tips = []
+        async with self.db.execute(
+            "SELECT properties FROM events WHERE event_name = 'tip_viewed'"
+        ) as cursor:
+            tip_counts: dict[str, int] = defaultdict(int)
+            for r in await cursor.fetchall():
+                try:
+                    props = json.loads(r["properties"]) if r["properties"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    props = {}
+                tip_id = props.get("tip_id") or "unknown"
+                tip_counts[str(tip_id)] += 1
+            top_tips = [
+                {"tip_id": tid, "views": cnt}
+                for tid, cnt in sorted(tip_counts.items(), key=lambda x: -x[1])[:top_n]
+            ]
+
         return {
             "hardest_situational": hardest,
             "most_attempted_mcq": popular_mcq,
             "progress_coverage": unused_counts,
             "flashcard_ef_distribution": ef_dist,
+            "subject_engagement": subject_engagement,
+            "flashcard_hash_split": flashcard_hash_split,
+            "top_tips": top_tips,
+        }
+
+    async def compute_activation_metrics(self) -> dict:
+        """
+        Time-to-value и доли быстрой активации (из events + users).
+
+        Returns: {
+            "users_with_signup": int,
+            "time_to_hours": {event_name: {"median": float|None, "p75": float|None, "n": int}},
+            "pct_first_session_within_24h": float | None,
+            "pct_first_session_within_7d": float | None,
+        }
+        """
+        async with self.db.execute(
+            "SELECT user_id, created_at FROM users"
+        ) as cursor:
+            signup_rows = await cursor.fetchall()
+
+        signups: dict[int, datetime] = {}
+        for row in signup_rows:
+            try:
+                signups[row["user_id"]] = datetime.strptime(
+                    row["created_at"], "%Y-%m-%d %H:%M:%S"
+                )
+            except (ValueError, TypeError):
+                continue
+
+        if not signups:
+            return {
+                "users_with_signup": 0,
+                "time_to_hours": {},
+                "pct_first_session_within_24h": None,
+                "pct_first_session_within_7d": None,
+            }
+
+        event_names = (
+            "session_started",
+            "subject_picked",
+            "mode_picked",
+            "quiz_answered",
+            "flashcard_reviewed",
+            "tip_viewed",
+        )
+        first_event_at: dict[str, dict[int, datetime]] = {
+            en: {} for en in event_names
+        }
+        async with self.db.execute(
+            "SELECT user_id, event_name, created_at FROM events "
+            "WHERE user_id IS NOT NULL"
+        ) as cursor:
+            event_rows = await cursor.fetchall()
+
+        for row in event_rows:
+            en = row["event_name"]
+            if en not in first_event_at:
+                continue
+            uid = row["user_id"]
+            try:
+                ts = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+            if uid not in first_event_at[en] or ts < first_event_at[en][uid]:
+                first_event_at[en][uid] = ts
+
+        def _percentile_hours(values: list[float], p: float) -> float | None:
+            if not values:
+                return None
+            values = sorted(values)
+            idx = min(len(values) - 1, int(len(values) * p))
+            return values[idx]
+
+        time_to_hours = {}
+        for en in event_names:
+            deltas = []
+            for uid, signup_ts in signups.items():
+                first = first_event_at[en].get(uid)
+                if not first or first < signup_ts:
+                    continue
+                deltas.append((first - signup_ts).total_seconds() / 3600.0)
+            time_to_hours[en] = {
+                "median": _percentile_hours(deltas, 0.5),
+                "p75": _percentile_hours(deltas, 0.75),
+                "n": len(deltas),
+            }
+
+        session_deltas = []
+        for uid, signup_ts in signups.items():
+            first = first_event_at["session_started"].get(uid)
+            if not first or first < signup_ts:
+                continue
+            session_deltas.append((first - signup_ts).total_seconds() / 3600.0)
+
+        n_signup = len(signups)
+        within_24h = sum(1 for h in session_deltas if h <= 24)
+        within_7d = sum(1 for h in session_deltas if h <= 24 * 7)
+        n_session = len(session_deltas)
+
+        return {
+            "users_with_signup": n_signup,
+            "time_to_hours": time_to_hours,
+            "pct_first_session_within_24h": (
+                within_24h / n_signup if n_signup else None
+            ),
+            "pct_first_session_within_7d": (
+                within_7d / n_signup if n_signup else None
+            ),
+            "users_with_first_session": n_session,
+        }
+
+    async def compute_product_metrics(self, top_n: int = 8) -> dict:
+        """
+        Продуктовые метрики: breakdown по subject/mode, strict funnel,
+        activation по когортам, feature retention D7, утренний push,
+        leaderboard, notification funnel.
+        """
+        import json
+        from collections import defaultdict
+
+        total = await self._count("SELECT COUNT(*) FROM users")
+        if total == 0:
+            return {"total_registered": 0}
+
+        # --- Funnel by subject (events.subject_id) ---
+        by_subject = []
+        async with self.db.execute(
+            "SELECT subject_id, COUNT(DISTINCT user_id) AS users "
+            "FROM events WHERE event_name = 'subject_picked' "
+            "AND subject_id IS NOT NULL "
+            "GROUP BY subject_id ORDER BY users DESC LIMIT ?",
+            (top_n,),
+        ) as cursor:
+            for row in await cursor.fetchall():
+                sid = row["subject_id"]
+                mode_u = await self._count(
+                    "SELECT COUNT(DISTINCT user_id) FROM events "
+                    "WHERE event_name = 'mode_picked' AND subject_id = ?",
+                    (sid,),
+                )
+                quiz_u = await self._count(
+                    "SELECT COUNT(DISTINCT user_id) FROM events "
+                    "WHERE event_name = 'quiz_answered' AND subject_id = ?",
+                    (sid,),
+                )
+                by_subject.append({
+                    "subject_id": sid,
+                    "picked_subject": row["users"],
+                    "picked_mode": mode_u,
+                    "quiz_answered": quiz_u,
+                    "pct_registered": row["users"] / total,
+                })
+
+        # --- Funnel by mode ---
+        by_mode = []
+        async with self.db.execute(
+            "SELECT mode, COUNT(DISTINCT user_id) AS users "
+            "FROM events WHERE event_name = 'mode_picked' "
+            "AND mode IS NOT NULL "
+            "GROUP BY mode ORDER BY users DESC"
+        ) as cursor:
+            for row in await cursor.fetchall():
+                by_mode.append({
+                    "mode": row["mode"],
+                    "users": row["users"],
+                    "pct_registered": row["users"] / total,
+                })
+
+        # --- Strict event funnel (ever did all steps 1..k) ---
+        strict_order = [
+            "session_started",
+            "subject_picked",
+            "mode_picked",
+            "quiz_answered",
+            "flashcard_reviewed",
+        ]
+        user_events: dict[int, set[str]] = defaultdict(set)
+        async with self.db.execute(
+            "SELECT user_id, event_name FROM events WHERE user_id IS NOT NULL"
+        ) as cursor:
+            for row in await cursor.fetchall():
+                user_events[row["user_id"]].add(row["event_name"])
+
+        strict_steps = [{"name": "Registered", "count": total, "pct_registered": 1.0}]
+        prev = total
+        cumulative_required = set()
+        for en in strict_order:
+            cumulative_required.add(en)
+            count = sum(
+                1 for evs in user_events.values()
+                if cumulative_required.issubset(evs)
+            )
+            strict_steps.append({
+                "name": en,
+                "count": count,
+                "pct_registered": count / total,
+                "pct_of_prev": count / prev if prev else None,
+            })
+            prev = count
+
+        # --- Activation by signup cohort (ISO week) ---
+        signups: dict[int, tuple[datetime, str]] = {}
+        async with self.db.execute("SELECT user_id, created_at FROM users") as cursor:
+            for row in await cursor.fetchall():
+                try:
+                    dt = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+                    iso_year, iso_week, _ = dt.date().isocalendar()
+                    signups[row["user_id"]] = (
+                        dt,
+                        f"{iso_year}-W{iso_week:02d}",
+                    )
+                except (ValueError, TypeError):
+                    continue
+
+        first_session: dict[int, datetime] = {}
+        async with self.db.execute(
+            "SELECT user_id, MIN(created_at) AS ts FROM events "
+            "WHERE event_name = 'session_started' GROUP BY user_id"
+        ) as cursor:
+            for row in await cursor.fetchall():
+                try:
+                    first_session[row["user_id"]] = datetime.strptime(
+                        row["ts"], "%Y-%m-%d %H:%M:%S"
+                    )
+                except (ValueError, TypeError):
+                    continue
+
+        cohort_acc: dict[str, list[float]] = defaultdict(list)
+        cohort_24h: dict[str, list[bool]] = defaultdict(list)
+        for uid, (signup_dt, week) in signups.items():
+            fs = first_session.get(uid)
+            if not fs or fs < signup_dt:
+                continue
+            hours = (fs - signup_dt).total_seconds() / 3600.0
+            cohort_acc[week].append(hours)
+            cohort_24h[week].append(hours <= 24)
+
+        def _median(vals: list[float]) -> float | None:
+            if not vals:
+                return None
+            s = sorted(vals)
+            return s[len(s) // 2]
+
+        activation_by_cohort = []
+        for week in sorted(cohort_acc.keys())[-top_n:]:
+            hours_list = cohort_acc[week]
+            flags = cohort_24h[week]
+            activation_by_cohort.append({
+                "week": week,
+                "users_with_session": len(hours_list),
+                "median_hours_to_session": _median(hours_list),
+                "pct_session_within_24h": (
+                    sum(flags) / len(flags) if flags else None
+                ),
+            })
+
+        # --- Feature retention D7 (active on signup+7) ---
+        activity = await self._all_activity_dates_per_user()
+        today = datetime.now().date()
+
+        async def _feature_user_sets() -> dict[str, set[int]]:
+            sets: dict[str, set[int]] = {}
+            async with self.db.execute(
+                "SELECT DISTINCT user_id FROM events WHERE event_name = 'tip_viewed'"
+            ) as c:
+                sets["tips"] = {r["user_id"] for r in await c.fetchall()}
+            async with self.db.execute(
+                "SELECT DISTINCT user_id FROM user_flashcards"
+            ) as c:
+                sets["own_flashcards"] = {r["user_id"] for r in await c.fetchall()}
+            async with self.db.execute("SELECT user_id FROM user_pet") as c:
+                sets["pet"] = {r["user_id"] for r in await c.fetchall()}
+            async with self.db.execute(
+                "SELECT user_a AS uid FROM friendships "
+                "UNION SELECT user_b AS uid FROM friendships"
+            ) as c:
+                sets["friends"] = {r["uid"] for r in await c.fetchall()}
+            return sets
+
+        feature_sets = await _feature_user_sets()
+        feature_retention = []
+        for label, with_set in feature_sets.items():
+            eligible_with = eligible_without = retained_with = retained_without = 0
+            for uid, signup_dt in ((u, s[0]) for u, s in signups.items()):
+                if (today - signup_dt.date()).days < 8:
+                    continue
+                target_day = signup_dt.date() + timedelta(days=7)
+                active_d7 = target_day in activity.get(uid, set())
+                has_feat = uid in with_set
+                if has_feat:
+                    eligible_with += 1
+                    if active_d7:
+                        retained_with += 1
+                else:
+                    eligible_without += 1
+                    if active_d7:
+                        retained_without += 1
+            feature_retention.append({
+                "feature": label,
+                "with_feature": {
+                    "eligible": eligible_with,
+                    "retained_d7": retained_with,
+                    "rate": (
+                        retained_with / eligible_with if eligible_with else None
+                    ),
+                },
+                "without_feature": {
+                    "eligible": eligible_without,
+                    "retained_d7": retained_without,
+                    "rate": (
+                        retained_without / eligible_without
+                        if eligible_without else None
+                    ),
+                },
+            })
+
+        # --- Morning reminder → session same calendar day ---
+        morning_by_user_date: set[tuple[int, str]] = set()
+        async with self.db.execute(
+            "SELECT user_id, properties, date(created_at) AS d FROM events "
+            "WHERE event_name = 'reminder_sent'"
+        ) as cursor:
+            for row in await cursor.fetchall():
+                if not row["user_id"] or not row["d"]:
+                    continue
+                try:
+                    props = json.loads(row["properties"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    props = {}
+                if props.get("kind") == "morning":
+                    morning_by_user_date.add((row["user_id"], row["d"]))
+
+        session_by_user_date: set[tuple[int, str]] = set()
+        async with self.db.execute(
+            "SELECT user_id, date(created_at) AS d FROM events "
+            "WHERE event_name = 'session_started'"
+        ) as cursor:
+            for row in await cursor.fetchall():
+                if row["user_id"] and row["d"]:
+                    session_by_user_date.add((row["user_id"], row["d"]))
+
+        morning_pairs = len(morning_by_user_date)
+        morning_then_session = len(
+            morning_by_user_date & session_by_user_date
+        )
+
+        # --- Leaderboard ---
+        lb_users_score = await self._count(
+            "SELECT COUNT(DISTINCT user_id) FROM weekly_scores"
+        )
+        lb_hidden = await self._count(
+            "SELECT COUNT(*) FROM users WHERE hidden_from_leaderboards = 1"
+        )
+        lb_freeze_rows = await self._count("SELECT COUNT(*) FROM streak_freezes")
+        lb_freeze_users = await self._count(
+            "SELECT COUNT(DISTINCT user_id) FROM streak_freezes"
+        )
+        lb_viewed = await self._count(
+            "SELECT COUNT(DISTINCT user_id) FROM events "
+            "WHERE event_name = 'leaderboard_viewed'"
+        )
+
+        # --- Notification funnel ---
+        morning_enabled = await self._count(
+            "SELECT COUNT(*) FROM notification_settings WHERE morning_enabled = 1"
+        )
+        evening_enabled = await self._count(
+            "SELECT COUNT(*) FROM notification_settings WHERE evening_enabled = 1"
+        )
+        morning_sent_users = len({uid for uid, _ in morning_by_user_date})
+        async with self.db.execute(
+            "SELECT DISTINCT user_id, properties FROM events "
+            "WHERE event_name = 'reminder_sent'"
+        ) as cursor:
+            evening_uids: set[int] = set()
+            for row in await cursor.fetchall():
+                try:
+                    props = json.loads(row["properties"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    props = {}
+                if props.get("kind") == "evening" and row["user_id"]:
+                    evening_uids.add(row["user_id"])
+            evening_sent_users = len(evening_uids)
+        notif_funnel = [
+            {"step": "Registered", "count": total},
+            {"step": "Morning reminders ON", "count": morning_enabled},
+            {"step": "Evening reminders ON", "count": evening_enabled},
+            {"step": "Got morning push (events)", "count": morning_sent_users},
+            {"step": "Got evening push (events)", "count": evening_sent_users},
+            {
+                "step": "Session same day as morning push",
+                "count": morning_then_session,
+            },
+        ]
+
+        return {
+            "total_registered": total,
+            "funnel_by_subject": by_subject,
+            "funnel_by_mode": by_mode,
+            "strict_event_funnel": strict_steps,
+            "activation_by_cohort": activation_by_cohort,
+            "feature_retention_d7": feature_retention,
+            "morning_reminder_effect": {
+                "morning_push_pairs": morning_pairs,
+                "same_day_session": morning_then_session,
+                "conversion_rate": (
+                    morning_then_session / morning_pairs
+                    if morning_pairs else None
+                ),
+            },
+            "leaderboard": {
+                "users_with_weekly_score": lb_users_score,
+                "leaderboard_viewed_users": lb_viewed,
+                "hidden_from_leaderboard": lb_hidden,
+                "freeze_purchases": lb_freeze_rows,
+                "users_bought_freeze": lb_freeze_users,
+            },
+            "notification_funnel": notif_funnel,
         }
 
     async def compute_event_timeline(self, hours: int = 24, limit: int = 50) -> list[dict]:
@@ -1730,9 +2423,9 @@ class AnalyticsService:
             "peak": peak,
         }
 
-    async def export_all_tables_zip(self, schema_version: str = "v0.7") -> tuple[bytes, dict]:
+    async def export_all_tables_zip(self, schema_version: str = "v0.8") -> tuple[bytes, dict]:
         """
-        Bundles all 10 exportable tables + metadata.json into a ZIP archive.
+        Bundles all exportable tables + metadata.json into a ZIP archive.
 
         Returns: (zip_bytes, metadata_dict).
 

@@ -248,14 +248,22 @@ Cohort     | Size | D1     | D7     | D30
 ```
 
 «—» = когорта моложе N дней (нет данных). D_N = strict: ровно в день
-`signup + N`. Активность определяется как любое событие в study_sessions /
-user_subject_stats / quiz_progress / flashcard_progress / mcq_progress /
-task_progress.
+`signup + N`.
+
+### Метрики активности (две, не смешивать)
+
+| Метрика | Ключ в API | Источник | Где используется |
+|---------|------------|----------|------------------|
+| **activity_progress** | `dau`, `wau`, `mau`, `stickiness` | UNION timestamp из progress/sessions (см. `AnalyticsService._all_activity_dates_per_user`) | `/cohort_stats`, `/segments`, блок progress в `/dau` |
+| **activity_events** | `dau_events`, `wau_events`, `mau_events`, `stickiness_events` | Любая строка в `events` с `user_id` | `/heatmap`, `/event_timeline`, блок events в `/dau` |
+
+**Почему два числа:** progress фиксирует учебное действие с записью в БД; events — всё, что залогировал hook (может быть уже, а может ещё не быть для новой фичи). Progress часто **выше** (визит в предмет без event). Events **ниже**, если hook неполный, или **выше**, если много служебных событий на пользователя.
+
+Справочник в коде: `services.ACTIVITY_METRIC_DEFINITIONS`, `AnalyticsService.get_activity_metric_definitions()`.
 
 ### `/funnel` — activation funnel
 
-6 шагов от регистрации до 7-day streak, % считается от total registered
-(не от предыдущего шага). С ASCII bar-визуализацией:
+Два блока: **progress+events steps** и **event-only funnel**. % от total registered; колонка `→N%` — conversion от **предыдущего** шага. ASCII bar:
 
 ```
 Registered                          ██████████ 100.0% (18)
@@ -271,24 +279,41 @@ Earned 7-day streak achievement     █░░░░░░░░░   5.6% (1)
 
 ### `/dau` — DAU / WAU / MAU + stickiness
 
-Engagement metrics с benchmark'ом:
+Два блока в одном отчёте — **activity_progress** и **activity_events** (см. таблицу выше). Пример:
 
 ```
-Today:                  2026-05-18
-New users today:        1
-DAU:                    3
-WAU (last 7 days):      12
-MAU (last 30 days):     18
-Stickiness (DAU/MAU):   16.7%
-Total registered:       25
+activity_progress (progress tables):
+  DAU: 3    WAU: 12    MAU: 18    Stickiness: 16.7%
+activity_events (events table):
+  DAU: 2    WAU: 10    MAU: 15    Stickiness: 13.3%
 ```
 
 Stickiness ≥20% — типичный benchmark для consumer apps.
 
+### `/activation` — time-to-value
+
+Медиана и p75 **часов от signup** до первого события (`session_started`, `subject_picked`, `mode_picked`, `quiz_answered`, `flashcard_reviewed`, `tip_viewed`). Плюс доля registered с первой сессией в **24h** и **7d** (по `events`, не по `total_sessions`).
+
+### `/product_metrics` — продуктовые метрики
+
+Один отчёт, несколько блоков:
+
+| Блок | Смысл |
+|------|--------|
+| **By subject** | `subject_picked` → `mode_picked` → `quiz_answered` per `subject_id` |
+| **By mode** | Уникальные пользователи per `mode` |
+| **Strict event funnel** | Пользователи, у которых *ever* были все шаги 1..k подряд по списку событий (монотонное падение count) |
+| **Activation by week** | Медиана часов до первой сессии и % в 24h по ISO-неделе регистрации |
+| **Feature retention D7** | Активность на `signup+7` (activity_progress): WITH vs WITHOUT tips / own cards / pet / friends |
+| **Morning push** | `reminder_sent(morning)` и `session_started` в один календарный день |
+| **Leaderboard** | weekly_scores, просмотры, hidden, покупки freeze |
+| **Notification funnel** | registered → reminders ON → push sent (events) → session same day |
+
+Также в `/analytics` → **📈 Product metrics**.
+
 ### `/feature_usage` — % adoption per feature
 
-8 фич (4 учебных режима + Pomodoro + 3 настройки), процент от total
-registered с bar:
+Учебные режимы, Pomodoro, настройки, **v0.8:** свои флэш-карточки, советы, питомец, друзья, weekly leaderboard, источник карт ≠ mix.
 
 ```
 🎯 Situational quizzes (≥1 ответ)    ████░░░░░░  44.4% (8)
@@ -317,14 +342,15 @@ Churned (>14d inactive)        █░░░░░░░░░  11.1% (2)
 
 ### `/content_stats` — что в контенте работает / не работает
 
-4 sub-view'а в одном сообщении:
+Sub-view'ы:
 
-- 🎯 **Hardest situational terms** — top-5 терминов с самой низкой accuracy (`AVG(is_correct) ASC`). Enriched текстом из `study_materials/`.
-- ❓ **Most-attempted MCQ** — top-5 вопросов по `SUM(total_count) DESC`.
-- 📚 **Progress coverage** — счётчики `COUNT(DISTINCT item)` per mode.
-- 🃏 **Flashcard EF distribution** — 4 бакета (`<1.5` / `1.5-2.0` / `2.0-2.5` / `≥2.5`). Чем ниже EF — тем сложнее карта пользователю по SM-2. В выборку входят и **пользовательские** карты: их `card_hash` в `flashcard_progress` имеет префикс `u` (`u0000001` …), отдельного раздела в отчёте нет — общая EF-статистика по всем повторениям.
-
-Используется для итераций над контентом: «эту карточку либо переформулируй, либо она — хороший diagnostic». Для своих карт hash→текст в render-слое мапится из `user_flashcards`, для официальных — из `flashcards.txt`.
+- 🎯 **Hardest situational terms** — top-5 по низкой accuracy.
+- ❓ **Most-attempted MCQ** — top-5 по объёму попыток.
+- 📚 **Progress coverage** — unique items per mode.
+- 🃏 **Flashcard EF distribution** — 4 бакета SM-2.
+- 🃏 **Official vs user** — split по `card_hash LIKE 'u%'`.
+- 📚 **Subject engagement** — visits по `user_subject_stats.subject_id`.
+- 🎓 **Top tips** — агрегат `tip_viewed` из `events` по `tip_id`.
 
 ### `/event_timeline [hours]` — лента последних событий
 
@@ -337,6 +363,18 @@ Churned (>14d inactive)        █░░░░░░░░░  11.1% (2)
 ```
 
 Limit: 50 событий. Формат строки: `HH:MM u=<user_id> event_name key1=v1 key2=v2`. Длинные values обрезаются.
+
+**События v0.8+ (соц / питомец / настройки / push):**
+- `friend_request_sent`, `friend_accepted`, `friend_removed`
+- `leaderboard_viewed`, `freeze_purchased`, `leaderboard_privacy_toggled`
+- `pet_purchased`, `pet_equipped`, `pet_renamed`
+- `settings_changed` — `setting`, `value` (timezone, notifications, flashcard_source, …)
+- `reminder_sent` — `kind` (morning/evening), `tz`, `hhmm`
+- `tip_viewed`, `user_flashcard_created` / `user_flashcard_deleted`
+
+**Колонки `events`:** `subject_id`, `mode`, `tip_id` — дублируют частые ключи из `properties` для SQL.
+
+Совет дня в утреннем push **не** пишет `tip_viewed` (by design).
 
 ### `/heatmap [days]` — heatmap активности
 
@@ -366,13 +404,15 @@ Default 30 дней, clamp [1, 365]. Server time. Использует events ta
 
 `/export` без аргумента → список доступных алиасов.
 
-**Все 10 алиасов:**
-`users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
-`tasks`, `subject_stats`, `settings`, `events`.
+**Алиасы (v0.8, 20 таблиц):**  
+`users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`, `tasks`,
+`subject_stats`, `settings`, `events`, `user_flashcards`, `tips_stats`,
+`tips_seen`, `pet`, `pet_inventory`, `friendships`, `friend_requests`,
+`weekly_scores`, `weekly_badges`, `streak_freezes`.
 
 ### `/export all` — ZIP всего dataset'а + metadata.json
 
-Bundle всех 10 таблиц + `metadata.json` одной командой:
+Bundle всех exportable таблиц + `metadata.json` (`schema_version`: **v0.8**):
 
 ```
 palph-export-2026-05-18.zip

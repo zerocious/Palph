@@ -67,6 +67,9 @@ internally; floored on display.
   Stored in `user_flashcards`; `card_hash` = `u{card_id:07x}` (distinct from
   official `md5(term)[:8]`). SM-2 state lives in the same `flashcard_progress`
   table; `flashcard_reviewed` events use the same `is_new` + `quality` semantics.
+
+**Out of scope for weekly_score:** productivity tips (`tip_viewed`, daily tip coin,
+achievement `10_tips_read`) — engagement layer only, no leaderboard points.
   Source filter (`mix` / `official` / `own`) affects which cards appear in
   study sessions only — not how points are counted once reviewed.
 

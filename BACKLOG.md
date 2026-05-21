@@ -209,3 +209,17 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 После этих 4 prerequisites — Sprint можно ship'нуть за **~1-2 рабочих дня** кода.
 
 ---
+
+## Tips list pagination — achievement farming (2026-05-22)
+
+**Идея**: при листании «📋 Все советы» (callback `tips:list` ◀️/▶️) не вызывать `_on_tip_viewed` / не инкрементить `user_tips_stats.total_views` — только `record_seen` для cooldown.
+
+**Зачем**: сейчас можно быстро получить ачивку «Любознательный» (10 просмотров), листая одну категорию; дневная монета (+1🪙) не затронута (1/день).
+
+**Подход**: разделить `record_view` (stats + coin + achievement) и `record_seen`; pagination → только seen.
+
+**Стоимость**: ~30 мин кода + 1–2 теста.
+
+**Решение**: **defer** — зафиксировано в TODO #18 и [tips/README.md](tips/README.md).
+
+---

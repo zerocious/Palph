@@ -460,6 +460,116 @@ class UserFlashcardRepository:
         return True
 
 
+class TipsRepository:
+    """Просмотры советов по продуктивности: счётчик, cooldown, совет дня."""
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def record_seen(self, user_id: int, tip_id: str) -> None:
+        await self.db.execute(
+            "INSERT INTO user_tips_seen (user_id, tip_id, seen_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(user_id, tip_id) DO UPDATE SET seen_at = excluded.seen_at",
+            (user_id, tip_id),
+        )
+        await self.db.commit()
+
+    async def get_recently_seen_tip_ids(
+        self, user_id: int, within_days: int = 7,
+    ) -> set[str]:
+        async with self.db.execute(
+            "SELECT tip_id FROM user_tips_seen "
+            "WHERE user_id = ? AND seen_at >= datetime('now', ?)",
+            (user_id, f"-{within_days} days"),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row["tip_id"] for row in rows}
+
+    async def user_has_flashcards_due(self, user_id: int) -> bool:
+        async with self.db.execute(
+            "SELECT 1 FROM flashcard_progress "
+            "WHERE user_id = ? AND next_review IS NOT NULL AND next_review <= datetime('now') "
+            "LIMIT 1",
+            (user_id,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def resolve_tip_of_day(
+        self,
+        user_id: int,
+        local_date: str,
+        all_tips: list[dict],
+    ) -> dict | None:
+        """Один и тот же совет на календарный день пользователя (стабильный tip_of_day_id)."""
+        if not all_tips:
+            return None
+        tips_by_id = {t["id"]: t for t in all_tips if t.get("id")}
+
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT tip_of_day_id, tip_of_day_date FROM user_tips_stats WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row["tip_of_day_date"] == local_date and row["tip_of_day_id"]:
+                stored = tips_by_id.get(row["tip_of_day_id"])
+                if stored:
+                    return stored
+
+            pick = all_tips[hash(f"{user_id}:{local_date}") % len(all_tips)]
+            tip_id = pick["id"]
+            if row:
+                await self.db.execute(
+                    "UPDATE user_tips_stats SET tip_of_day_id = ?, tip_of_day_date = ? "
+                    "WHERE user_id = ?",
+                    (tip_id, local_date, user_id),
+                )
+            else:
+                await self.db.execute(
+                    "INSERT INTO user_tips_stats "
+                    "(user_id, total_views, tip_of_day_id, tip_of_day_date) VALUES (?, 0, ?, ?)",
+                    (user_id, tip_id, local_date),
+                )
+            await self.db.commit()
+            return pick
+
+    async def record_view(self, user_id: int, local_date: str) -> tuple[int, bool]:
+        """
+        Увеличивает total_views на 1.
+        Возвращает (новый total_views, coin_granted) — монета не чаще 1 раза в local_date.
+        """
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT total_views, last_coin_date FROM user_tips_stats WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                total = row["total_views"] + 1
+                coin_granted = row["last_coin_date"] != local_date
+                if coin_granted:
+                    await self.db.execute(
+                        "UPDATE user_tips_stats SET total_views = ?, last_coin_date = ? "
+                        "WHERE user_id = ?",
+                        (total, local_date, user_id),
+                    )
+                else:
+                    await self.db.execute(
+                        "UPDATE user_tips_stats SET total_views = ? WHERE user_id = ?",
+                        (total, user_id),
+                    )
+            else:
+                total = 1
+                coin_granted = True
+                await self.db.execute(
+                    "INSERT INTO user_tips_stats (user_id, total_views, last_coin_date) "
+                    "VALUES (?, 1, ?)",
+                    (user_id, local_date),
+                )
+            await self.db.commit()
+            return total, coin_granted
+
+
 class FlashcardRepository:
     """
     SM-2 прогресс по флэш-картам (v0.7 #15).
@@ -670,25 +780,59 @@ class EventRepository:
         import logging
         self._logger = logging.getLogger("studybuddy_bot")
 
+    @staticmethod
+    def _resolve_event_dimensions(
+        properties: dict | None,
+        *,
+        subject_id: str | None = None,
+        mode: str | None = None,
+        tip_id: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Извлекает subject_id / mode / tip_id из аргументов или properties."""
+        props = properties or {}
+        subj = subject_id or props.get("subject_id") or props.get("subject")
+        mod = mode or props.get("mode")
+        tid = tip_id or props.get("tip_id")
+        if subj is not None:
+            subj = str(subj)[:128]
+        if mod is not None:
+            mod = str(mod)[:64]
+        if tid is not None:
+            tid = str(tid)[:64]
+        return subj, mod, tid
+
     async def log(
         self,
         user_id: int | None,
         event_name: str,
         properties: dict | None = None,
+        *,
+        subject_id: str | None = None,
+        mode: str | None = None,
+        tip_id: str | None = None,
     ) -> None:
         """
         Регистрирует event. Не raises — failure тихо логируется в bot.log,
         чтобы analytics-issues не валили бизнес-логику бота.
 
         properties сериализуется в JSON. None → '{}' (пустой dict).
+        subject_id / mode / tip_id — денормализованные колонки для SQL/pandas
+        (дублируют частые ключи из properties).
         """
         import json
         try:
             props_json = json.dumps(properties or {}, ensure_ascii=False)
+            subj, mod, tid = self._resolve_event_dimensions(
+                properties,
+                subject_id=subject_id,
+                mode=mode,
+                tip_id=tip_id,
+            )
             await self.db.execute(
-                "INSERT INTO events (user_id, event_name, properties) "
-                "VALUES (?, ?, ?)",
-                (user_id, event_name, props_json),
+                "INSERT INTO events "
+                "(user_id, event_name, properties, subject_id, mode, tip_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, event_name, props_json, subj, mod, tid),
             )
             await self.db.commit()
         except Exception as e:

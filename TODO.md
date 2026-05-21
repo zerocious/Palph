@@ -9,11 +9,34 @@ Example:
 
 ---
 
+## v0.8 — productivity tips (2026-05-22) ✅ shipped
+
+18) [Фича] Советы по продуктивности — контент, UX, геймификация, интеграция  
+Ценность: мотивация и onboarding внутри бота (тайм-менеджмент, память, «как пользоваться ботом»); +1🪙/день и ачивка за вовлечённость; совет дня в утреннем напоминании  
+Готовность: `tips/*.json` + `tips/README.md`; кэш при старте; inline «Ещё совет» / «Все советы» / пагинация; контекстный pick + cooldown 7д (`user_tips_seen`); `user_tips_stats` + `TipsRepository`; событие `tip_viewed`; ачивка `10_tips_read`; FAQ обновлён; 26 тестов  
+Приоритет: Must — **закрыто**
+
+**Known issue (defer):** пагинация «Все советы» (◀️/▶️) инкрементит `total_views` → можно ускорить ачивку; монета остаётся 1/день. Fix: не вызывать gamification hook на `tips:list` page turns.
+
+---
+
 ## v0.8 — user flashcards (2026-05-22) ✅ shipped
 
 17) [Фича] Пользовательские флэш-карточки + перестроенный flow учёбы  
 Ценность: студент добавляет свои термины по предмету и повторяет их с тем же SM-2, что и официальный контент; не нужно ждать наполнения `flashcards.txt`  
-Готовность: таблица `user_flashcards`; CRUD через 📇 Мои карточки; `flashcard_source` (mix/official/own); ❓ Квизы → предмет → режим; прогресс/mastery учитывает свои карты; 16 тестов; 492 total  
+Готовность: таблица `user_flashcards`; CRUD через 📇 Мои карточки; `flashcard_source` (mix/official/own); ❓ Квизы → предмет → режим; прогресс/mastery учитывает свои карты; 16 тестов  
+Приоритет: Must — **закрыто**
+
+---
+
+## v0.8 — PA analytics expansion (2026-05-22) ✅ shipped
+
+19) [Аналитика] Сбор данных: events v0.8 + export + indexed columns  
+Готовность: hook'и friend/pet/LB/settings/reminder; `events.subject_id/mode/tip_id`; export 20 таблиц (`friend_requests`, `weekly_badges`, `streak_freezes`); admin_commands  
+Приоритет: Must — **закрыто**
+
+20) [Аналитика] Продуктовые метрики в боте  
+Готовность: `compute_product_metrics()` + `/product_metrics` + `anlt:product`; subject/mode breakdown; strict event funnel; activation по неделям; feature retention D7; morning push→session; leaderboard + notification funnel  
 Приоритет: Must — **закрыто**
 
 ---
@@ -48,10 +71,8 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **username-search для /friends** (BACKLOG → ship) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
-handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На текущем
-`main` **492 теста** покрывают всю систему (включая user flashcards,
-middleware, end-to-end integration flows, reminder service sad-pet
-animation). Открытой leaderboard-работы нет.
+handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На feature-ветке
+**533 теста** покрывают всю систему. Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
 - `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);
@@ -105,32 +126,41 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 
 Контекст: проект используется как booster резюме для роли product analyst intern/junior. Цель — превратить бот в источник данных для realистичного PA-анализа в Jupyter.
 
-### ✅ Ship'нуто (доступно прямо сейчас через админ-команды)
+### ✅ Ship'нуто (доступно через админ-команды)
+
+**Две метрики активности** (см. `admin_commands.md` → «Метрики активности»):
+- `activity_progress` — DAU/cohort/segments (progress tables)
+- `activity_events` — heatmap/timeline (`events` table)
 
 **Aggregate-метрики:**
 - `/cohort_stats` — D1/D7/D30 retention по ISO-неделям регистрации
-- `/funnel` — activation funnel (6 шагов: registered → started → 5+ sessions → 10+ sessions → 3-day streak → 7-day streak); % от total registered
-- `/dau` — DAU / WAU / MAU + stickiness ratio (DAU/MAU) + новые пользователи сегодня
-- `/feature_usage` — % adoption per feature: 4 учебных режима + Pomodoro + custom timezone + disabled notifications + custom reminder time
-- `/segments` — user segmentation (5 сегментов: never_started / tried / active / power / churned), churned приоритетнее за счёт re-engagement actionable-сигнала
-- `/content_stats` — hardest situational terms (low accuracy), most-attempted MCQ, progress coverage, flashcard EF distribution в 4 бакетах
-- `/event_timeline [hours]` — лента последних N событий из events table (default 24h, clamp [1, 168])
-- `/heatmap [days]` — ASCII-heatmap активности 7×8 (weekday × 3-hour buckets), default 30 дней, peak detection
-- `/analytics` — единый dashboard с inline-меню по всем разделам (рекомендуется для удобства)
+- `/funnel` — activation funnel + event funnel + step conversion (→%)
+- `/activation` — time-to-value (медиана часов до первых событий, 24h/7d)
+- `/product_metrics` — subject/mode breakdown, strict funnel, D7 feature retention, morning push, LB, notifications
+- `/dau` — DAU/WAU/MAU + stickiness (оба источника активности)
+- `/feature_usage` — 14 фич (учёба + v0.8: tips, own cards, pet, friends, LB, flash source)
+- `/segments` — 5 сегментов вовлечённости + churned
+- `/content_stats` — hardest terms, MCQ, EF, subject visits, official/user cards, top tips
+- `/event_timeline [hours]` — лента событий (default 24h)
+- `/heatmap [days]` — ASCII heatmap (default 30d)
+- `/analytics` — dashboard с inline-меню
 
 **Data export:**
-- `/export <alias>` — CSV-дамп одной таблицы как Telegram-документ (10 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings, events)
-- `/export all` — ZIP всех 10 таблиц + `metadata.json` (exported_at, schema_version, row_counts). **Killer feature** для Jupyter-анализа: одной командой получаешь reproducible dataset
-- `/parse_logs` — ETL `bot.log + bot.log.1..N` → CSV (timestamp/level/event_name/user_id/properties JSON/raw_text). Покрывает historical backfill до того как events table начала писаться
+- `/export <alias>` — CSV одной таблицы (**20 алиасов**)
+- `/export all` — ZIP + `metadata.json` (`schema_version` v0.8)
+- `/parse_logs` — ETL bot.log → CSV (historical backfill)
 
-**Event-tracking layer:**
-- `events` table — append-only лог каждого значимого действия (14 hook'ов в bot.py); JSON-properties для event-specific полей. Foundation для funnel/cohort/path/time-to-action анализа в pandas.
+**Event-tracking:**
+- `events` + колонки `subject_id`, `mode`, `tip_id`
+- События: учёба, tips, flashcards, friend/pet/LB/settings/reminder
 
-Реализация: `services.AnalyticsService` + `repository.EventRepository` + `parse_logs.py`. **99 pytest-тестов** в `test_analytics_service.py` (58) + `test_event_repository.py` (15) + `test_log_parser.py` (20) + extras покрывают всю PA-инфраструктуру.
+Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`. **~95 pytest** в analytics-модулях + **533 total**.
 
 ### 🟡 Будущие расширения
 
-(Сейчас секция пуста — все идеи из изначального плана уже ship'нуты. Новые идеи накапливаются в [BACKLOG.md](BACKLOG.md), оттуда переезжают сюда при формализации.)
+- `analysis/` notebooks (01–04) + weekly snapshot script — см. BACKLOG
+- `visit_id` для path analysis в одном заходе
+- `metrics_daily` pre-aggregate при росте базы
 
 ### 🎯 Главный портфолио-asset (внешняя аналитика)
 
