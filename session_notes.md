@@ -9,16 +9,18 @@ Running log of changes made per coding session. Newest entries at the top.
 Goal: пользовательские флэш-карточки по предметам, новый flow учёбы
 «предмет → режим», настройка источника карточек (микс / официальные / свои).
 
+**Итог:** feature shipped; **492 теста** зелёных (476 baseline + 16 новых).
+
 ### Changes
 
 | # | Area | Change | Files |
 |---|------|--------|-------|
-| 1 | Schema | Таблица `user_flashcards` + колонка `flashcard_source` в `notification_settings` (default `mix`) | [db.py](db.py) |
-| 2 | Repository | `UserFlashcardRepository` (CRUD, лимит 100/subject, hash `u{id:07x}`) + расширение notification settings | [repository.py](repository.py) |
-| 3 | Study flow | `load_flashcards_for_study`, перестроен FSM: ❓ Квизы → предмет → режим | [bot.py](bot.py) |
-| 4 | UI | FSM создания карточек, «📇 Мои карточки» в настройках, цикл источника в ⚙️ | [bot.py](bot.py) |
-| 5 | Progress | User cards учитываются в mastery/due блоке предмета | [bot.py](bot.py) |
-| 6 | Tests | `test_user_flashcards.py`, `test_flashcard_source.py` | [tests/](tests/) |
+| 1 | Schema | Таблица `user_flashcards` (UNIQUE user+subject+term, CASCADE) + колонка `flashcard_source` в `notification_settings` (default `mix`, idempotent migration) | [db.py](db.py) |
+| 2 | Repository | `UserFlashcardRepository`: create/list/delete, лимит 100/subject, hash `u{card_id:07x}`; при delete — cascade `flashcard_progress`. `UserRepository` сохраняет/читает `flashcard_source` | [repository.py](repository.py) |
+| 3 | Study flow | `load_flashcards_for_study(user_id, subject, source)`; FSM перестроен: **❓ Квизы → предмет → режим** (было режим → предмет). Состояния: `choosing_subject` → `choosing_mode` | [bot.py](bot.py) |
+| 4 | UI | FSM создания карточек (term ≤200, definition ≤1000); «📇 Мои карточки» в ⚙️ (список по предметам, add/delete); кнопка «🃏 Флэш-карты» циклит mix→official→own | [bot.py](bot.py) |
+| 5 | Progress | Официальные + свои карты в mastery-bar и «🔔 К повторению» (`card_hashes` = official + user) | [bot.py](bot.py) |
+| 6 | Tests | 11 + 5 тестов: repo CRUD, source mixing, hash isolation | [tests/test_user_flashcards.py](tests/test_user_flashcards.py), [tests/test_flashcard_source.py](tests/test_flashcard_source.py) |
 
 ### New study flow
 
@@ -26,7 +28,29 @@ Goal: пользовательские флэш-карточки по предм
 ❓ Квизы → выбор предмета → выбор режима → сессия
 ```
 
-Источник флэш-карт при повторении: ⚙️ Настройки → «🃏 Флэш-карты» (Микс / Официальные / Свои).
+«⬅️ Назад к предметам» из mode-picker возвращает к subject-picker.
+
+### User flashcards — поведение
+
+- **Создание:** ⚙️ Настройки → 📇 Мои карточки → предмет → «➕ Добавить» → term → definition.
+- **Удаление:** из списка карточек предмета; вместе с row удаляется SM-2 progress по `u{id:07x}`.
+- **Повторение:** тот же SM-2 flow, что у официальных карт (`flashcard_progress`, +1🪙, leaderboard `flashcard_reviewed` с `is_new` / `quality ≥ 3`).
+- **Источник пула:** ⚙️ → «🃏 Флэш-карты» — **Микс** (official+own) / **Официальные** / **Свои**. Default `mix`.
+- **Hash:** официальные `md5(term)[:8]`; свои `u{card_id:07x}` — коллизий нет, один SM-2 namespace.
+
+### Design notes
+
+- Лимит 100/subject и UNIQUE(term) — защита от спама и дублей без модерации.
+- `load_flashcards_for_study` — единая точка сборки пула; режим «Свои» при пустом списке показывает подсказку про 📇 Мои карточки.
+- Leaderboard scoring **не менялся** — user cards проходят те же hooks (`grant_card_pts`, `is_new` до upsert). См. [LEADERBOARD.md](LEADERBOARD.md).
+
+### Verification
+
+- `python -m pytest tests/` — **492 passed** (476 → +16)
+
+### Docs
+
+- README, TODO, session_notes, admin_commands (content_stats), LEADERBOARD — синхронизированы в этой сессии.
 
 ---
 

@@ -31,7 +31,7 @@ deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
 for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
 [TODO.md](TODO.md) и [session_notes.md](session_notes.md).
-Tests: 476 passing.
+Tests: 492 passing.
 
 ---
 
@@ -109,12 +109,20 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **Монеты** за каждую минуту учёбы + бонусы за достижения и стрик
 - **Стрики** — ежедневный шедулер в локальном TZ пользователя
 - **9 достижений** (первые сессии, длинные стрики, суммарные минуты)
-- **4 учебных режима** под несколько предметов; пустые контентом
-  предметы/режимы автоматически скрываются (data-driven обнаружение):
+- **4 учебных режима** под несколько предметов; flow учёбы:
+  **❓ Квизы → предмет → режим** (раньше было режим → предмет).
+  Пустые контентом предметы/режимы автоматически скрываются
+  (data-driven обнаружение):
   - 🎯 **Ситуационные квизы** — открытый ответ + keyword-grader +
     фиксированные интервалы `[1, 2, 4, 7]` дней
   - 🃏 **Флэш-карты с SM-2** — 3-кнопочный рейтинг ❌/😐/✅, per-card
-    ease factor, EF floor 1.3; +1 🪙 за карточку любого рейтинга
+    ease factor, EF floor 1.3; +1 🪙 за карточку любого рейтинга.
+    Официальные карты из `flashcards.txt` (hash = MD5(term)[:8]);
+    **пользовательские** — до 100 шт. на предмет через
+    **📇 Мои карточки** в ⚙️ Настройки (создание/удаление, FSM).
+    Hash своих карт: `u{card_id:07x}` (изолирован от официальных).
+    Источник при повторении: ⚙️ → **🃏 Флэш-карты** — Микс /
+    Официальные / Свои (`flashcard_source` в `notification_settings`)
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
   - 📷 **Задачи с картинкой** — `task-NN.png` + JSON с принимаемыми
     ответами, 3 попытки → solution image; награды +3 / +2 / +1 / 0 🪙
@@ -136,8 +144,9 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
   предметы (math/english пока без контента) показываются с пометкой
   «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
-  termы с `streak ≥ 3`, флэш-карты с `repetitions ≥ 3`, MCQ-вопросы
-  отвеченные хотя бы раз верно, решённые задачи.
+  termы с `streak ≥ 3`, флэш-карты (официальные + свои) с
+  `repetitions ≥ 3`, MCQ-вопросы отвеченные хотя бы раз верно,
+  решённые задачи.
 - **Цифровой питомец** — data-layer ([PR #2 merged](https://github.com/zerocious/Palph/pull/2))
   + art/UI track в PR #3: один дизайн, **5 derived эмоций**
   (`studying / excited / sad / sleepy / happy` — выводятся в момент
@@ -167,7 +176,8 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   Backtest notebook `analysis/leaderboard_backtest.ipynb` валидирует
   формулу на исторических `events` до боевого запуска.
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
-  время и часовой пояс настраиваются per-user
+  время и часовой пояс настраиваются per-user. Там же: источник
+  флэш-карт (Микс/Официальные/Свои) и **📇 Мои карточки** (CRUD по предметам)
 - **❓ FAQ** — интерактивное меню с 9 вопросами + кнопка техподдержки.
   Каждый вопрос как отдельная inline-кнопка → message edit показывает
   ответ + `[◀️ К списку]`. Вопросы: миссия проекта, эффективность,
@@ -198,13 +208,13 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 хендлерах.
 
 ```
-bot.py              # Хендлеры aiogram, FSM-состояния, клавиатуры, mode picker,
-                    # 4 учебных режима, main()
+bot.py              # Хендлеры aiogram, FSM, study flow (предмет→режим),
+                    # 4 учебных режима, user flashcards UI, main()
 db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
 repository.py       # UserRepository, SessionRepository, AdminRepository,
-                    # FlashcardRepository, McqProgressRepository,
-                    # TaskProgressRepository, SubjectStatsRepository
-                    # (только CRUD, без бизнес-логики)
+                    # FlashcardRepository, UserFlashcardRepository,
+                    # McqProgressRepository, TaskProgressRepository,
+                    # SubjectStatsRepository (только CRUD, без бизнес-логики)
 services.py         # AchievementService, StudyService, StreakService,
                     # ReminderService, BackupService, AnalyticsService,
                     # UserRateLimiter
@@ -224,7 +234,10 @@ study_materials/    # Учебные материалы — data-driven дере
 ```
 
 **Таблицы в БД** (создаются в `db.init_db`):
-- `users`, `notification_settings` — профиль и настройки уведомлений
+- `users`, `notification_settings` — профиль, уведомления, `flashcard_source`
+  (`mix` / `official` / `own`, default `mix`)
+- `user_flashcards` — пользовательские карточки (user_id, subject_id, term,
+  definition; UNIQUE по term; лимит 100/subject)
 - `study_sessions` — каждая завершённая сессия (длительность, монеты, рейтинг)
 - `user_achievements` — прогресс по 9 достижениям
 - `quiz_progress` — SRS для **ситуационных** квизов (fixed intervals)
@@ -263,7 +276,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**476 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation) |
+| [tests/](tests/) | Юнит-тесты (**492 штуки**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation + **user flashcards** + flashcard source mixing) |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
@@ -287,7 +300,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **437 тестов** (~28 сек):
+Покрытие — **492 теста** (~28 сек):
 
 **Pre-leaderboard baseline (185):**
 
@@ -322,6 +335,13 @@ pytest tests/test_streak_service.py -v
 | `test_friend_invite_tokens.py` | 17 | create_invite_token (uniqueness + 30-day expiry), find (valid / unknown / empty / None / expired), accept_invite (happy / self / already-friends / normalized storage / pending cleanup), multi-use, end-to-end |
 | `test_username_sync_middleware.py` | 8 | UsernameSyncMiddleware: happy path + change persists + NULL handling + graceful degradation (no event_from_user / refresh_failure / falsy user_id) + missing-user no-op |
 | `test_integration_flows.py` | 9 | End-to-end: full leaderboard journey (study → score → rollover → badge), friends lifecycle (send→accept→render→remove), freeze cycle, privacy effect both POVs, username search e2e, multiplier reordering (A=1000@0-streak vs B=900@14-streak → B wins) |
+
+**User flashcards (16, 2026-05-22):**
+
+| Файл | Тестов | Что покрывает |
+|------|--------|--------------|
+| `test_user_flashcards.py` | 11 | CRUD, лимит 100/subject, hash `u{id:07x}`, удаление + cascade SM-2 progress, `flashcard_source` в settings |
+| `test_flashcard_source.py` | 5 | `load_flashcards_for_study`: mix / official / own, изоляция hash-префиксов |
 
 Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
 параллелятся без collisions.

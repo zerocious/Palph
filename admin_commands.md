@@ -322,9 +322,9 @@ Churned (>14d inactive)        █░░░░░░░░░  11.1% (2)
 - 🎯 **Hardest situational terms** — top-5 терминов с самой низкой accuracy (`AVG(is_correct) ASC`). Enriched текстом из `study_materials/`.
 - ❓ **Most-attempted MCQ** — top-5 вопросов по `SUM(total_count) DESC`.
 - 📚 **Progress coverage** — счётчики `COUNT(DISTINCT item)` per mode.
-- 🃏 **Flashcard EF distribution** — 4 бакета (`<1.5` / `1.5-2.0` / `2.0-2.5` / `≥2.5`). Чем ниже EF — тем сложнее карта пользователю по SM-2.
+- 🃏 **Flashcard EF distribution** — 4 бакета (`<1.5` / `1.5-2.0` / `2.0-2.5` / `≥2.5`). Чем ниже EF — тем сложнее карта пользователю по SM-2. В выборку входят и **пользовательские** карты: их `card_hash` в `flashcard_progress` имеет префикс `u` (`u0000001` …), отдельного раздела в отчёте нет — общая EF-статистика по всем повторениям.
 
-Используется для итераций над контентом: «эту карточку либо переформулируй, либо она — хороший diagnostic».
+Используется для итераций над контентом: «эту карточку либо переформулируй, либо она — хороший diagnostic». Для своих карт hash→текст в render-слое мапится из `user_flashcards`, для официальных — из `flashcards.txt`.
 
 ### `/event_timeline [hours]` — лента последних событий
 

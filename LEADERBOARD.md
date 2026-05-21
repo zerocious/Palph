@@ -63,6 +63,12 @@ internally; floored on display.
   in `flashcard_progress` — first encounter ever. Once the row exists
   (regardless of `repetitions` value, including 0 after a reset),
   subsequent correct answers are **reviews**.
+- **User-created flashcards** (2026-05-22): same scoring rules and daily cap.
+  Stored in `user_flashcards`; `card_hash` = `u{card_id:07x}` (distinct from
+  official `md5(term)[:8]`). SM-2 state lives in the same `flashcard_progress`
+  table; `flashcard_reviewed` events use the same `is_new` + `quality` semantics.
+  Source filter (`mix` / `official` / `own`) affects which cards appear in
+  study sessions only — not how points are counted once reviewed.
 
 ### 5. Streak multiplier (rewards consistency, applied to weekly total)
 

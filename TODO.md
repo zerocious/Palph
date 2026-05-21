@@ -9,7 +9,16 @@ Example:
 
 ---
 
-## v0.7 — текущий спринт (2026-05-17)
+## v0.8 — user flashcards (2026-05-22) ✅ shipped
+
+17) [Фича] Пользовательские флэш-карточки + перестроенный flow учёбы  
+Ценность: студент добавляет свои термины по предмету и повторяет их с тем же SM-2, что и официальный контент; не нужно ждать наполнения `flashcards.txt`  
+Готовность: таблица `user_flashcards`; CRUD через 📇 Мои карточки; `flashcard_source` (mix/official/own); ❓ Квизы → предмет → режим; прогресс/mastery учитывает свои карты; 16 тестов; 492 total  
+Приоритет: Must — **закрыто**
+
+---
+
+## v0.7 — спринт (2026-05-17)
 
 План: `C:\Users\User\.claude\plans\make-a-new-session-merry-castle.md`
 Сессия: см. session_notes.md, запись от 2026-05-17
@@ -40,7 +49,7 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
 handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На текущем
-`main` (`55e70ec`) **476 тестов** покрывают всю систему (включая
+`main` **492 теста** покрывают всю систему (включая user flashcards,
 middleware, end-to-end integration flows, reminder service sad-pet
 animation). Открытой leaderboard-работы нет.
 
