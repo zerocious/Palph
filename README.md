@@ -402,6 +402,14 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
 с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).
 
+**Roadmap расширений** (зафиксирован 2026-05-21 в TODO.md → `🟡 Будущие расширения`):
+A/B-тест фреймворк (`experiments` table + детерминированный `get_variant`),
+`analysis/queries/` с 8 reference SQL-файлами, `docs/events_schema.md`,
+`analysis/schema_v1.yaml`, `system.deploy` event-маркеры, Wilson CI на
+`/cohort_stats`, survival analysis через `lifelines`, anonymization helper
+для публичных notebooks, `/feedback` команда, in-bot NPS опрос. 10 пунктов
+ранжированы по signal-per-effort — следующая сессия начинается с A/B-фреймворка.
+
 ---
 
 ## Лицензия

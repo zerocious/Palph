@@ -75,10 +75,11 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 Готовность: файлы `study_materials/industrial-management/situational/section-{ii,iii,iv}.txt` содержат ≥10 терминов каждый в формате «термин || определение || ключевые слова || ситуация»; кнопки разделов автоматически появятся (already data-driven)  
 Приоритет: Should (до публичного запуска)
 
-2) [Фича] Питомец грустит при пропуске сегодняшней сессии  
-Ценность: бриф обещает «sad if no session today» — сейчас настроение зависит только от стрика, обещание не выполняется  
-Готовность: get_pet_emotion учитывает has_studied_today (или дату last_session); если сегодня сессий не было — питомец грустный, даже при ненулевом стрике  
-Приоритет: Should
+2) ✅ ~~[Фича] Питомец грустит при пропуске сегодняшней сессии~~ — **shipped**
+в PR #2 (`9203aab`, pet data layer) через чистую функцию
+`services.derive_emotion(user, fsm_state, now_local)` с sad-path по
+`has_studied_today=0`, плюс PR #4 (`fe69329`) подключил её в
+`ReminderService._send_evening`. Закрыто 2026-05-19.
 
 5) [Алгоритм] SM-2 для **ситуационных** квизов (для флэш-карт ✅ сделано в v0.7 2026-05-17 — см. session_notes)  
 Ценность: бриф упоминает SM-2; сейчас фиксированные интервалы [1,2,4,7] не адаптируются под сложность термина для конкретного пользователя  
@@ -121,7 +122,147 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 
 ### 🟡 Будущие расширения
 
-(Сейчас секция пуста — все идеи из изначального плана уже ship'нуты. Новые идеи накапливаются в [BACKLOG.md](BACKLOG.md), оттуда переезжают сюда при формализации.)
+Сформированы 2026-05-21 как PA-портфолио roadmap. Tier'ы по signal-per-effort
+(порядок воспроизводит исходную nightly-планёрку; пункт **#2 user properties via
+/start onboarding** намеренно опущен по решению пользователя).
+
+**Tier 1 — high signal для PA-портфолио**
+
+1) [Аналитика] A/B-тест фреймворк
+Ценность: единственный недостающий кусок для causal claims — сейчас можно
+описывать тренды, но не делать причинно-следственные выводы. Один real
+experiment («does showing pet level in profile increase 7-day retention?») =
+real PA-артефакт на резюме. Biggest leap from «dashboard person» к
+«experimentation person» — это та seniority-delta, которую recruiter реально
+замечает.
+Готовность:
+— Таблица `experiments(user_id INTEGER NOT NULL REFERENCES users(user_id),
+  experiment_name TEXT NOT NULL, variant TEXT NOT NULL, assigned_at TEXT NOT
+  NULL DEFAULT (datetime('now')), PRIMARY KEY(user_id, experiment_name))`.
+— `services.get_variant(user_id, experiment_name, variants=['control',
+  'treatment'])` — детерминированный хэш `(user_id + experiment_name)` → variant
+  на первом вызове, далее закэшировано в таблице.
+— Sprinkle `if get_variant(uid, '<exp>') == 'treatment': ...` в decision-точках
+  (например, `sad_pet_v2`).
+— Один real experiment ship'нут end-to-end: assignment → events table пишет
+  variant в properties → анализ в notebook (`experiments.ipynb` с
+  retention-curves по variant + significance test).
+— `events.properties` для каждого ключевого события дополняется `variant`-полем,
+  если пользователь участвует в активном эксперименте.
+Приоритет: Should (центральная вещь следующей сессии).
+
+3) [Аналитика] Reference SQL queries directory
+Ценность: SQL-портфолио для interview-моментов («show me your SQL»). Standalone
+файлы легче ревьюить, чем выдержки из notebooks.
+Готовность: `analysis/queries/` с ≥8 standalone `.sql` файлами, executable
+против экспортированного SQLite-датасета:
+— `01_cohort_retention.sql` (DAU by signup-week ISO)
+— `02_activation_funnel.sql` (signup → first session → 5th session → 3-day
+  streak)
+— `03_rfm_segmentation.sql` (Recency / Frequency / Monetary для coin economy)
+— `04_feature_adoption_by_cohort.sql`
+— `05_session_length_distribution.sql`
+— `06_math_specific_funnel.sql` (mission-aligned)
+— `07_churn_predictors.sql` (корреляция first-week features с 30-day retention)
+— `08_pre_exam_engagement.sql` (заглушка под exam_date — пока экзаменной даты в
+  схеме нет, оставить TODO-комментарий со ссылкой на пропущенный пункт #2)
+— README.md в директории с инструкцией «how to run против `data.sqlite` из
+  `/export all`».
+Приоритет: Should.
+
+**Tier 2 — data hygiene, «mature data person»**
+
+4) [Аналитика] Event schema documentation
+Ценность: bot self-documenting для будущего аналитика (включая future you через
+6 месяцев). Маркер «mature data person» в резюме.
+Готовность: `docs/events_schema.md` — таблица: event_name | when_fires |
+required_properties | optional_properties | example. Покрывает все 14 hook'ов из
+`bot.py` + любые добавленные с тех пор. Автоматическая проверка drift через
+test, который парсит `EventRepository.log_event(...)` вызовы и сверяет с .md
+(опционально).
+Приоритет: Should (низкий effort, высокий signal — ~30 минут).
+
+5) [Аналитика] Stable CSV schema contract
+Ценность: downstream notebooks знают, что ожидать от `/export all` across
+версий. Предотвращает silent breakage notebooks при schema-changes.
+Готовность: `analysis/schema_v1.yaml` с column types (`int`, `text`, `iso8601`,
+`json`) и meaning для каждой из 10 экспортируемых таблиц. `metadata.json` из
+`/export all` уже содержит `schema_version` — здесь её формализуем. При
+несовместимых изменениях bump v1 → v2, старая версия yaml остаётся для legacy
+notebooks.
+Приоритет: Could.
+
+6) [Аналитика] Deploy/version markers в events table
+Ценность: correlate metric changes с релизами («D7 dropped 5pp after
+2026-05-15 — what shipped?»). Anti-correlation = portfolio gold.
+Готовность: на bot startup лог `system.deploy` event в events table с
+properties `{version: "<short_hash>", started_at: "<iso>"}`. Hash берётся либо
+из `git rev-parse --short HEAD` на build-time (через переменную окружения),
+либо из `__version__` константы. Появляется в `/event_timeline` как маркер
+«вот тут был деплой». Notebook `release_impact.ipynb` (опционально) — overlay
+deploy markers на retention-кривую.
+Приоритет: Should.
+
+**Tier 3 — статистический / аналитический polish**
+
+7) [Аналитика] Confidence intervals на /cohort_stats
+Ценность: с <100 users point estimates lie. Wilson interval для binomial
+retention. Показывает statistical literacy.
+Готовность: `/cohort_stats` output расширен: D1/D7/D30 ± 95% CI (Wilson). ~1
+час, `scipy.stats.binom.interval` или ручной Wilson. В тестах фиксируется
+boundary case (n=0, n=1, p=0, p=1).
+Приоритет: Could.
+
+8) [Аналитика] Time-to-event метрики (survival analysis)
+Ценность: beyond «did they retain D7» — survival analysis это правильный
+фрейминг для understanding engagement timing.
+Готовность:
+— Метрики в `/dau` или новой команде `/timing`:
+  · Time to second session (median + p25/p75)
+  · Time from signup to first 25-min session (real engagement signal)
+  · Median time-between-sessions per user
+— Kaplan-Meier curve в notebook (`survival.ipynb`) с `lifelines` library —
+  один-import.
+— Тесты на корректность time-delta расчёта (включая timezone edge cases).
+Приоритет: Could.
+
+9) [Аналитика] Anonymization helper для shared notebooks
+Ценность: можно публиковать notebooks в GitHub-портфолио без утечки real
+Telegram user_id'ов (которые linkable к публичным профилям).
+Готовность: `analysis/anonymize.py` — функция принимает CSV или DataFrame,
+хэширует user_id'ы консистентно (HMAC-SHA256 с `secret_salt` из `.env`, не
+коммитится). Notebook'и опционально включают `anonymize_df(df)` step перед
+сохранением outputs. README.md в `analysis/` фиксирует правило: «никаких
+raw user_id в коммите».
+Приоритет: Must (как только хоть один notebook публикуется в GitHub) / Could
+(пока notebooks только локально).
+
+**Tier 4 — qualitative signal**
+
+10) [Аналитика/Качественные данные] /feedback команда
+Ценность: один Telegram-message → запись в БД. Раз в неделю grep по терминам
+(«сложно», «не понимаю», «баг») + pair с analytics («users who say 'сложно'
+churn at 2× rate» = real insight, отлично читается в резюме).
+Готовность: команда `/feedback <text>` принимает свободный текст → запись в
+`user_feedback(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES
+users(user_id), text TEXT NOT NULL, sentiment TEXT, created_at TEXT NOT NULL
+DEFAULT (datetime('now')))`. `sentiment` nullable (опционально enrich позже —
+например, через rules-based scorer или LLM). Админ-команда `/feedback_dump`
+для CSV-экспорта. Анти-абуз: rate-limit 1 message в час на user_id.
+Приоритет: Could.
+
+11) [Аналитика/Качественные данные] In-bot NPS survey
+Ценность: NPS universally recognized метрика в резюме. Конкретное число для
+slide deck'а.
+Готовность: после 7 active days (`has_studied_today` true 7 раз, не подряд)
+fire 1-shot prompt «Насколько вероятно, что ты порекомендуешь Palph другу?
+(0–10)». Inline-keyboard 0..10. Запись в `user_nps(user_id INTEGER PRIMARY
+KEY REFERENCES users(user_id), score INTEGER NOT NULL CHECK(score BETWEEN 0
+AND 10), asked_at TEXT NOT NULL, answered_at TEXT NOT NULL DEFAULT
+(datetime('now')))`. Score 9–10 = promoter, 7–8 = passive, 0–6 = detractor.
+Команда `/nps` (admin) — текущий NPS + breakdown по сегментам. Один опрос на
+пользователя в v1; повторный — отдельная задача.
+Приоритет: Could.
 
 ### 🎯 Главный портфолио-asset (внешняя аналитика)
 

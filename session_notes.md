@@ -4,6 +4,50 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-21 (PA-портфолио roadmap, planning only)
+
+Goal: брейншторм «что добавить, чтобы PA-research было проще» → формализовать
+в TODO.md, ничего не кодить.
+
+**Итог:** 10 пунктов записаны в `TODO.md → ## PA-аналитика → 🟡 Будущие
+расширения` (Tier 1–4 по signal-per-effort). Code untouched, тесты не
+запускались, 476 passing с предыдущей сессии. Никаких PR'ов / коммитов / merge'ей.
+
+### План (записано в TODO для следующей сессии)
+
+| Tier | # | Пункт | Приоритет |
+|------|---|-------|-----------|
+| 1 | 1 | A/B-тест фреймворк (`experiments` table + `get_variant` + один real experiment end-to-end) | Should |
+| 1 | 3 | `analysis/queries/` — 8 reference SQL файлов (cohort, funnel, RFM, churn predictors, etc.) | Should |
+| 2 | 4 | `docs/events_schema.md` — список 14+ event names с required/optional properties | Should |
+| 2 | 5 | `analysis/schema_v1.yaml` — column-types contract для `/export all` | Could |
+| 2 | 6 | `system.deploy` event на startup с version hash → корреляция метрик с релизами | Should |
+| 3 | 7 | Wilson CI на `/cohort_stats` retention numbers | Could |
+| 3 | 8 | Time-to-event метрики (KM curve через `lifelines`) | Could |
+| 3 | 9 | `analysis/anonymize.py` — HMAC-SHA256 user_id для GitHub-портфолио | Must (если notebooks public) |
+| 4 | 10 | `/feedback <text>` команда + `user_feedback` таблица | Could |
+| 4 | 11 | In-bot NPS survey после 7 active days | Could |
+
+**Skip'нуто из brainstorm'а:** #2 user properties via /start onboarding
+(university_year / exam_date / acquisition_channel) — пользователь явно
+отказался («except 2nd»). Причина не зафиксирована; если понадобится позже —
+вернуться к этой ноте.
+
+### Что НЕ менялось
+
+- `bot.py`, `services.py`, `repository.py`, `tests/` — без изменений.
+- `README.md` — обновлён только pointer на TODO (см. ниже).
+- Никаких `git` операций.
+
+### Рекомендация для следующей сессии
+
+Начать с #1 (A/B-фреймворк) — biggest leap от «dashboard person» к
+«experimentation person». #1 + #3 (SQL queries) логично объединить в один
+PR: каждая reference query параллельно прогоняется как acceptance test для
+exposed table-схемы.
+
+---
+
 ## Session — 2026-05-20 (post-v0.8 follow-ups)
 
 Goal: ship два deferred follow-up'а на main после merge PR #3 и PR #4:
