@@ -70,14 +70,14 @@ intern/junior. Цель — превратить бот в источник да
 PA-анализа в Jupyter.
 
 Что уже доступно (админ-команды + `/export all` ZIP + 8 reference SQL +
-A/B framework + Wilson CI на retention + 169 PA-тестов) — см.
-[README.md](README.md) и [session_notes.md](session_notes.md).
+A/B framework + Wilson CI + schema contract YAML + 179 PA-тестов) —
+см. [README.md](README.md) и [session_notes.md](session_notes.md).
 
 Tier'ы по signal-per-effort. Ship'нуто: #1 (A/B framework) + #3
 (reference SQL) — PR #6; #4 (event schema docs) + #6 (deploy markers) —
-PR #7; #7 (Wilson CI на /cohort_stats) — PR #8. Пункт #2 (user
-properties via /start onboarding) намеренно опущен по решению
-пользователя 2026-05-21. Ниже — что осталось.
+PR #7; #7 (Wilson CI на /cohort_stats) — PR #8; #5 (schema_v1.yaml
+contract) — PR #9. Пункт #2 (user properties via /start onboarding)
+намеренно опущен по решению пользователя 2026-05-21. Ниже — что осталось.
 
 **Tier 2 — data hygiene, «mature data person»**
 
@@ -88,15 +88,14 @@ optional / example. Drift-test `tests/test_events_schema_doc.py` —
 AST-парсер `event_repo.log(...)` вызовов сверяет с `#### <name>`
 заголовками; новый event без документации валит тест.
 
-5) [Аналитика] Stable CSV schema contract
-Ценность: downstream notebooks знают, что ожидать от `/export all` across
-версий. Предотвращает silent breakage notebooks при schema-changes.
-Готовность: `analysis/schema_v1.yaml` с column types (`int`, `text`,
-`iso8601`, `json`) и meaning для каждой из 11 экспортируемых таблиц.
-`metadata.json` из `/export all` уже содержит `schema_version` — здесь её
-формализуем. При несовместимых изменениях bump v1 → v2; старая версия
-yaml остаётся для legacy notebooks.
-Приоритет: Could.
+5) ✅ [Аналитика] Stable CSV schema contract — **shipped в PR #9**.
+`analysis/schema_v1.yaml` фиксирует имя/тип/nullable/semantic для каждой
+колонки во всех 11 экспортируемых таблицах. `metadata.json` из
+`/export all` теперь содержит `schema_version: "1"` +
+`schema_contract: "analysis/schema_v1.yaml"`. Drift-test
+`tests/test_schema_contract.py` (9 тестов) сравнивает YAML с актуальной
+SQLite-схемой: missing/phantom columns, type fidelity (SQLite affinity),
+nullable flags, PK columns.
 
 6) ✅ [Аналитика] Deploy/version markers в events table — **shipped
 в PR #7**. На `bot.main()` после `app.start` лога вызывается

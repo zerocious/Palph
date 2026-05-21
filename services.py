@@ -1935,19 +1935,25 @@ class AnalyticsService:
             "peak": peak,
         }
 
-    async def export_all_tables_zip(self, schema_version: str = "v0.7") -> tuple[bytes, dict]:
+    async def export_all_tables_zip(self, schema_version: str = "1") -> tuple[bytes, dict]:
         """
-        Bundles all 10 exportable tables + metadata.json into a ZIP archive.
+        Bundles all 11 exportable tables + metadata.json into a ZIP archive.
 
         Returns: (zip_bytes, metadata_dict).
 
         metadata.json schema:
             {
                 "exported_at": "ISO-8601 UTC timestamp",
-                "schema_version": "v0.7",
+                "schema_version": "1",
+                "schema_contract": "analysis/schema_v1.yaml",
                 "row_counts": {table_name: int, ...},
                 "tables": [list of table_names in zip],
             }
+
+        `schema_version` соответствует major-версии YAML-контракта в
+        `analysis/schema_v1.yaml` (PA-roadmap #5). Bump → v2 при breaking
+        changes (column removed/renamed/retyped); v1 остаётся для архивных
+        экспортов, чтобы downstream notebooks не ломались.
 
         Used by /export all admin command — позволяет одной командой выгрузить
         весь analytics-dataset для внешнего Jupyter/pandas анализа.
@@ -1961,6 +1967,7 @@ class AnalyticsService:
         metadata = {
             "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "schema_version": schema_version,
+            "schema_contract": f"analysis/schema_v{schema_version}.yaml",
             "row_counts": {},
             "tables": [],
         }
