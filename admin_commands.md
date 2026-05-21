@@ -366,21 +366,22 @@ Default 30 дней, clamp [1, 365]. Server time. Использует events ta
 
 `/export` без аргумента → список доступных алиасов.
 
-**Все 10 алиасов:**
+**Все 11 алиасов:**
 `users`, `sessions`, `achievements`, `quiz`, `flashcards`, `mcq`,
-`tasks`, `subject_stats`, `settings`, `events`.
+`tasks`, `subject_stats`, `settings`, `events`, `experiments`.
 
 ### `/export all` — ZIP всего dataset'а + metadata.json
 
-Bundle всех 10 таблиц + `metadata.json` одной командой:
+Bundle всех 11 таблиц + `metadata.json` одной командой:
 
 ```
 palph-export-2026-05-18.zip
 ├── users.csv
 ├── study_sessions.csv
-├── ... (все 10 таблиц)
+├── ... (все 11 таблиц)
 ├── events.csv
-└── metadata.json   {exported_at, schema_version, row_counts, tables}
+├── experiments.csv  (A/B assignments — PA-roadmap #1)
+└── metadata.json    {exported_at, schema_version, row_counts, tables}
 ```
 
 **Killer feature для PA-портфолио:** `unzip` + `pd.read_csv(...)` × N → анализируй любую корреляцию между таблицами в Jupyter одним loop'ом. `metadata.json` фиксирует timestamp и row-counts для воспроизводимости.

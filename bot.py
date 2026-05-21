@@ -5061,7 +5061,7 @@ async def cmd_help(message: Message):
         "/event_timeline [hours] — лента событий за последние N часов (default 24)\n"
         "/heatmap [days] — heatmap активности (часы × дни недели, default 30 дней)\n"
         "/export &lt;alias&gt; — CSV-дамп одной таблицы\n"
-        "/export all — ZIP всех 10 таблиц + metadata.json (для Jupyter)\n"
+        "/export all — ZIP всех 11 таблиц + metadata.json (для Jupyter)\n"
         "/parse_logs — bot.log + rotated → events CSV (historical backfill)\n"
     )
     if is_main:

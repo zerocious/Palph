@@ -510,6 +510,88 @@ def parse_friend_query(text: str) -> tuple:
     return (text, None)
 
 
+# ------------------------------------------------------------
+# A/B-эксперименты (PA-roadmap #1, 2026-05-21).
+#
+# Источник истины для активных экспериментов и их вариантов. Каждый
+# experiment_name → упорядоченный список variants (первый = control).
+# Список упорядоченный, потому что детерминированный хэш мапит на индекс;
+# изменение порядка после старта эксперимента переназначит всех юзеров.
+# При добавлении нового эксперимента:
+#   1. Добавь запись в EXPERIMENTS.
+#   2. На decision-сайте позови `get_variant(repo, user_id, name)`.
+#   3. По возможности логируй variant в properties events ниже по flow.
+# ------------------------------------------------------------
+EXPERIMENTS: dict[str, list[str]] = {
+    # Sentinel-эксперимент: всегда возвращает "control" для всех юзеров.
+    # Существует только для smoke-test'а инфраструктуры. Не использовать
+    # в decision-точках. Реальные эксперименты добавляй ниже.
+    "_noop_v1": ["control"],
+}
+
+
+def compute_variant(
+    user_id: int, experiment_name: str, variants: list[str]
+) -> str:
+    """
+    Детерминированный hash-based assignment: один user_id × один
+    experiment_name → один variant навсегда (стабильно между запусками
+    и независимо от persistence).
+
+    SHA256(user_id:experiment_name) интерпретируется как big-endian
+    unsigned int (первые 8 байт) → modulo len(variants) → индекс
+    в списке. Распределение асимптотически равномерное (sha256 хороший
+    avalanche), без перекоса при росте N.
+
+    Pure-функция: тестируется без БД. caller обычно вызывает её через
+    `get_variant(repo, ...)` — обёртку с кэшем в `experiments` table.
+
+    Raises ValueError, если variants пустой или experiment_name пустой
+    (защита от тихого misuse).
+    """
+    import hashlib
+    if not experiment_name:
+        raise ValueError("experiment_name must be non-empty")
+    if not variants:
+        raise ValueError("variants must be non-empty")
+    key = f"{user_id}:{experiment_name}".encode("utf-8")
+    h = hashlib.sha256(key).digest()
+    n = int.from_bytes(h[:8], "big")
+    return variants[n % len(variants)]
+
+
+async def get_variant(
+    repo, user_id: int, experiment_name: str, event_repo=None
+) -> str:
+    """
+    Возвращает variant пользователя для эксперимента из EXPERIMENTS.
+    Cache-aside: сначала смотрим в БД, при miss — вычисляем
+    `compute_variant` + INSERT OR IGNORE через repo, опционально
+    логируем `experiment.assigned` в events (если передан event_repo).
+
+    Idempotent: повторный вызов вернёт тот же variant, БД не вырастет,
+    event не залогируется второй раз (т.к. сначала проверяем cache).
+
+    Raises KeyError, если experiment_name не зарегистрирован в EXPERIMENTS
+    (явная ошибка > тихий misuse).
+    """
+    if experiment_name not in EXPERIMENTS:
+        raise KeyError(f"Unknown experiment: {experiment_name}")
+    cached = await repo.get_assignment(user_id, experiment_name)
+    if cached is not None:
+        return cached
+    variants = EXPERIMENTS[experiment_name]
+    variant = compute_variant(user_id, experiment_name, variants)
+    inserted = await repo.record_assignment(user_id, experiment_name, variant)
+    if inserted and event_repo is not None:
+        await event_repo.log(
+            user_id,
+            "experiment.assigned",
+            {"experiment": experiment_name, "variant": variant},
+        )
+    return variant
+
+
 class StudyService:
     def __init__(
         self,
@@ -1452,6 +1534,7 @@ class AnalyticsService:
         "subject_stats": "user_subject_stats",
         "settings": "notification_settings",
         "events": "events",  # append-only event log для PA-аналитики
+        "experiments": "experiments",  # PA-roadmap #1: A/B assignments
     }
 
     async def export_table_csv(self, table_alias: str) -> tuple[bytes, int]:

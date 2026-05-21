@@ -1768,3 +1768,67 @@ class FriendRepository:
                 from_uid, invitee_uid, ua, ub,
             )
             return "accepted"
+
+
+class ExperimentRepository:
+    """
+    A/B-эксперименты (PA-roadmap #1).
+
+    Назначение пользователю варианта детерминированное: SHA256(user_id +
+    experiment_name) % len(variants). Это гарантирует, что один и тот же
+    user_id всегда попадает в один и тот же variant — даже до того, как
+    мы успели записать assignment в БД, и даже если БД-строка была удалена
+    (например, через ON DELETE CASCADE при чистке пользователя).
+
+    Запись в `experiments` — кэш и audit-trail: фиксирует первое касание
+    (`assigned_at`) для cohort-анализа («когда юзер впервые встретил вариант»).
+    `INSERT OR IGNORE` делает повторные вызовы no-op.
+
+    Сама deterministic-hash функция живёт в `services.compute_variant` —
+    pure function, легко юнит-тестируется. Здесь только DB-доступ.
+    """
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    async def get_assignment(
+        self, user_id: int, experiment_name: str
+    ) -> Optional[str]:
+        """Возвращает variant из БД или None, если ещё не назначен."""
+        async with self.db.execute(
+            "SELECT variant FROM experiments "
+            "WHERE user_id=? AND experiment_name=?",
+            (user_id, experiment_name),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["variant"] if row else None
+
+    async def record_assignment(
+        self, user_id: int, experiment_name: str, variant: str
+    ) -> bool:
+        """
+        Идемпотентная запись назначения. True — если новая строка,
+        False — если уже была (race-safe: дубль-вызов не падает).
+        """
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO experiments "
+            "(user_id, experiment_name, variant) VALUES (?, ?, ?)",
+            (user_id, experiment_name, variant),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def count_by_variant(self, experiment_name: str) -> Dict[str, int]:
+        """
+        Дистрибуция вариантов для одного эксперимента.
+        Используется в админ-метриках для sanity-check'а сплита 50/50.
+        """
+        async with self.db.execute(
+            "SELECT variant, COUNT(*) AS n FROM experiments "
+            "WHERE experiment_name=? GROUP BY variant",
+            (experiment_name,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row["variant"]: row["n"] for row in rows}
