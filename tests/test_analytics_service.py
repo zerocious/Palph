@@ -462,6 +462,13 @@ class TestExportAllTablesZip:
         # row_counts has entry for each table
         assert set(metadata["row_counts"].keys()) == set(metadata["tables"])
 
+    async def test_metadata_points_at_schema_contract(self, analytics):
+        """PA-roadmap #5: metadata.json should reference the YAML contract
+        so downstream notebooks know which version to validate against."""
+        _, metadata = await analytics.export_all_tables_zip()
+        assert metadata["schema_version"] == "1"
+        assert metadata["schema_contract"] == "analysis/schema_v1.yaml"
+
     async def test_metadata_row_counts_match_data(self, db, analytics, created_user):
         """Если в users одна запись, metadata.row_counts.users == 1."""
         # created_user fixture создаёт user_id=42

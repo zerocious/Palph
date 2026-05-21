@@ -1,0 +1,425 @@
+# Palph export schema contract — v1 (PA-roadmap #5, 2026-05-21).
+#
+# Stable column-types contract for `/export <alias>` and `/export all` CSVs.
+# Downstream Jupyter / pandas / R notebooks read this file to know what to
+# expect — without it, schema drift silently breaks plots and aggregations.
+#
+# How to bump:
+#   - **Additive** changes (new column, new table) stay on v1. Update this
+#     file, add a `since:` field on the new column, push as a normal patch.
+#   - **Breaking** changes (column removed / renamed / type changed) require
+#     a v2 file. Keep schema_v1.yaml unchanged so old notebooks still work
+#     against archived exports; new exports tag themselves with
+#     `schema_version: "2"` in metadata.json.
+#
+# Semantic types (semantic field — used by notebooks to pick correct
+# parsing / display, since SQLite TEXT is overloaded):
+#   - user_id        — int64; Telegram user_id; can be negative (group chats)
+#   - iso8601        — TEXT 'YYYY-MM-DD HH:MM:SS' UTC, parse via pd.to_datetime
+#   - iso_date       — TEXT 'YYYY-MM-DD' local-or-UTC depending on column
+#   - iso_time       — TEXT 'HH:MM' (clock time, no date)
+#   - boolean        — INTEGER 0|1; cast with bool()
+#   - count          — INTEGER >= 0
+#   - id             — INTEGER auto-increment PK
+#   - hash           — TEXT, opaque SHA-derived stable ID
+#   - enum           — TEXT, value drawn from a fixed set (see `values:`)
+#   - json           — TEXT, JSON-encoded dict (use pd.json_normalize)
+#   - real           — REAL float
+#   - text           — TEXT free-form
+
+schema_version: "1"
+generated: "2026-05-21"
+source_of_truth: "db.py::init_db (CREATE TABLE statements + ALTER TABLE migrations)"
+exporter:
+  function: "services.AnalyticsService.export_all_tables_zip"
+  cli_command: "/export all"
+
+tables:
+
+  users:
+    description: |
+      One row per Telegram user. `user_id` is the natural PK (Telegram-provided).
+      `created_at` is signup timestamp, UTC.
+    primary_key: [user_id]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+        description: Telegram user_id; PK. Can be negative for group chats.
+      - name: timezone
+        type: text
+        semantic: text
+        nullable: false
+        default: "Europe/Moscow"
+        description: IANA TZ name (e.g., "Europe/Moscow", "Asia/Tashkent").
+      - name: total_sessions
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: total_coins
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: current_streak
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+        description: Consecutive-day streak in user's local TZ; reset on miss.
+      - name: last_session
+        type: text
+        semantic: iso8601
+        nullable: true
+        description: UTC timestamp of most recent completed session; NULL until first session.
+      - name: has_studied_today
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 0
+        description: |
+          True if the user completed ≥1 session in their local TZ
+          *today*. Updated daily by streak_scheduler.
+      - name: created_at
+        type: text
+        semantic: iso8601
+        nullable: false
+        description: Signup timestamp (UTC).
+      - name: hidden_from_leaderboards
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 0
+        since: "2026-05-19"
+        description: User-set privacy opt-out; 1 = excluded from public leaderboards.
+      - name: username
+        type: text
+        semantic: text
+        nullable: true
+        since: "2026-05-19"
+        description: Current Telegram @username (no @); synced via UsernameSyncMiddleware.
+
+  study_sessions:
+    alias: sessions
+    description: Append-only Pomodoro session history. One row per completed session.
+    primary_key: [id]
+    columns:
+      - name: id
+        type: integer
+        semantic: id
+        nullable: false
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: duration_minutes
+        type: integer
+        semantic: count
+        nullable: false
+        description: Actual minutes studied (≤ planned). 5–120 range.
+      - name: coins_earned
+        type: integer
+        semantic: count
+        nullable: false
+        description: Base coin payout (= duration_minutes).
+      - name: bonus_coins
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+        description: Achievement bonus added to coins_earned at session close.
+      - name: score
+        type: integer
+        semantic: enum
+        nullable: true
+        values: [1, 2, 3, 4]
+        description: User's emoji rating (1=😞, 4=🤩). NULL = not rated.
+      - name: created_at
+        type: text
+        semantic: iso8601
+        nullable: false
+
+  user_achievements:
+    alias: achievements
+    description: Per-user achievement progress. Composite PK.
+    primary_key: [user_id, achievement_id]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: achievement_id
+        type: text
+        semantic: text
+        nullable: false
+        description: Stable ID from achievements.json.
+      - name: progress
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: target
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: completed
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 0
+
+  quiz_progress:
+    alias: quiz
+    description: Per-term progress in situational (open-text) quizzes.
+    primary_key: [user_id, term_hash]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: term_hash
+        type: text
+        semantic: hash
+        nullable: false
+      - name: last_attempt
+        type: text
+        semantic: iso8601
+        nullable: true
+      - name: is_correct
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 0
+      - name: streak
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: next_review
+        type: text
+        semantic: iso_date
+        nullable: true
+
+  flashcard_progress:
+    alias: flashcards
+    description: SM-2 spaced-repetition state per flashcard.
+    primary_key: [user_id, card_hash]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: card_hash
+        type: text
+        semantic: hash
+        nullable: false
+      - name: ease_factor
+        type: real
+        semantic: real
+        nullable: false
+        default: 2.5
+        description: SM-2 ease factor; starts at 2.5, modulated by quality ratings.
+      - name: interval_days
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: repetitions
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: last_review
+        type: text
+        semantic: iso8601
+        nullable: true
+      - name: next_review
+        type: text
+        semantic: iso_date
+        nullable: true
+
+  mcq_progress:
+    alias: mcq
+    description: Per-question state for multiple-choice quizzes.
+    primary_key: [user_id, question_hash]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: question_hash
+        type: text
+        semantic: hash
+        nullable: false
+      - name: correct_count
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: total_count
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: last_attempt
+        type: text
+        semantic: iso8601
+        nullable: true
+
+  task_progress:
+    alias: tasks
+    description: Per-task state for math/applied tasks.
+    primary_key: [user_id, task_id]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: task_id
+        type: text
+        semantic: text
+        nullable: false
+      - name: attempts_used
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+        description: 0–3 attempts used so far.
+      - name: succeeded
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 0
+      - name: last_attempt
+        type: text
+        semantic: iso8601
+        nullable: true
+
+  user_subject_stats:
+    alias: subject_stats
+    description: |
+      Per-subject visits and last activity. Bumped from the four study-mode
+      entry points + the situational quiz section picker.
+    primary_key: [user_id, subject_id]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: subject_id
+        type: text
+        semantic: text
+        nullable: false
+        description: Subject identifier (e.g., "Математика", "industrial-management").
+      - name: visits
+        type: integer
+        semantic: count
+        nullable: false
+        default: 0
+      - name: last_activity
+        type: text
+        semantic: iso8601
+        nullable: true
+
+  notification_settings:
+    alias: settings
+    description: Per-user notification preferences. 1:1 with users.
+    primary_key: [user_id]
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: morning_enabled
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 1
+      - name: morning_time
+        type: text
+        semantic: iso_time
+        nullable: false
+        default: "09:00"
+      - name: evening_enabled
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 1
+      - name: evening_time
+        type: text
+        semantic: iso_time
+        nullable: false
+        default: "21:00"
+      - name: streak_enabled
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 1
+      - name: achievements_enabled
+        type: integer
+        semantic: boolean
+        nullable: false
+        default: 1
+
+  events:
+    description: |
+      Append-only event log for PA analytics. Schema documented in
+      docs/events_schema.md (event_name + properties JSON shape).
+    primary_key: [id]
+    columns:
+      - name: id
+        type: integer
+        semantic: id
+        nullable: false
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: true
+        description: NULL for system-level events (e.g., `system.deploy`).
+      - name: event_name
+        type: text
+        semantic: text
+        nullable: false
+        description: |
+          snake_case for user-action events, namespace.verb for meta.
+          See docs/events_schema.md for the catalog.
+      - name: properties
+        type: text
+        semantic: json
+        nullable: false
+        default: "{}"
+        description: JSON-encoded dict; shape varies by event_name.
+      - name: created_at
+        type: text
+        semantic: iso8601
+        nullable: false
+
+  experiments:
+    description: |
+      A/B-test assignments (PA-roadmap #1, PR #6). One row per
+      (user_id, experiment_name); variant determined deterministically
+      from SHA256(user_id:experiment_name) at first lookup.
+    primary_key: [user_id, experiment_name]
+    since: "2026-05-21"
+    columns:
+      - name: user_id
+        type: integer
+        semantic: user_id
+        nullable: false
+      - name: experiment_name
+        type: text
+        semantic: text
+        nullable: false
+        description: Key from services.EXPERIMENTS registry.
+      - name: variant
+        type: text
+        semantic: enum
+        nullable: false
+        description: One of the values declared in services.EXPERIMENTS[experiment_name].
+      - name: assigned_at
+        type: text
+        semantic: iso8601
+        nullable: false

@@ -4,6 +4,81 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-21 (PA Tier 2 #5: schema_v1.yaml contract)
+
+Goal: следом за PR #8 закрыть Tier 2 #5 — заморозить CSV-схему export'а в
+YAML-контракте, чтобы downstream notebooks ловили schema drift раньше,
+чем notebook silently breaks. Stacked PR на ветке
+`claude/pa-schema-contract` поверх `claude/pa-wilson-ci`.
+
+**Итог:** Ship'нуто. Suite **570 passing** (550 baseline + 9 schema
+contract + 1 metadata test + 10 уже-существовавших scheduler_state
+тестов из параллельной ветки, пойманных pytest discovery).
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Schema contract | `analysis/schema_v1.yaml` — 11 таблиц × все колонки, каждая с `type` (integer/text/real), `semantic` (user_id/iso8601/boolean/count/hash/enum/json/iso_date/iso_time/id/text/real), `nullable`, `default`, опциональным `description` и `since` для мигрированных колонок. Header описывает 6 semantic-типов, additive-vs-breaking versioning rule (additive → stay v1; breaking → v2). | [analysis/schema_v1.yaml](analysis/schema_v1.yaml) |
+| 2 | Export | `AnalyticsService.export_all_tables_zip`: `schema_version` default `"v0.7"` → `"1"` (major-only); `metadata.json` теперь содержит `schema_contract: "analysis/schema_v<N>.yaml"` указатель — downstream notebook знает, какой YAML использовать для validation. | [services.py](services.py) |
+| 3 | Tests | `tests/test_schema_contract.py` (9 новых): file-exists + parses; all exported tables documented (no missing, no phantom); column names match in both directions; SQLite affinity matches YAML `type` (INTEGER/REAL/TEXT); nullable flags align (с PK-INTEGER quirk skip); primary_key list matches PRAGMA. PyYAML — soft dep через `pytest.importorskip`. | [tests/test_schema_contract.py](tests/test_schema_contract.py) |
+| 4 | Tests | `tests/test_analytics_service.py::TestExportAllTablesZip::test_metadata_points_at_schema_contract` (1 новый) — фиксирует `schema_version == "1"` и `schema_contract == "analysis/schema_v1.yaml"`. | [tests/test_analytics_service.py](tests/test_analytics_service.py) |
+| 5 | Docs | TODO PA #5 ✅ shipped с PR #9; PA-test count 169 → 179 в context-line. | [TODO.md](TODO.md) |
+
+### Design notes
+
+- **YAML, не JSON.** TODO explicitly требовал YAML; YAML позволяет
+  многострочный `description: |` blocks + комментарии для humans-reading.
+  Cost: PyYAML — но он уже доступен через transitive deps (nbformat/
+  jupyter); тест ещё имеет `pytest.importorskip` fallback на случай CI
+  без dev-deps.
+- **Semantic types vs SQLite types.** SQLite has 3 affinities (INTEGER,
+  REAL, TEXT). Semantic-types в YAML — это user-facing бакеты (user_id,
+  iso8601, boolean, count, hash, json, ...) которые подсказывают
+  downstream notebook'у, как правильно парсить TEXT-колонку. Например,
+  `created_at` имеет SQLite-affinity TEXT, semantic `iso8601` →
+  notebook применяет `pd.to_datetime`. Без semantic — каждый раз
+  гадать "это дата, ID, JSON?".
+- **schema_version = `"1"` (major only).** Не `"v0.7"`, не `"v1.0.0"`.
+  Major-only поясняет: contract menyaется только при breaking changes.
+  Additive (новая колонка) остаётся v1; breaking (rename, retyping,
+  remove) → v2. metadata.json points at the actual file path
+  (`analysis/schema_v<N>.yaml`) для self-describing exports.
+- **Drift test covers 4 axes.** Missing-in-YAML, phantom-in-YAML, type
+  mismatch, PK mismatch. Не покрывает: actual CSV row-value type fidelity
+  (pandas infers anyway), DEFAULT values (orthogonal — DEFAULT changes
+  не breaking для existing rows).
+- **PK INTEGER quirk handled.** SQLite реportит INTEGER PRIMARY KEY как
+  `notnull=0` в PRAGMA output (потому что эти колонки aliased на rowid).
+  Test skips this case вместо false-positive flag.
+- **Не сделано:** добавление `description` для всех 60+ колонок (только
+  для нетривиальных). Цель — не написать textbook, а зафиксировать
+  schema. Дополнить можно по мере необходимости.
+
+### Verification
+
+- `python -m py_compile services.py` — clean.
+- `python -m pytest tests/test_schema_contract.py -v` — 9 passed.
+- `python -m pytest tests/test_analytics_service.py::TestExportAllTablesZip -v` — все green.
+- `python -m pytest tests/` — **570 passed**, no regressions.
+
+### Что делать после merge PR #6/#7/#8/#9
+
+Оставшиеся 4 PA-roadmap пункта (с приоритетами):
+- **Tier 3 #8 Time-to-event / survival analysis** — Could, more effort,
+  `lifelines` библиотека = новая dev-dep.
+- **Tier 3 #9 Anonymization helper** — Could/Must в зависимости от
+  публичности notebooks; ~30 минут работы.
+- **Tier 4 #10 /feedback команда + #11 NPS survey** — оба Could,
+  оба требуют user-facing UI changes.
+- **Follow-up к PR #6** — sprinkle `get_variant` + notebook. Требует
+  продуктового решения про первый эксперимент.
+
+PA roadmap status: **Tier 1 закрыт (#1+#3), Tier 2 закрыт (#4+#5+#6),
+Tier 3 на 1/3 (только #7).** 6 из 10 пунктов ship'нуты, 4 осталось.
+
+---
+
 ## Session — 2026-05-21 (PA Tier 3 #7: Wilson CI на /cohort_stats)
 
 Goal: следом за PR #7 закрыть Tier 3 #7 — Wilson confidence intervals
