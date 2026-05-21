@@ -118,7 +118,7 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 **Event-tracking layer:**
 - `events` table — append-only лог каждого значимого действия (14 hook'ов в bot.py); JSON-properties для event-specific полей. Foundation для funnel/cohort/path/time-to-action анализа в pandas.
 
-Реализация: `services.AnalyticsService` + `repository.EventRepository` + `parse_logs.py`. **99 pytest-тестов** в `test_analytics_service.py` (58) + `test_event_repository.py` (15) + `test_log_parser.py` (20) + extras покрывают всю PA-инфраструктуру.
+Реализация: `services.AnalyticsService` + `repository.EventRepository` + `repository.ExperimentRepository` + `parse_logs.py`. **133 pytest-теста** PA-инфраструктуры: `test_analytics_service.py` (58) + `test_event_repository.py` (15) + `test_log_parser.py` (20) + `test_experiment_repository.py` (22, PR #6) + `test_reference_queries.py` (12, PR #6) + extras.
 
 ### 🟡 Будущие расширения
 

@@ -31,7 +31,8 @@ deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
 for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
 [TODO.md](TODO.md) и [session_notes.md](session_notes.md).
-Tests: 476 passing.
+Tests: 510 passing (+34 since v0.8: A/B framework + reference SQL queries
+shipped 2026-05-21 as PA-roadmap kickoff, PR #6).
 
 ---
 
@@ -263,8 +264,8 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**476 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation) |
-| [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
+| [tests/](tests/) | Юнит-тесты (**510 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation + **ExperimentRepository (22 теста) + reference SQL queries smoke (12 тестов)** — PR #6) |
+| [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) + [analysis/queries/](analysis/queries/) — 8 standalone reference SQL queries (cohort retention, activation funnel, RFM, feature adoption, session-length, math funnel, churn predictors, pre-exam stub) с README + schema-drift smoke test |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
 | [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
@@ -402,14 +403,23 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 
 После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
 с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).
+**Уже доступно прямо сейчас:** [analysis/queries/](analysis/queries/) — 8
+standalone `.sql` файлов (cohort retention, activation funnel, RFM
+segmentation, feature adoption, session-length distribution, math funnel,
+churn predictors, pre-exam stub) + README с инструкциями запуска. Smoke-test
+`tests/test_reference_queries.py` валидирует все против текущей схемы при
+каждом pytest-прогоне.
 
 **Roadmap расширений** (зафиксирован 2026-05-21 в TODO.md → `🟡 Будущие расширения`):
-A/B-тест фреймворк (`experiments` table + детерминированный `get_variant`),
-`analysis/queries/` с 8 reference SQL-файлами, `docs/events_schema.md`,
+~~A/B-тест фреймворк~~ ✅ **shipped в PR #6** (`experiments` table +
+детерминированный `get_variant` + EXPERIMENTS registry; 22 теста; следующий
+шаг — sprinkle на decision-сайте + notebook); ~~`analysis/queries/` с 8
+reference SQL-файлами~~ ✅ **shipped в PR #6** (`analysis/queries/01..08*.sql`
++ README + 12-test schema-drift smoke); остаются: `docs/events_schema.md`,
 `analysis/schema_v1.yaml`, `system.deploy` event-маркеры, Wilson CI на
 `/cohort_stats`, survival analysis через `lifelines`, anonymization helper
-для публичных notebooks, `/feedback` команда, in-bot NPS опрос. 10 пунктов
-ранжированы по signal-per-effort — следующая сессия начинается с A/B-фреймворка.
+для публичных notebooks, `/feedback` команда, in-bot NPS опрос. **Осталось
+8 пунктов** из изначальных 10.
 
 ---
 
