@@ -38,6 +38,7 @@ from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
     freeze_cost, parse_friend_query, derive_emotion, render_pet,
+    log_deploy_event,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 
@@ -5359,6 +5360,21 @@ async def main():
         len(ADMINS), MAIN_ADMIN_ID, SERVER_TIMEZONE,
         os.getenv("LOG_LEVEL", "INFO").upper(),
     )
+    # PA-roadmap #6: deploy/version markers в events table.
+    # Один event на запуск процесса — overlay deploy markers
+    # на retention-кривые в notebook'ах ("D7 dropped 5pp after
+    # 2026-05-15 — what shipped?").
+    try:
+        deploy_props = await log_deploy_event(event_repo)
+        logger.info(
+            "system.deploy version=%s python=%s",
+            deploy_props["version"], deploy_props["python_version"],
+        )
+    except Exception as e:
+        logger.warning(
+            "system.deploy.event_failed reason=%s detail=%s",
+            type(e).__name__, e,
+        )
     # Кеш @username бота для построения t.me/<name>?start=friend_<token>
     # deep-link'ов. get_me() — один HTTP round-trip за весь lifetime бота.
     try:

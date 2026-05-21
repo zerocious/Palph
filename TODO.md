@@ -70,23 +70,22 @@ intern/junior. Цель — превратить бот в источник да
 PA-анализа в Jupyter.
 
 Что уже доступно (админ-команды + `/export all` ZIP + 8 reference SQL +
-A/B framework + 133 PA-теста) — см. [README.md](README.md) и
+A/B framework + 148 PA-тестов) — см. [README.md](README.md) и
 [session_notes.md](session_notes.md).
 
 Tier'ы по signal-per-effort. Пункты #1 (A/B framework) и #3 (reference SQL)
-ship'нуты в PR #6. Пункт #2 (user properties via /start onboarding)
+ship'нуты в PR #6. Пункты #4 (event schema docs) и #6 (deploy markers)
+ship'нуты в PR #7. Пункт #2 (user properties via /start onboarding)
 намеренно опущен по решению пользователя 2026-05-21. Ниже — что осталось.
 
 **Tier 2 — data hygiene, «mature data person»**
 
-4) [Аналитика] Event schema documentation
-Ценность: bot self-documenting для будущего аналитика (включая future you
-через 6 месяцев). Маркер «mature data person» в резюме.
-Готовность: `docs/events_schema.md` — таблица: event_name | when_fires |
-required_properties | optional_properties | example. Покрывает все 14
-hook'ов из `bot.py` + любые добавленные с тех пор. Опционально drift-test,
-парсящий `EventRepository.log` вызовы и сверяющий с .md.
-Приоритет: Should (низкий effort, высокий signal — ~30 минут).
+4) ✅ [Аналитика] Event schema documentation — **shipped в PR #7**.
+`docs/events_schema.md` покрывает все 11 event-имён (10 user-action +
+`experiment.assigned` + `system.deploy`) с when_fires / required /
+optional / example. Drift-test `tests/test_events_schema_doc.py` —
+AST-парсер `event_repo.log(...)` вызовов сверяет с `#### <name>`
+заголовками; новый event без документации валит тест.
 
 5) [Аналитика] Stable CSV schema contract
 Ценность: downstream notebooks знают, что ожидать от `/export all` across
@@ -98,16 +97,17 @@ hook'ов из `bot.py` + любые добавленные с тех пор. О
 yaml остаётся для legacy notebooks.
 Приоритет: Could.
 
-6) [Аналитика] Deploy/version markers в events table
-Ценность: correlate metric changes с релизами («D7 dropped 5pp after
-2026-05-15 — what shipped?»). Anti-correlation = portfolio gold.
-Готовность: на bot startup лог `system.deploy` event в events table с
-properties `{version: "<short_hash>", started_at: "<iso>"}`. Hash из
-`git rev-parse --short HEAD` (через env переменную или `__version__`
-константу). Появляется в `/event_timeline` как маркер деплоя. Notebook
-`release_impact.ipynb` (опционально) — overlay deploy markers на
-retention-кривую.
-Приоритет: Should.
+6) ✅ [Аналитика] Deploy/version markers в events table — **shipped
+в PR #7**. На `bot.main()` после `app.start` лога вызывается
+`services.log_deploy_event(event_repo)` → одна строка в events
+с `event_name='system.deploy'`, `user_id=NULL`, `properties =
+{version, started_at_utc, python_version}`. Version-lookup: `BOT_VERSION`
+env → `git rev-parse --short HEAD` → `"unknown"` fallback. 13 тестов
+покрывают cascade + properties shape + multiple deploys.
+
+**Notebook `release_impact.ipynb`** (overlay deploy markers на
+retention-кривую) — не сделан, оставлен на следующий PR когда будет
+достаточно живых данных и больше одного фактического деплоя.
 
 **Tier 3 — статистический / аналитический polish**
 
