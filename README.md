@@ -29,9 +29,10 @@ opt-out, UTC-anchored weekly rollover с top-3/breakthrough/top-10%
 профиле + add по @username/Telegram ID + accept/reject/remove +
 deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
-for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
-[TODO.md](TODO.md) и [session_notes.md](session_notes.md).
-Tests: 533 passing.
+for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). User flows:
+[user-flows.md](user-flows.md). См. [TODO.md](TODO.md) и
+[session_notes.md](session_notes.md). Tests: **533** passing
+(`python -m pytest -q`).
 
 ---
 
@@ -158,8 +159,9 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   🔒 lv.N заблокировано) для 5 цветов и 5 аксессуаров с confirm-диалогом
   на покупку, **переименование** через FSM. Pillow build-script
   (`scripts/build_pet_assets.py`) генерирует 125 PNG + 5 GIF placeholder
-  ассетов (programmer-art) — real artwork как отдельный track-замена
-  файлов в `assets/pet/`. Sad-pet image в evening reminder — follow-up.
+  ассетов (programmer-art) — **real artwork** как отдельный track (замена
+  файлов в `assets/pet/`). **Sad-pet в вечернем напоминании** — shipped:
+  `derive_emotion` → `sad` + `send_animation(sad.gif)` с fallback на текст.
 - **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
   `(time + math_task + quiz + card) × streak_multiplier`, daily caps,
   ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
@@ -193,19 +195,18 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **🛠 Техподдержка**: пользователь пишет в чат → forward всем админам;
   ответ через `/reply <user_id> <текст>` (или через FAQ → «Связаться с
   техподдержкой»).
+- **Пользовательские команды:** `/start`, `/help`, `/stop`, `/leaderboard`,
+  `/friends`, `/share_friend`, `/cancel`. Навигация кнопками — [user-flows.md](user-flows.md).
 - **Админ-инструменты:** `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
-  `/rmadmin`, `/listadmins`, `/backup`. Подробно — в
-  [admin_commands.md](admin_commands.md).
-- **📊 PA-аналитика для портфолио** — отдельный dashboard `/analytics`
-  с inline-меню по 5 разделам:
-  - 🔁 **Cohort retention** (D1/D7/D30 по ISO-неделям регистрации)
-  - 🎯 **Activation funnel** (6 шагов от registered до 7-day streak)
-  - 👥 **Active users** (DAU / WAU / MAU + stickiness ratio)
-  - 🎮 **Feature adoption** (% пользователей по каждой фиче / режиму)
-  - 📦 **Export CSV →** (9 таблиц, каждая как Telegram-документ)
-
-  Каждый раздел также доступен отдельной командой (`/cohort_stats`,
-  `/funnel`, `/dau`, `/feature_usage`, `/export <alias>`).
+  `/rmadmin`, `/listadmins`, `/backup`, `/analytics`, `/export`, …
+  Подробно — [admin_commands.md](admin_commands.md).
+- **📊 PA-аналитика для портфолио** — dashboard `/analytics` с inline-меню
+  (10 разделов + export): cohort, funnel, time-to-value, **product metrics**,
+  DAU/WAU/MAU, feature adoption, segments, content stats, event timeline,
+  heatmap, export CSV/ZIP. Отдельные команды: `/cohort_stats`, `/funnel`,
+  `/activation`, `/product_metrics`, `/dau`, `/feature_usage`, `/segments`,
+  `/content_stats`, `/event_timeline`, `/heatmap`, `/export <alias>`,
+  `/export all`, `/parse_logs`. Подробно — [admin_commands.md](admin_commands.md).
 
 ---
 
@@ -218,15 +219,12 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 bot.py              # Хендлеры aiogram, FSM, study flow (предмет→режим),
                     # 4 учебных режима, user flashcards UI, main()
 db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
-repository.py       # UserRepository, SessionRepository, AdminRepository,
-                    # FlashcardRepository, UserFlashcardRepository,
-                    # TipsRepository, McqProgressRepository,
-                    # TaskProgressRepository, SubjectStatsRepository
-                    # (только CRUD, без бизнес-логики)
-services.py         # AchievementService, StudyService, StreakService,
-                    # ReminderService, BackupService, AnalyticsService,
-                    # UserRateLimiter
-                    # + чистая функция sm2_update() для SM-2
+repository.py       # User/Session/Admin/Flashcard/UserFlashcard/Tips/
+                    # Mcq/Task/SubjectStats/Pet/Leaderboard/Friend/Event
+                    # repositories (CRUD only)
+services.py         # Achievement, Study, Streak, Reminder, Backup,
+                    # Analytics, Leaderboard services; sm2_update();
+                    # derive_emotion, freeze_cost, parse_friend_query
 tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
                     # утро/вечер раз в минуту)
 fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
@@ -264,6 +262,10 @@ study_materials/    # Учебные материалы — data-driven дере
   flashcard_reviewed / achievement_unlocked / tip_viewed /
   user_flashcard_created / user_flashcard_deleted). `properties` — JSON.
   Foundation для funnel/cohort/path-анализа.
+- `user_pet`, `user_pet_inventory` — питомец и купленные предметы
+- `weekly_scores`, `weekly_badges`, `streak_freezes` — лидерборд и freeze
+- `friend_requests`, `friendships` — друзья
+- `friend_invite_tokens` — deep-link invite (30-day TTL)
 - `admins` — список админов (источник истины; in-memory кеш для is_admin())
 - `fsm_storage` — постоянное FSM хранилище для aiogram
 
@@ -278,6 +280,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
 | [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
+| [user-flows.md](user-flows.md) | Стандартные user flows, подсчёт кликов, mermaid-диаграммы, идеи сокращения навигации |
 | [tips/README.md](tips/README.md) | Формат JSON-советов, tags, поведение бота (контекст, cooldown, совет дня) |
 
 ## Файлы инфраструктуры

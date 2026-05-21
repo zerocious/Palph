@@ -264,3 +264,17 @@ Events from this patch forward have clean backtest semantics directly.
     by total_final, multiplier ordering, no-friend-repo graceful
     fallback.
 - **Privacy opt-out toggle** ✅ shipped with Phase 2a
+- **Post-v0.8:** `@username` search, `/share_friend` deep-links, **👥 Друзья**
+  в профиле (inline), sad-pet GIF в evening reminder — см.
+  [session_notes.md](session_notes.md), [user-flows.md](user-flows.md) §11.
+
+---
+
+## Related documentation
+
+| File | Content |
+|------|---------|
+| [README.md](README.md) | Product overview, features |
+| [user-flows.md](user-flows.md) | Profile → friends/freeze/LB navigation, click counts |
+| [admin_commands.md](admin_commands.md) | PA metrics including LB blocks in `/product_metrics` |
+| [TODO.md](TODO.md) | Open work |

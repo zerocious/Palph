@@ -4,6 +4,31 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-22 (documentation sync + user flows)
+
+Goal: синхронизировать все `*.md` с v0.8; зафиксировать стандартные user flows
+и идеи сокращения кликов.
+
+**Итог:** [user-flows.md](user-flows.md) создан; README, TODO, BACKLOG,
+admin_commands, LEADERBOARD, tips/README обновлены. **533 теста** (без изменений кода).
+
+### Changes
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | Docs | Новый [user-flows.md](user-flows.md): mermaid-диаграммы, таблицы кликов, §14 оптимизации |
+| 2 | README | PA `/analytics` (10 разделов), таблицы БД v0.8, sad-pet shipped, ссылка на user-flows |
+| 3 | TODO | Фокус post-v0.8; #2 sad-pet → done; #21 UX flows (Could) |
+| 4 | BACKLOG | Секция UX navigation; cross-links |
+| 5 | admin_commands | Export 20 таблиц; меню analytics; `/product_metrics` |
+| 6 | LEADERBOARD / tips | Related docs, post-ship notes |
+
+### Verification
+
+- `python -m pytest --collect-only -q` → **533 tests collected**
+
+---
+
 ## Session — 2026-05-22 (productivity tips — full stack)
 
 Goal: починить «файл не найден», довести советы до production-quality:
@@ -44,7 +69,8 @@ JSON-контент, inline UX, геймификация, контекст + с�
 
 ### Docs
 
-- Все 7 `*.md` синхронизированы (518 tests, tips architecture, events).
+- `*.md` синхронизированы на момент сессии (518 tests, tips architecture, events).
+  Позже — полный doc-sync + [user-flows.md](user-flows.md) (533 tests).
 
 ---
 

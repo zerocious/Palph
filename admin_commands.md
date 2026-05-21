@@ -8,10 +8,10 @@ Palph-бота. Обычные пользователи получают `❌ Н
 
 > **Примечание про user-facing команды.** Этот файл документирует
 > только админ-команды. Пользовательские слэш-команды
-> (`/start`, `/help`, `/stop`, `/leaderboard`, `/friends`, `/cancel`)
-> описаны в README → «Что умеет бот». Лидерборд-стек (`/leaderboard`,
-> `/friends`, ❄️ заморозка стрика в профиле, 👤 privacy toggle в
-> настройках) живёт в [LEADERBOARD.md](LEADERBOARD.md).
+> (`/start`, `/help`, `/stop`, `/leaderboard`, `/friends`, `/share_friend`,
+> `/cancel`) — в [README.md](README.md). Навигация по кнопкам и подсчёт
+> кликов — в [user-flows.md](user-flows.md). Лидерборд-стек — в
+> [LEADERBOARD.md](LEADERBOARD.md).
 
 ## Кто считается админом
 
@@ -210,31 +210,28 @@ return user_id in ADMINS or user_id == MAIN_ADMIN_ID
 ### `/analytics` — единый dashboard (рекомендуется)
 
 Открывает interactive-меню с inline-кнопками. Удобнее, чем помнить
-5 отдельных команд.
+отдельные slash-команды.
 
-**Главный экран:**
-```
-📊 PA-аналитика
-
-Today: 2026-05-18
-👥 Всего: N · DAU: M · Stickiness: X%
-
-Выбери раздел:
-[🔁 Cohort retention]
-[🎯 Activation funnel]
-[👥 Active users (DAU/WAU/MAU)]
-[🎮 Feature adoption]
-[📦 Export CSV →]
-[✖️ Закрыть]
-```
+**Главный экран (кнопки):**
+- 🔁 Cohort retention → `/cohort_stats`
+- 🎯 Activation funnel → `/funnel`
+- ⏱️ Time-to-value → `/activation`
+- 📈 Product metrics → `/product_metrics`
+- 👥 Active users (DAU/WAU/MAU) → `/dau`
+- 🎮 Feature adoption → `/feature_usage`
+- 🧑‍🤝‍🧑 User segments → `/segments`
+- 📚 Content stats → `/content_stats`
+- 📜 Event timeline (24h) → `/event_timeline`
+- 📅 Activity heatmap (30d) → `/heatmap`
+- 📦 Export CSV →
+- ✖️ Закрыть
 
 Тап на раздел → message edits к подробному виду + `[◀️ К аналитике]`.
 Закрыть → бот удаляет message (или редактирует в «закрыто», если delete
 недоступен).
 
-**📦 Export CSV →** открывает подменю с 9 таблицами. Тап на таблицу
-шлёт CSV-файл отдельным сообщением — можно скачать несколько таблиц
-подряд, не возвращаясь.
+**📦 Export CSV →** подменю: **📦📦 ALL tables (ZIP)** + **20 алиасов**
+по одной таблице. Тап шлёт CSV или ZIP отдельным документом.
 
 ### `/cohort_stats` — retention D1/D7/D30 по когортам
 
@@ -418,9 +415,9 @@ Bundle всех exportable таблиц + `metadata.json` (`schema_version`: **v
 palph-export-2026-05-18.zip
 ├── users.csv
 ├── study_sessions.csv
-├── ... (все 10 таблиц)
+├── ... (все 20 таблиц, см. список алиасов выше)
 ├── events.csv
-└── metadata.json   {exported_at, schema_version, row_counts, tables}
+└── metadata.json   {exported_at, schema_version: "v0.8", row_counts, tables}
 ```
 
 **Killer feature для PA-портфолио:** `unzip` + `pd.read_csv(...)` × N → анализируй любую корреляцию между таблицами в Jupyter одним loop'ом. `metadata.json` фиксирует timestamp и row-counts для воспроизводимости.

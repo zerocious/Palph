@@ -1,5 +1,10 @@
 Сырые идеи без оценки → [BACKLOG.md](BACKLOG.md). Сюда (TODO.md) попадают только размеченные задачи.
 
+**Текущий фокус (2026-05-22):** v0.8 закрыт. Следующее — контент ОПМ (#1),
+сбор 30+ дней `events` для PA-ноутбуков, UX-сокращение навигации
+(см. [user-flows.md](user-flows.md)), затем sprint-план к экзамену
+([BACKLOG.md](BACKLOG.md)).
+
 Example:
 
 [Тип] Краткий заголовок  
@@ -17,6 +22,15 @@ Example:
 Приоритет: Must — **закрыто**
 
 **Known issue (defer):** пагинация «Все советы» (◀️/▶️) инкрементит `total_views` → можно ускорить ачивку; монета остаётся 1/день. Fix: не вызывать gamification hook на `tips:list` page turns.
+
+---
+
+## UX — сокращение кликов (2026-05-22)
+
+21) [UX] Оптимизация стандартных user flows  
+Ценность: до первого вопроса в квизах сейчас 4–5 reply-кликов; returning user тратит время на повторный выбор предмета/режима  
+Критерий готовности: см. приоритеты в [user-flows.md](user-flows.md) §14 — минимум «▶️ Продолжить» (last subject+mode) и/или «❓ Квизы» в главном меню; MCQ returning ≤3 клика  
+Приоритет: Could (после контента #1)
 
 ---
 
@@ -105,10 +119,10 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 Готовность: файлы `study_materials/industrial-management/situational/section-{ii,iii,iv}.txt` содержат ≥10 терминов каждый в формате «термин || определение || ключевые слова || ситуация»; кнопки разделов автоматически появятся (already data-driven)  
 Приоритет: Should (до публичного запуска)
 
-2) [Фича] Питомец грустит при пропуске сегодняшней сессии  
-Ценность: бриф обещает «sad if no session today» — сейчас настроение зависит только от стрика, обещание не выполняется  
-Готовность: get_pet_emotion учитывает has_studied_today (или дату last_session); если сегодня сессий не было — питомец грустный, даже при ненулевом стрике  
-Приоритет: Should
+2) [Фича] Питомец грустит при пропуске сегодняшней сессии — **✅ закрыто** (v0.7/v0.8)  
+Ценность: бриф «sad if no session today»  
+Готовность: `derive_emotion` → `sad` при `has_studied_today=0`; вечернее напоминание с `sad.gif` (PR #5); тесты `test_derive_emotion`, reminder integration  
+Приоритет: Should — **done**
 
 5) [Алгоритм] SM-2 для **ситуационных** квизов (для флэш-карт ✅ сделано в v0.7 2026-05-17 — см. session_notes)  
 Ценность: бриф упоминает SM-2; сейчас фиксированные интервалы [1,2,4,7] не адаптируются под сложность термина для конкретного пользователя  
@@ -173,5 +187,8 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
   - `03_feature_adoption.ipynb` — adoption per mode + корреляция с retention
   - `04_session_patterns.ipynb` — heatmap часов × дней недели + рекомендации по timing
 - `analysis/README.md` с executive summary + recommendations
+
+Сейчас в `analysis/`: `leaderboard_backtest.ipynb`. User flows для PA path-анализа:
+[user-flows.md](user-flows.md).
 
 Это будет выглядеть в резюме как реальная PA-работа, не как «вот мой Telegram-бот».
