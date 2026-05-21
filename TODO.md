@@ -111,8 +111,8 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 - `/analytics` — единый dashboard с inline-меню по всем разделам (рекомендуется для удобства)
 
 **Data export:**
-- `/export <alias>` — CSV-дамп одной таблицы как Telegram-документ (10 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings, events)
-- `/export all` — ZIP всех 10 таблиц + `metadata.json` (exported_at, schema_version, row_counts). **Killer feature** для Jupyter-анализа: одной командой получаешь reproducible dataset
+- `/export <alias>` — CSV-дамп одной таблицы как Telegram-документ (11 алиасов: users, sessions, achievements, quiz, flashcards, mcq, tasks, subject_stats, settings, events, experiments)
+- `/export all` — ZIP всех 11 таблиц + `metadata.json` (exported_at, schema_version, row_counts). **Killer feature** для Jupyter-анализа: одной командой получаешь reproducible dataset
 - `/parse_logs` — ETL `bot.log + bot.log.1..N` → CSV (timestamp/level/event_name/user_id/properties JSON/raw_text). Покрывает historical backfill до того как events table начала писаться
 
 **Event-tracking layer:**
@@ -128,47 +128,32 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 
 **Tier 1 — high signal для PA-портфолио**
 
-1) [Аналитика] A/B-тест фреймворк
-Ценность: единственный недостающий кусок для causal claims — сейчас можно
-описывать тренды, но не делать причинно-следственные выводы. Один real
-experiment («does showing pet level in profile increase 7-day retention?») =
-real PA-артефакт на резюме. Biggest leap from «dashboard person» к
-«experimentation person» — это та seniority-delta, которую recruiter реально
-замечает.
-Готовность:
-— Таблица `experiments(user_id INTEGER NOT NULL REFERENCES users(user_id),
-  experiment_name TEXT NOT NULL, variant TEXT NOT NULL, assigned_at TEXT NOT
-  NULL DEFAULT (datetime('now')), PRIMARY KEY(user_id, experiment_name))`.
-— `services.get_variant(user_id, experiment_name, variants=['control',
-  'treatment'])` — детерминированный хэш `(user_id + experiment_name)` → variant
-  на первом вызове, далее закэшировано в таблице.
-— Sprinkle `if get_variant(uid, '<exp>') == 'treatment': ...` в decision-точках
-  (например, `sad_pet_v2`).
-— Один real experiment ship'нут end-to-end: assignment → events table пишет
-  variant в properties → анализ в notebook (`experiments.ipynb` с
-  retention-curves по variant + significance test).
-— `events.properties` для каждого ключевого события дополняется `variant`-полем,
-  если пользователь участвует в активном эксперименте.
-Приоритет: Should (центральная вещь следующей сессии).
+1) ✅ [Аналитика] A/B-тест фреймворк — **framework shipped 2026-05-21**
+(текущая сессия). Ship'нуто в этом PR:
+— Таблица `experiments(user_id, experiment_name, variant, assigned_at)`
+  + composite PK + `idx_experiments_name_variant`.
+— `services.compute_variant` (pure SHA256 → variant) + `services.get_variant`
+  (cache-aside через `ExperimentRepository`, optional `experiment.assigned`
+  event-log).
+— `EXPERIMENTS` registry в `services.py` (sentinel `_noop_v1` для smoke).
+— `experiments` добавлен в `AnalyticsService.EXPORTABLE_TABLES` → доступен
+  через `/export experiments` и `/export all`.
+— 22 теста: deterministic, distribution 50/50 ± 5%, three-way split,
+  idempotency, multi-experiment isolation, unknown-name KeyError, event
+  logged once.
 
-3) [Аналитика] Reference SQL queries directory
-Ценность: SQL-портфолио для interview-моментов («show me your SQL»). Standalone
-файлы легче ревьюить, чем выдержки из notebooks.
-Готовность: `analysis/queries/` с ≥8 standalone `.sql` файлами, executable
-против экспортированного SQLite-датасета:
-— `01_cohort_retention.sql` (DAU by signup-week ISO)
-— `02_activation_funnel.sql` (signup → first session → 5th session → 3-day
-  streak)
-— `03_rfm_segmentation.sql` (Recency / Frequency / Monetary для coin economy)
-— `04_feature_adoption_by_cohort.sql`
-— `05_session_length_distribution.sql`
-— `06_math_specific_funnel.sql` (mission-aligned)
-— `07_churn_predictors.sql` (корреляция first-week features с 30-day retention)
-— `08_pre_exam_engagement.sql` (заглушка под exam_date — пока экзаменной даты в
-  схеме нет, оставить TODO-комментарий со ссылкой на пропущенный пункт #2)
-— README.md в директории с инструкцией «how to run против `data.sqlite` из
-  `/export all`».
-Приоритет: Should.
+**Что осталось как follow-up (отдельный PR):** sprinkle `get_variant(...)`
+на конкретной decision-точке (e.g. `pet_level_in_profile_v1`), записать
+variant в `events.properties` для последующих событий пользователя, и
+сделать notebook `experiments.ipynb` с retention-curves по variant +
+significance test. Framework стоит, decision-сайтов пока нет.
+
+3) ✅ [Аналитика] Reference SQL queries directory — **shipped 2026-05-21**
+(текущая сессия). 8 standalone `.sql` файлов в `analysis/queries/` +
+`README.md` + smoke-test `tests/test_reference_queries.py` (12 тестов:
+существование, parametrized execute против init_db schema, защита от
+DML/DDL keywords). #08 (`pre_exam_engagement`) — намеренный stub с
+TODO-комментарием, ждёт PA-roadmap #2 (exam_date).
 
 **Tier 2 — data hygiene, «mature data person»**
 

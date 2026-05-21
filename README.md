@@ -384,9 +384,10 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 1. **В чате** — `/analytics` показывает все ключевые метрики (cohort retention,
    funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
 2. **Снаружи (single table)** — `/export <alias>` шлёт CSV-файл любой
-   таблицы. 10 алиасов: `users`, `sessions`, `achievements`, `quiz`,
-   `flashcards`, `mcq`, `tasks`, `subject_stats`, `settings`, **`events`**.
-3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 10 таблиц +
+   таблицы. 11 алиасов: `users`, `sessions`, `achievements`, `quiz`,
+   `flashcards`, `mcq`, `tasks`, `subject_stats`, `settings`, **`events`**,
+   **`experiments`**.
+3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 11 таблиц +
    `metadata.json`** одним сообщением. metadata содержит `exported_at`
    (UTC ISO-8601), `schema_version`, `row_counts` по каждой таблице.
    Reproducible export для Jupyter — открывай и сразу анализируй.

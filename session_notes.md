@@ -4,6 +4,90 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-21 (PA-roadmap kickoff: A/B framework + reference SQL)
+
+Goal: открыть PA-портфолио roadmap двумя пунктами Tier-1 за один PR —
+#1 A/B-тест фреймворк (framework only) и #3 `analysis/queries/`. Также
+снять stale TODO #2 «питомец грустит».
+
+**Итог:** PR-ветка `claude/pa-ab-framework` готова к ревью. Suite
+**510 passing** (476 baseline + 22 experiment tests + 12 SQL smoke).
+Никаких изменений на main кроме branch + commits — production-бот не
+тронут до merge.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Schema | Новая таблица `experiments(user_id, experiment_name, variant, assigned_at)` с composite PK + `idx_experiments_name_variant`. ON DELETE CASCADE от `users`. Создаётся через `executescript` в `init_db` (idempotent, IF NOT EXISTS). | [db.py](db.py) |
+| 2 | Repository | `ExperimentRepository` (3 метода: `get_assignment`, `record_assignment` INSERT OR IGNORE, `count_by_variant`). Тонкий слой: pure logic в `services.compute_variant`. | [repository.py](repository.py) |
+| 3 | Service | `EXPERIMENTS: dict[str, list[str]]` registry (sentinel `_noop_v1` для smoke); `compute_variant` (SHA256 первых 8 байт → modulo); `get_variant(repo, user_id, name, event_repo=None)` cache-aside с optional `experiment.assigned` event-log на first assignment. ValueError на пустой variants/name, KeyError на unknown name. | [services.py](services.py) |
+| 4 | Export | `experiments` добавлен в `AnalyticsService.EXPORTABLE_TABLES` → `/export experiments` и `/export all` (теперь 11 таблиц). | [services.py](services.py) |
+| 5 | Tests | `tests/test_experiment_repository.py` (22 теста): determinism, 50/50 split на 1000 user'ах ± 5%, three-way 33% на 3000 ± 10%, independence между experiments, idempotency, multi-user isolation, event logged once on first assignment, optional event_repo=None path. | [tests/test_experiment_repository.py](tests/test_experiment_repository.py) |
+| 6 | SQL | `analysis/queries/` с 8 reference queries: `01_cohort_retention` (UNION-based activity from 6 sources, D1/D7/D30 % per ISO-week), `02_activation_funnel` (6 steps from registered to 7-day streak), `03_rfm_segmentation` (NTILE(5) quintiles → champions/at-risk labelling), `04_feature_adoption_by_cohort` (% per feature × signup week), `05_session_length_distribution` (10-bucket histogram + p25/p50/p75/p95 via PERCENT_RANK), `06_math_specific_funnel` (math subject visited → MCQ → success → task → cards), `07_churn_predictors` (per-user signal table: week-1 activity + d30 retention label), `08_pre_exam_engagement` (intentional stub blocked on `users.exam_date` from PA-roadmap #2). | [analysis/queries/](analysis/queries/) |
+| 7 | SQL docs | `analysis/queries/README.md` с running instructions, conventions (SQLite-only syntax, UTC timestamps, no mutating statements), guide для adding new queries. | [analysis/queries/README.md](analysis/queries/README.md) |
+| 8 | Tests | `tests/test_reference_queries.py` (12 тестов): existence, parametrized `executescript` smoke против init_db schema (ловит schema-drift), DML/DDL keyword safety check. | [tests/test_reference_queries.py](tests/test_reference_queries.py) |
+| 9 | Docs | `/export all — ZIP всех 11 таблиц` в bot.py help text, README PA-section алиасы → 11, admin_commands.md "Все 11 алиасов" + experiments.csv в ZIP-tree. TODO PA #1 + #3 помечены ✅ shipped. | [bot.py](bot.py), [README.md](README.md), [admin_commands.md](admin_commands.md), [TODO.md](TODO.md) |
+| 10 | TODO cleanup | Stale `Бэклог → 2) Питомец грустит` помечен как shipped (фактически закрыт ещё в PR #2 `9203aab` + PR #4 `fe69329` через `derive_emotion` sad-path). | [TODO.md](TODO.md) |
+
+### Design notes
+
+- **Deterministic assignment, БД только как кэш.** `compute_variant` —
+  pure SHA256(user_id:experiment_name) → variant. Это значит: даже до
+  записи в `experiments` table — variant уже определён. Если БД-строка
+  удалена через ON DELETE CASCADE (юзер deleted), повторное появление
+  того же user_id даст тот же variant. Это даёт нам safety against
+  race conditions без `db.lock`: два параллельных вызова `get_variant`
+  для одного и того же (user, exp) могут оба прочитать NULL из cache
+  и оба попытаться вставить — INSERT OR IGNORE делает второй no-op,
+  но оба вернут один и тот же variant.
+- **`EXPERIMENTS` константа vs runtime registry.** Активные эксперименты
+  hardcoded в `services.py` (а не БД-таблица). Это сознательный выбор:
+  список variants — это код-сторона решения (commit + review),
+  ровно как enum значений. БД-таблица была бы кошмаром для review.
+- **`experiment.assigned` event опциональный.** `get_variant` принимает
+  `event_repo=None` — для тестов и для случаев, когда caller сам решает,
+  логировать ли. Реальные call-sites обычно передают; smoke-test и
+  TestNoopExperiment — нет.
+- **#08 stub реальный, не placeholder.** Файл выполняется (`executescript`
+  smoke-test пройдёт), но возвращает explanatory text "BLOCKED: needs
+  users.exam_date column". Когда PA-roadmap #2 разморозится — закомментированный
+  WITH-блок ниже включается заменой `--` на пустую строку. Без всякой
+  работы над инфрой.
+- **Read-only safety check.** Smoke-test грепает по `INSERT/UPDATE/DELETE/
+  DROP/ALTER/TRUNCATE` — если кто-то случайно добавит в reference query
+  мутирующий statement, тест падает. (Сначала упало на литерале `ALTER TABLE`
+  в инструкции `08_pre_exam_engagement.sql`; переформулировали без literal
+  SQL keyword.)
+- **PERCENT_RANK supported.** SQLite >= 3.25 (2018-09-15) — современные
+  билды (включая Python 3.10+ default) поддерживают, шансов налететь
+  на старый билд почти нет. README предупреждает на случай экзотики.
+
+### Verification
+
+- `python -m pytest tests/test_experiment_repository.py -v` — 22 passed.
+- `python -m pytest tests/test_reference_queries.py -v` — 12 passed.
+- `python -m pytest tests/` — **510 passed in 38s** (вырос с 476 → 510,
+  no regressions).
+- `python -m py_compile db.py repository.py services.py bot.py` — clean.
+
+### Что НЕ ship'нуто в этом PR (намеренно отложено)
+
+- Sprinkle `get_variant(...)` на decision-сайте (e.g.,
+  `pet_level_in_profile_v1` в `pet_menu` handler). Это требует продуктового
+  решения «какой эксперимент первым» — отдельный thinking step.
+- Логирование `variant` в `events.properties` для других событий
+  пользователя (нужен middleware/decorator pattern; tradeoff на overhead
+  при каждом event-log).
+- Notebook `analysis/experiments.ipynb` с retention-curves + statistical
+  test (T-test, Chi-square, Bayesian) per variant. Имеет смысл только
+  когда decision-сайт сработал и набралось > 50 user'ов per variant.
+
+Следующая сессия по этому треку: либо follow-up #1 (sprinkle + notebook),
+либо переходим на Tier 2 — #4 events schema docs / #6 deploy markers.
+
+---
+
 ## Session — 2026-05-21 (PA-портфолио roadmap, planning only)
 
 Goal: брейншторм «что добавить, чтобы PA-research было проще» → формализовать

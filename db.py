@@ -296,6 +296,23 @@ async def init_db(db: aiosqlite.Connection):
         CREATE INDEX IF NOT EXISTS idx_friendships_user_b
             ON friendships(user_b);
 
+        -- A/B-эксперименты (PA-roadmap #1, 2026-05-21).
+        -- Один пользователь × один experiment_name → один variant навсегда.
+        -- Назначается детерминированным хэшем SHA256(user_id:experiment_name)
+        -- → стабильно между перезапусками без необходимости коммитить.
+        -- Кэширование INSERT'ом гарантирует идемпотентность + audit-trail
+        -- (assigned_at). Список активных experiments + их variants —
+        -- в services.EXPERIMENTS (источник истины для validation).
+        CREATE TABLE IF NOT EXISTS experiments (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            experiment_name TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, experiment_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_experiments_name_variant
+            ON experiments(experiment_name, variant);
+
         -- Friend invite tokens — Telegram deep-link «t.me/Bot?start=friend_<token>».
         -- Создаются через /share_friend, multiuse (один токен → много друзей),
         -- expires_at = created_at + 30 days. При клике на ссылку invitee
