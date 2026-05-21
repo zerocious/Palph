@@ -31,9 +31,10 @@ deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
 for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). См.
 [TODO.md](TODO.md) и [session_notes.md](session_notes.md).
-Tests: 529 passing (+53 since v0.8). PR #6 shipped A/B framework +
-reference SQL queries (+34); PR #7 shipped event-schema docs + system.deploy
-markers (+19). PA-roadmap Tier 2 closed; next session — Tier 3.
+Tests: 550 passing (+74 since v0.8). PR #6 → A/B framework + reference
+SQL (+34); PR #7 → event-schema docs + system.deploy markers (+19);
+PR #8 → Wilson CI на cohort retention (+21). PA-roadmap Tier 1+2
+закрыты; Tier 3 на 1/3 закрыт.
 
 ---
 
@@ -265,7 +266,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**529 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation + **ExperimentRepository (22) + reference SQL smoke (12)** — PR #6 + **system.deploy event (13) + events-doc drift (6)** — PR #7) |
+| [tests/](tests/) | Юнит-тесты (**550 штук**: SM-2, services, progress repos, BackupService, AnalyticsService, RateLimiter, EventRepository, log parser, PetRepository + derive_emotion, leaderboard helpers + repository + service + run_rollover + streak freeze + friends + username-search + friend-invite-links + middleware + integration flows + render_pet + level-up notification + picker helpers + reminder service sad-pet animation + **ExperimentRepository (22) + reference SQL smoke (12)** — PR #6 + **system.deploy event (13) + events-doc drift (6)** — PR #7 + **Wilson interval (16) + cohort CI integration (5)** — PR #8) |
 | [docs/events_schema.md](docs/events_schema.md) | Source of truth для всех `event_repo.log(...)` событий: when_fires, required/optional properties, JSON examples. Drift-тестом enforce'ится синхронность с кодом (PR #7). |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) + [analysis/queries/](analysis/queries/) — 8 standalone reference SQL queries (cohort retention, activation funnel, RFM, feature adoption, session-length, math funnel, churn predictors, pre-exam stub) с README + schema-drift smoke test |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
@@ -290,7 +291,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **437 тестов** (~28 сек):
+Покрытие — **529 тестов** (~38 сек):
 
 **Pre-leaderboard baseline (185):**
 
@@ -415,11 +416,11 @@ churn predictors, pre-exam stub) + README с инструкциями запус
 **Roadmap расширений** (зафиксирован 2026-05-21 в TODO.md → `🟡 Будущие расширения`):
 ~~A/B-тест фреймворк~~ ✅ **PR #6**; ~~`analysis/queries/` с 8 reference
 SQL-файлами~~ ✅ **PR #6**; ~~`docs/events_schema.md` + drift-test~~
-✅ **PR #7**; ~~`system.deploy` event-маркеры~~ ✅ **PR #7**.
-Остаются: `analysis/schema_v1.yaml`, Wilson CI на `/cohort_stats`,
-survival analysis через `lifelines`, anonymization helper для публичных
-notebooks, `/feedback` команда, in-bot NPS опрос. **Осталось 6 пунктов**
-из изначальных 10.
+✅ **PR #7**; ~~`system.deploy` event-маркеры~~ ✅ **PR #7**;
+~~Wilson CI на `/cohort_stats`~~ ✅ **PR #8**. Остаются:
+`analysis/schema_v1.yaml`, survival analysis через `lifelines`,
+anonymization helper для публичных notebooks, `/feedback` команда,
+in-bot NPS опрос. **Осталось 5 пунктов** из изначальных 10.
 
 ---
 

@@ -206,6 +206,84 @@ class TestEligibilityFilter:
         assert young_cohort is not None
 
 
+class TestCohortConfidenceIntervals:
+    """PA-roadmap #7: cohort retention rows now carry Wilson 95% CI.
+    Backwards-compatible — old d1/d7/d30 fields unchanged."""
+
+    async def test_eligible_zero_gives_none_ci(self, db, analytics):
+        """Когорта моложе N дней → eligible=0 → d_N_ci is None."""
+        await _create_user_with_signup(db, 1, days_ago=0)
+        result = await analytics.compute_cohort_retention()
+        c = result["cohorts"][0]
+        assert c["d1_ci"] is None
+        assert c["d7_ci"] is None
+        assert c["d30_ci"] is None
+
+    async def test_ci_brackets_point_estimate(self, db, analytics):
+        """Для cohort с реальной retention — Wilson CI содержит p̂."""
+        # 5 user'ов, 8 дней назад; 3 активны на D1
+        for uid in range(1, 6):
+            await _create_user_with_signup(db, uid, days_ago=8)
+        for uid in (1, 2, 3):
+            await _add_activity(db, uid, days_ago=7, source="study_sessions")
+        result = await analytics.compute_cohort_retention()
+        c = result["cohorts"][0]
+        assert c["d1"] == 0.6  # 3/5
+        low, high = c["d1_ci"]
+        # Точечная оценка должна лежать в интервале
+        assert low <= 0.6 <= high
+        # Wilson 95% для k=3/n=5 — должен быть широкий (>50% коридор)
+        assert (high - low) > 0.5
+
+    async def test_ci_width_shrinks_with_n(self, db, analytics):
+        """Тот же p̂ при большем n → CI должен сужаться. Проверяем через
+        две когорты на разных ISO-неделях с одинаковым retention."""
+        # Cohort A: 5 user'ов 8 дней назад, 50% retention на D1
+        await _create_user_with_signup(db, 1, days_ago=8)
+        await _create_user_with_signup(db, 2, days_ago=8)
+        await _create_user_with_signup(db, 3, days_ago=8)
+        await _create_user_with_signup(db, 4, days_ago=8)
+        await _add_activity(db, 1, days_ago=7, source="study_sessions")
+        await _add_activity(db, 2, days_ago=7, source="study_sessions")
+        # Cohort B: 20 user'ов 15 дней назад, 50% retention на D1
+        # 15 дней назад точно даст другую ISO-неделю чем 8 дней назад
+        for uid in range(100, 120):
+            await _create_user_with_signup(db, uid, days_ago=15)
+        for uid in range(100, 110):
+            await _add_activity(db, uid, days_ago=14, source="study_sessions")
+        result = await analytics.compute_cohort_retention()
+        # Найти обе когорты
+        c_small = next(c for c in result["cohorts"] if c["size"] == 4)
+        c_big = next(c for c in result["cohorts"] if c["size"] == 20)
+        assert c_small["d1"] == 0.5
+        assert c_big["d1"] == 0.5
+        ws = c_small["d1_ci"][1] - c_small["d1_ci"][0]
+        wb = c_big["d1_ci"][1] - c_big["d1_ci"][0]
+        assert wb < ws
+
+    async def test_zero_retention_ci_starts_at_zero(self, db, analytics):
+        """k=0 → CI lower bound = 0 (зажато), upper > 0."""
+        await _create_user_with_signup(db, 1, days_ago=8)
+        # No activity → 0/1 retained
+        result = await analytics.compute_cohort_retention()
+        c = result["cohorts"][0]
+        assert c["d1"] == 0.0
+        low, high = c["d1_ci"]
+        assert low == 0.0
+        assert high > 0.0
+
+    async def test_full_retention_ci_ends_at_one(self, db, analytics):
+        """k=n → CI upper bound = 1, lower < 1."""
+        await _create_user_with_signup(db, 1, days_ago=8)
+        await _add_activity(db, 1, days_ago=7, source="study_sessions")
+        result = await analytics.compute_cohort_retention()
+        c = result["cohorts"][0]
+        assert c["d1"] == 1.0
+        low, high = c["d1_ci"]
+        assert high == 1.0
+        assert low < 1.0
+
+
 class TestFunnel:
     async def test_empty_db(self, analytics):
         steps = await analytics.compute_funnel()

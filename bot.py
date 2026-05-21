@@ -3375,24 +3375,40 @@ def _format_pct(value: float | None) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _format_pct_with_ci(value: float | None, ci: tuple | None) -> str:
+    """
+    Рендер point estimate + 95% Wilson CI: '66% [40-85%]'.
+    Без CI или с value=None → '—'. CI всегда округляется до int% для
+    компактности; точное (low, high) — в JSON-output / тестах.
+    """
+    if value is None or ci is None:
+        return "—"
+    low, high = ci
+    return f"{value*100:.0f}% [{low*100:.0f}-{high*100:.0f}%]"
+
+
 def _render_cohort_table(data: dict) -> str:
-    """Plain-text ASCII-таблица retention'а. Заворачивается в <pre> для HTML."""
+    """Plain-text ASCII-таблица retention'а с 95% Wilson CI.
+    Заворачивается в <pre> для HTML."""
     cohorts = data["cohorts"]
     if not cohorts:
         return "Пока нет данных — нет ни одного пользователя."
-    # Ширины колонок: статичные, чтобы выровнять
+    # Ширины колонок расширены для CI-bracket; статичные чтобы выровнять.
     lines = []
-    lines.append(f"{'Cohort':<10} | {'Size':>4} | {'D1':>6} | {'D7':>6} | {'D30':>6}")
-    lines.append("-" * 46)
+    lines.append(
+        f"{'Cohort':<10} | {'Size':>4} | "
+        f"{'D1 [95% CI]':>14} | {'D7 [95% CI]':>14} | {'D30 [95% CI]':>14}"
+    )
+    lines.append("-" * 70)
     for c in cohorts:
         lines.append(
             f"{c['week']:<10} | "
             f"{c['size']:>4} | "
-            f"{_format_pct(c['d1']):>6} | "
-            f"{_format_pct(c['d7']):>6} | "
-            f"{_format_pct(c['d30']):>6}"
+            f"{_format_pct_with_ci(c['d1'], c.get('d1_ci')):>14} | "
+            f"{_format_pct_with_ci(c['d7'], c.get('d7_ci')):>14} | "
+            f"{_format_pct_with_ci(c['d30'], c.get('d30_ci')):>14}"
         )
-    lines.append("-" * 46)
+    lines.append("-" * 70)
     lines.append(f"Total users: {data['total_users']}; today: {data['today']}")
     return "\n".join(lines)
 

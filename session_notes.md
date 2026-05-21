@@ -4,6 +4,82 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-21 (PA Tier 3 #7: Wilson CI на /cohort_stats)
+
+Goal: следом за PR #7 закрыть Tier 3 #7 — Wilson confidence intervals
+на cohort retention. Stacked PR #8 на ветке `claude/pa-wilson-ci` поверх
+`claude/pa-events-schema`.
+
+**Итог:** Ship'нуто за одну сессию. Suite **550 passing** (529 baseline +
+16 Wilson pure + 5 cohort-integration). PA roadmap: Tier 1 + Tier 2
+закрыты, Tier 3 на 1/3 закрыт.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Service | `services.wilson_interval(successes, n, z=1.96)` — pure closed-form Wilson score interval. Без scipy: `center = (p̂ + z²/(2n)) / (1 + z²/n)`, `spread = z·√(...) / (1 + z²/n)`. `n=0` → `(None, None)`; negative/over-n successes → ValueError; результат clamped в `[0, 1]`. Docstring ссылается на Wilson 1927 + Brown/Cai/DasGupta 2001 — статистическая literacy маркер. | [services.py](services.py) |
+| 2 | Service | `compute_cohort_retention` теперь добавляет `d1_ci`, `d7_ci`, `d30_ci` рядом с point estimates. Когда `eligible=0` — `_ci=None`; иначе `(low, high)` tuple. Существующие `d1/d7/d30` поля не тронуты — backwards-compatible. | [services.py](services.py) |
+| 3 | UI | `bot._format_pct_with_ci(value, ci)` → `'66% [40-85%]'` (int% для компактности). `_render_cohort_table` использует новый формат + расширил table-width 46 → 70 chars для CI brackets. Footer note про "[low-high] = 95% CI" пока не добавлен — table self-explanatory с header `D1 [95% CI]`. | [bot.py](bot.py) |
+| 4 | Tests | `tests/test_wilson_interval.py` — **16 новых**: 3 known-value sanity (50/100, 5/10, 90/100 cross-checked vs R `prop.test`), 8 boundary (n=0, negative n, k=0, k=n, n=1 ×2, out-of-range raises ×2), 3 monotonicity (wider n → narrower CI, z=2.576/1.645 vs 1.96), 2 invariants (CI contains p̂, output ⊆ [0,1]). | [tests/test_wilson_interval.py](tests/test_wilson_interval.py) |
+| 5 | Tests | `tests/test_analytics_service.py::TestCohortConfidenceIntervals` — **5 интеграционных**: eligible=0 → CI None, CI brackets p̂, CI width shrinks с большим n (две когорты с одинаковым p̂=0.5 но разным size), k=0 boundary clamp, k=n boundary clamp. | [tests/test_analytics_service.py](tests/test_analytics_service.py) |
+| 6 | Docs | TODO PA #7 ✅ shipped с PR #8; PA-test count 148 → 169 в context-line. | [TODO.md](TODO.md) |
+
+### Design notes
+
+- **Wilson, не Clopper-Pearson, не нормальное приближение.** Нормальное
+  (p̂ ± z·√(p̂(1-p̂)/n)) патологически коллапсирует на p̂=0 и p̂=1.
+  Clopper-Pearson (доступен через `scipy.stats.binom.interval`)
+  сверх-консервативен — слишком широкие CI. Wilson — рекомендованный
+  default согласно Brown/Cai/DasGupta (2001) для малых n; coverage
+  ≈ 95% даже при n=5.
+- **No scipy dependency.** Wilson — closed-form, реализуется в 5 строк
+  через stdlib `math`. Добавление scipy ради этого было бы overkill
+  (scipy = ~30MB install, тонна транзитивных зависимостей). При желании
+  можно мигрировать на `scipy.stats.binom.interval(0.95, n, p)` — но
+  scipy ≠ Wilson, нужно проверять semantic.
+- **Backwards-compatible API.** `compute_cohort_retention` всё ещё
+  возвращает `d1/d7/d30` (float | None). Новые `_ci` поля добавлены
+  рядом. Callers, не знающие про CI, продолжают работать (используют
+  `c.get('d1_ci')` для безопасности).
+- **Округление в render — int%.** CI brackets выводятся как `[40-85%]`
+  без десятичных, для компактности. Точные float'ы остаются в structured
+  output — Jupyter/notebook user'ы видят полную точность через
+  `/export` или прямой API call.
+- **Test against R prop.test.** Three known-value tests cross-checked
+  против R `prop.test(k, n, correct=FALSE)` — это эталонная реализация
+  Wilson. Tolerance 1e-3 — Wilson closed-form должен совпадать вплоть
+  до floating-point дрожания.
+- **Не сделано:** добавление CI к другим metric'ам (funnel, segments,
+  feature_usage). Cohort retention — самая чувствительная к малым n
+  (с <100 users каждая когорта = 5-15 человек), funnel/segments
+  выражены через totals (n=ВСЕ users) и CI там менее интересны.
+  Можно добавить в будущем если recruiter попросит.
+
+### Verification
+
+- `python -m py_compile services.py bot.py` — clean.
+- `python -m pytest tests/test_wilson_interval.py -v` — 16 passed.
+- `python -m pytest tests/test_analytics_service.py::TestCohortConfidenceIntervals -v` — 5 passed.
+- `python -m pytest tests/` — **550 passed in 48s**, no regressions.
+
+### Что делать после merge PR #6 + PR #7 + PR #8
+
+Оставшиеся PA-roadmap пункты:
+- **Tier 2 #5 schema_v1.yaml** — Could priority, low effort, lock down
+  /export schema contract для downstream notebooks.
+- **Tier 3 #8 Time-to-event метрики (survival analysis)** — Could
+  priority, more effort. Median time-to-second-session, Kaplan-Meier
+  curve через `lifelines` библиотеку.
+- **Tier 3 #9 Anonymization helper** — depends на «going public» с
+  notebooks. Could/Must в зависимости от deploy plan.
+- **Tier 4 #10 /feedback + #11 NPS survey** — Could, оба требуют
+  user-facing UI changes.
+- **Follow-up к PR #6** — sprinkle `get_variant` на decision-сайте +
+  notebook. Требует продуктового решения.
+
+---
+
 ## Session — 2026-05-21 (PA Tier 2: events schema + deploy markers)
 
 Goal: следом за PR #6 закрыть два Tier-2 пункта PA-roadmap одним
