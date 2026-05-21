@@ -4,6 +4,77 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-21 (PA Tier 2: events schema + deploy markers)
+
+Goal: следом за PR #6 закрыть два Tier-2 пункта PA-roadmap одним
+stacked-PR — #4 event schema docs + #6 system.deploy markers. Ветка
+`claude/pa-events-schema` off `claude/pa-ab-framework`.
+
+**Итог:** PR-ветка готова. Suite **529 passing** (510 baseline +
+13 deploy-event + 6 events-doc drift). Stacked поверх PR #6 — корректно
+смержится после PR #6.
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Service | `services.resolve_deploy_version()` — pure version lookup: `BOT_VERSION` env → `git rev-parse --short HEAD` (2s timeout) → `"unknown"` fallback. Subprocess errors silently swallowed; никогда не raises. | [services.py](services.py) |
+| 2 | Service | `services.log_deploy_event(event_repo, version=None)` — пишет одну строку `event_name='system.deploy'` с `user_id=NULL` и `properties = {version, started_at_utc (ISO-8601 UTC), python_version}`. Returns props dict для caller-side логирования. | [services.py](services.py) |
+| 3 | Bot startup | В `bot.main()` после `app.start` log line: `await log_deploy_event(event_repo)` + `logger.info("system.deploy ...")`. Wrapped в try/except — если падает, бот не падает (warning в логи). | [bot.py](bot.py) |
+| 4 | Docs | `docs/events_schema.md` — 11 events задокументированы (10 user-action + `experiment.assigned` + `system.deploy`). Каждый: when_fires, required/optional properties table, JSON example. Header описывает storage schema, читающие surface'ы (`/event_timeline`, `/export events`, `/parse_logs`), naming convention (`snake_case` для user-action, `namespace.verb` для meta). | [docs/events_schema.md](docs/events_schema.md) |
+| 5 | Tests | `tests/test_system_deploy_event.py` (13 тестов): 6 для `resolve_deploy_version` cascade (env precedence, empty env, git not-installed, non-zero exit, timeout), 7 для `log_deploy_event` (один INSERT, null user_id, properties shape, ISO-8601 regex, returned dict, multiple deploys append-only, /event_timeline-style query). | [tests/test_system_deploy_event.py](tests/test_system_deploy_event.py) |
+| 6 | Tests | `tests/test_events_schema_doc.py` (6 тестов) — drift-test: AST-парсер ловит `event_repo.log(user_id, "<name>", ...)` calls в bot.py + services.py, regex-парсер ловит `#### <name>` заголовки в docs/events_schema.md, проверяет subset. Дополнительный `_WRAPPER_EMITTERS` маппинг для wrapper-функций типа `log_deploy_event` → `"system.deploy"`. Whitelist пустой пока. | [tests/test_events_schema_doc.py](tests/test_events_schema_doc.py) |
+| 7 | Docs | TODO.md: PA #4 + #6 помечены ✅ shipped с PR-номером; PA-test count 133 → 148. | [TODO.md](TODO.md) |
+
+### Design notes
+
+- **Версия из env > git > "unknown".** Env var wins, потому что CI/CD пайплайн
+  знает реальную семвер-версию; git rev-parse — fallback для локальной
+  разработки; "unknown" — safe default чтобы deploy hook не падал в exotic
+  средах (Docker без .git, отсутствующий PATH, etc.).
+- **`system.deploy` не в каждом запуске тестов.** Bot.main() не запускается
+  под pytest — тесты используют `log_deploy_event` напрямую через
+  EventRepository fixture. Реальный hook на startup проверяется по `bot.log`
+  в production.
+- **Naming convention сделан explicit.** `snake_case` для user-action
+  (`session_completed`), `namespace.verb` для meta/system (`system.deploy`,
+  `experiment.assigned`). Документировано в events_schema.md header.
+  Без enforcement — это convention, не rule (gradual cleanup при добавлении
+  новых).
+- **Drift test catches forgotten doc updates.** Если кто-то добавит новый
+  `event_repo.log(uid, "new_event", {...})` без `#### new_event` в .md,
+  test_no_undocumented_events падает с понятным message ("add an `#### <name>`
+  section or whitelist"). Whitelist намеренно пустой — заставляет документировать.
+- **AST-парсер видит и wrapper functions.** `log_deploy_event` не вызывает
+  `event_repo.log("system.deploy", ...)` напрямую в bot.py — wrapper в
+  services. Без `_WRAPPER_EMITTERS` маппинга drift test пропустил бы это
+  случайно (event фактически фирится, но не виден парсеру). Pattern
+  scalable: добавится новый wrapper — добавляется одна строка в _WRAPPER_EMITTERS.
+- **Не сделано (намеренно):** `release_impact.ipynb` notebook. Имеет
+  смысл когда у нас будет ≥3 деплоя с интересным between-deploys gap;
+  сейчас он бы был пустым demo.
+
+### Verification
+
+- `python -m py_compile bot.py services.py` — clean.
+- `python -m pytest tests/test_system_deploy_event.py -v` — 13 passed.
+- `python -m pytest tests/test_events_schema_doc.py -v` — 6 passed.
+- `python -m pytest tests/` — **529 passed in 37s**, no regressions.
+
+### Что делать после merge PR #6 + PR #7
+
+Следующая сессия (Tier 2 завершён, переходим на Tier 3 или продолжение
+follow-up'ов к PR #6):
+- **Tier 3 #7 Wilson CI на /cohort_stats** — ~1 час, `scipy.stats`
+  один import, фиксит statistical literacy gap.
+- **Follow-up к PR #6** — sprinkle `get_variant` на конкретной decision-точке
+  + notebook `experiments.ipynb` с retention curves. Нужно продуктовое
+  решение «какой эксперимент первым».
+- **Tier 2 #5 schema_v1.yaml** — Could priority, low effort, делается
+  под настроение.
+
+---
+
 ## Session — 2026-05-21 (PA-roadmap kickoff: A/B framework + reference SQL)
 
 Goal: открыть PA-портфолио roadmap двумя пунктами Tier-1 за один PR —

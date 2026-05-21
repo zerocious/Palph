@@ -560,6 +560,71 @@ def compute_variant(
     return variants[n % len(variants)]
 
 
+def resolve_deploy_version() -> str:
+    """
+    Best-effort version string for `system.deploy` event (PA-roadmap #6).
+    Lookup order:
+      1. ``BOT_VERSION`` env var — set by CI/CD or docker-compose.
+      2. ``git rev-parse --short HEAD`` — dev convenience when running
+         locally from the repo.
+      3. Sentinel ``"unknown"`` — никогда не raises, чтобы deploy-event
+         hook не валил bot.main().
+    Subprocess timeout 2s — git может зависнуть на network filesystem'е.
+    """
+    import os
+    import subprocess
+    env = os.getenv("BOT_VERSION")
+    if env and env.strip():
+        return env.strip()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        if result.returncode == 0:
+            v = result.stdout.strip()
+            if v:
+                return v
+    except Exception:
+        # subprocess.TimeoutExpired, FileNotFoundError (git not installed),
+        # PermissionError, etc. — все silently swallowed.
+        pass
+    return "unknown"
+
+
+async def log_deploy_event(event_repo, version: str | None = None) -> dict:
+    """
+    Логирует `system.deploy` event для PA-roadmap #6 (deploy/version
+    markers в events table).
+
+    Вызывается из `bot.main()` при старте бота — один event на каждый
+    запуск процесса. user_id=None (system-level event, EventRepository
+    поддерживает nullable user_id).
+
+    Properties:
+      - version: разрешённая версия через `resolve_deploy_version()`,
+        либо переданная вручную (для тестов / explicit override).
+      - started_at_utc: ISO-8601 UTC timestamp (Z-suffix) — момент,
+        когда event фиксируется. Чуть позже PRAGMA datetime('now'),
+        но разница в миллисекундах — пренебрежимо для cohort-анализа.
+      - python_version: sys.version major.minor.patch, без build-info.
+
+    Returns: dict с properties, который записан — caller'у удобно
+    использовать в `logger.info("system.deploy ...")` без повторного
+    лукапа.
+    """
+    import sys
+    from datetime import datetime, timezone
+    resolved = version if version is not None else resolve_deploy_version()
+    props = {
+        "version": resolved,
+        "started_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "python_version": sys.version.split()[0],
+    }
+    await event_repo.log(None, "system.deploy", props)
+    return props
+
+
 async def get_variant(
     repo, user_id: int, experiment_name: str, event_repo=None
 ) -> str:
