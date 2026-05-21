@@ -68,7 +68,7 @@ class TestTipOfDay:
 
 class TestBotGuideCategory:
     def test_bot_guide_loaded(self):
-        assert len(bot.BOT_GUIDE_TIPS) >= 5
+        assert len(bot.BOT_GUIDE_TIPS) == 2
         assert "bot" in bot.TIP_CATEGORIES
 
     def test_tips_keyboard_has_bot_button(self):

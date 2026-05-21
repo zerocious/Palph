@@ -362,6 +362,10 @@ def is_admin(user_id: int) -> bool:
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Запуск бота / в главное меню"),
     BotCommand(command="stop", description="Остановить активный таймер"),
+    BotCommand(command="progress", description="Прогресс по предметам"),
+    BotCommand(command="pet", description="Питомец и кастомизация"),
+    BotCommand(command="leaderboard", description="Недельный лидерборд"),
+    BotCommand(command="friends", description="Друзья и рейтинг"),
 ]
 ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="help", description="Справка по командам (для админов)"),
@@ -1413,6 +1417,25 @@ FAQ_ITEMS: list[dict[str, str]] = [
             "не обещаем, это было бы нечестно."
         ),
     },
+    {
+        "id": "commands",
+        "btn":   "🔟 Быстрые команды",
+        "title": "🔟 Какие команды есть для быстрой навигации?",
+        "body": (
+            "Можно писать команды в чат вместо кнопок — так быстрее попасть "
+            "в нужный раздел:\n\n"
+            "/start — главное меню и клавиатура\n"
+            "/stop — остановить активный таймер Pomodoro\n"
+            "/progress — прогресс по всем предметам\n"
+            "/pet — экран питомца (уровень, XP, кастомизация)\n"
+            "/leaderboard — недельный рейтинг (то же, что /leaderboards)\n"
+            "/friends — друзья и недельный рейтинг среди них\n\n"
+            "Квизы, FAQ, настройки и профиль — через кнопки главного меню "
+            "или «📊 Мой профиль».\n\n"
+            "Если бот ждёт ввод (переименование питомца, время напоминания) — "
+            "отмена: /cancel."
+        ),
+    },
 ]
 
 FAQ_SUPPORT_ITEM: dict[str, str] = {
@@ -1429,7 +1452,7 @@ FAQ_SUPPORT_ITEM: dict[str, str] = {
 
 
 def _build_faq_menu_keyboard() -> InlineKeyboardMarkup:
-    """Главное меню FAQ — 7 кнопок-вопросов + 1 кнопка техподдержки."""
+    """Главное меню FAQ — кнопки по FAQ_ITEMS + техподдержка."""
     kb = InlineKeyboardBuilder()
     for item in FAQ_ITEMS:
         kb.button(text=item["btn"], callback_data=f"faq:show:{item['id']}")
@@ -5288,7 +5311,22 @@ async def cmd_listadmins(message: Message):
     )
 
 
-@router.message(Command("leaderboard"))
+@router.message(Command("progress"))
+async def cmd_progress(message: Message):
+    """Прогресс по предметам — то же, что кнопка в профиле."""
+    user_id = message.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        await message.answer("Сначала напиши /start для регистрации")
+        return
+    text = await build_progress_view(user_id)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
+    kb.adjust(1)
+    await message.answer(text, reply_markup=kb.as_markup())
+
+
+@router.message(Command("leaderboard", "leaderboards"))
 async def cmd_leaderboard(message: Message):
     """Показывает недельный лидерборд: auto-routing newbie vs main + собственный ранг.
     См. LEADERBOARD.md."""
@@ -5377,14 +5415,8 @@ def _picker_button_label(value: str, catalog: dict, user_pet, owned: set,
     return (f"💰{price} {value}", f"pet_buy:{item_type}:{value}")
 
 
-@router.callback_query(F.data.startswith("pet_menu:"))
-async def pet_menu(callback: CallbackQuery):
-    """
-    Pet detail screen: фото питомца + name/level/xp/color/accessory +
-    customization кнопки. Авто-создаёт pet (с дефолтами) если ещё нет.
-    """
-    await callback.answer()
-    user_id = callback.from_user.id
+async def _send_pet_menu(chat_id: int, user_id: int) -> None:
+    """Pet detail screen: фото + caption + customization kb."""
     pet = await pet_repo.get_pet(user_id)
     if pet is None:
         await pet_repo.create_pet_with_defaults(user_id)
@@ -5408,17 +5440,10 @@ async def pet_menu(callback: CallbackQuery):
     kb.button(text="◀️ Профиль", callback_data=f"pet_back_to_profile:{user_id}")
     kb.adjust(2, 1, 1)
 
-    # Pet menu приходит из ТЕКСТОВОГО профиля → нужно удалить старое
-    # сообщение и отправить новое (фото). Photo + caption + inline kb.
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
     if image is not None:
         try:
             await bot.send_photo(
-                chat_id=callback.message.chat.id,
+                chat_id=chat_id,
                 photo=image,
                 caption=caption,
                 parse_mode="HTML",
@@ -5428,13 +5453,35 @@ async def pet_menu(callback: CallbackQuery):
         except Exception as e:
             logger.warning("pet.menu_send_photo_failed user=%s err=%s", user_id, e)
 
-    # Fallback: text-only если asset отсутствует
     await bot.send_message(
-        chat_id=callback.message.chat.id,
-        text=caption + f"\n\n<i>(изображение питомца недоступно)</i>",
+        chat_id=chat_id,
+        text=caption + "\n\n<i>(изображение питомца недоступно)</i>",
         parse_mode="HTML",
         reply_markup=kb.as_markup(),
     )
+
+
+@router.message(Command("pet"))
+async def cmd_pet(message: Message):
+    """Питомец — то же, что кнопка в профиле."""
+    user_id = message.from_user.id
+    user = await user_repo.get_user(user_id)
+    if not user:
+        await message.answer("Сначала напиши /start для регистрации")
+        return
+    await _send_pet_menu(message.chat.id, user_id)
+
+
+@router.callback_query(F.data.startswith("pet_menu:"))
+async def pet_menu(callback: CallbackQuery):
+    """Pet detail из профиля: удаляем текст профиля, отправляем фото питомца."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await _send_pet_menu(callback.message.chat.id, user_id)
 
 
 async def _render_picker(callback: CallbackQuery, item_type: str) -> None:
