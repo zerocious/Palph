@@ -584,6 +584,10 @@ def get_quiz_answer_keyboard() -> ReplyKeyboardMarkup:
 #       ├── mcq.txt
 #       └── tasks/
 STUDY_MATERIALS_PATH = Path(__file__).parent / "study_materials"
+BOT_DIR = Path(__file__).parent
+TIME_MANAGEMENT_TIPS_FILE = BOT_DIR / "timemanagement.txt"
+MEMORY_RETENTION_TIPS_FILE = BOT_DIR / "memoryretention.txt"
+PRODUCTIVITY_LINKS_FILE = BOT_DIR / "links-to-productivity-material.txt"
 
 # Каталог предметов: (id, label). id = имя папки в study_materials/.
 SUBJECTS: list[tuple[str, str]] = [
@@ -3508,28 +3512,32 @@ async def handle_tips_menu(message: Message):
 @router.message(F.text == "⏰ Тайм-менеджмент")
 async def handle_time_management(message: Message):
     try:
-        with open("timemanagement.txt", "r", encoding="utf-8") as f:
+        with open(TIME_MANAGEMENT_TIPS_FILE, "r", encoding="utf-8") as f:
             tips = [line.strip() for line in f if line.strip()]
         await message.answer(f"⏰ Совет:\n\n{random.choice(tips)}")
-    except:
+    except FileNotFoundError:
         await message.answer("Файл с советами не найден.")
+    except (IndexError, ValueError):
+        await message.answer("Файл с советами пуст.")
 
 @router.message(F.text == "🧠 Техники запоминания")
 async def handle_memory_retention(message: Message):
     try:
-        with open("memoryretention.txt", "r", encoding="utf-8") as f:
+        with open(MEMORY_RETENTION_TIPS_FILE, "r", encoding="utf-8") as f:
             tips = [line.strip() for line in f if line.strip()]
         await message.answer(f"🧠 Совет:\n\n{random.choice(tips)}")
-    except:
+    except FileNotFoundError:
         await message.answer("Файл с советами не найден.")
+    except (IndexError, ValueError):
+        await message.answer("Файл с советами пуст.")
 
 @router.message(F.text == "🔗 Ссылки на статьи и книги")
 async def handle_links(message: Message):
     try:
-        with open("links-to-productivity-material.txt", "r", encoding="utf-8") as f:
+        with open(PRODUCTIVITY_LINKS_FILE, "r", encoding="utf-8") as f:
             content = f.read().strip()
         await message.answer(f"📚 Полезные материалы:\n\n{content}")
-    except:
+    except FileNotFoundError:
         await message.answer("Файл со ссылками не найден.")
 
 # ------------------------------------------------------------
