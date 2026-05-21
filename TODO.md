@@ -70,13 +70,14 @@ intern/junior. Цель — превратить бот в источник да
 PA-анализа в Jupyter.
 
 Что уже доступно (админ-команды + `/export all` ZIP + 8 reference SQL +
-A/B framework + 148 PA-тестов) — см. [README.md](README.md) и
-[session_notes.md](session_notes.md).
+A/B framework + Wilson CI на retention + 169 PA-тестов) — см.
+[README.md](README.md) и [session_notes.md](session_notes.md).
 
-Tier'ы по signal-per-effort. Пункты #1 (A/B framework) и #3 (reference SQL)
-ship'нуты в PR #6. Пункты #4 (event schema docs) и #6 (deploy markers)
-ship'нуты в PR #7. Пункт #2 (user properties via /start onboarding)
-намеренно опущен по решению пользователя 2026-05-21. Ниже — что осталось.
+Tier'ы по signal-per-effort. Ship'нуто: #1 (A/B framework) + #3
+(reference SQL) — PR #6; #4 (event schema docs) + #6 (deploy markers) —
+PR #7; #7 (Wilson CI на /cohort_stats) — PR #8. Пункт #2 (user
+properties via /start onboarding) намеренно опущен по решению
+пользователя 2026-05-21. Ниже — что осталось.
 
 **Tier 2 — data hygiene, «mature data person»**
 
@@ -111,13 +112,14 @@ retention-кривую) — не сделан, оставлен на следу�
 
 **Tier 3 — статистический / аналитический polish**
 
-7) [Аналитика] Confidence intervals на /cohort_stats
-Ценность: с <100 users point estimates lie. Wilson interval для binomial
-retention. Показывает statistical literacy.
-Готовность: `/cohort_stats` output расширен: D1/D7/D30 ± 95% CI (Wilson).
-~1 час, `scipy.stats.binom.interval` или ручной Wilson. В тестах
-фиксируется boundary case (n=0, n=1, p=0, p=1).
-Приоритет: Could.
+7) ✅ [Аналитика] Confidence intervals на /cohort_stats — **shipped
+в PR #8**. `services.wilson_interval(k, n, z=1.96)` pure closed-form
+(без scipy); `compute_cohort_retention` теперь возвращает `d1_ci`,
+`d7_ci`, `d30_ci` рядом с point estimates. `_render_cohort_table`
+печатает `66% [40-85%]` per cohort. 21 новый тест: 16 на Wilson
+boundary + monotonicity + properties, 5 на cohort-integration
+(eligible=0 → CI None, CI brackets p̂, narrower с большим n,
+k=0/k=n boundary clamping).
 
 8) [Аналитика] Time-to-event метрики (survival analysis)
 Ценность: beyond «did they retain D7» — survival analysis это правильный

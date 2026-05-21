@@ -437,6 +437,49 @@ def piecewise_time_pts(start: int, end: int) -> float:
     return pts
 
 
+def wilson_interval(
+    successes: int, n: int, z: float = 1.96
+) -> tuple[float | None, float | None]:
+    """
+    Wilson score interval для binomial proportion (PA-roadmap #7).
+
+    Зачем не нормальное приближение (p ± z·√(p(1-p)/n))? Нормальное
+    приближение коллапсирует на границах (p=0 даёт CI [0, 0]; p=1 →
+    [1, 1]) и врёт при малом n. Wilson не страдает от этих патологий
+    и даёт reasonable coverage даже при n=5.
+
+    Closed-form, без scipy. Алгоритм:
+        center = (p̂ + z²/(2n)) / (1 + z²/n)
+        spread = z·√(p̂(1-p̂)/n + z²/(4n²)) / (1 + z²/n)
+        [low, high] = [center - spread, center + spread]
+    где p̂ = successes/n.
+
+    Возвращает (low, high) ∈ [0, 1], либо (None, None), если n == 0
+    (interval undefined — нет наблюдений).
+
+    z=1.96 — 95% CI (default); z=2.576 — 99% CI; z=1.645 — 90% CI.
+
+    Ссылки: Wilson (1927); Brown, Cai, DasGupta (2001) рекомендуют
+    Wilson как default для binomial CI при n < ~40.
+    """
+    import math
+    if n <= 0:
+        return (None, None)
+    if successes < 0 or successes > n:
+        raise ValueError(
+            f"successes={successes} must be in [0, n={n}]"
+        )
+    p_hat = successes / n
+    denom = 1.0 + (z * z) / n
+    center = (p_hat + (z * z) / (2 * n)) / denom
+    spread = (
+        z * math.sqrt(p_hat * (1 - p_hat) / n + (z * z) / (4 * n * n))
+    ) / denom
+    low = max(0.0, center - spread)
+    high = min(1.0, center + spread)
+    return (low, high)
+
+
 def streak_multiplier(streak_days: int) -> float:
     """
     Weekly-score множитель (LEADERBOARD.md §5).
@@ -1381,12 +1424,18 @@ class AnalyticsService:
         Returns: {
             "cohorts": [
                 {"week": "2026-W20", "size": 12,
-                 "d1": 0.67 | None, "d7": 0.25 | None, "d30": None},
+                 "d1": 0.67 | None, "d7": 0.25 | None, "d30": None,
+                 "d1_ci": (0.40, 0.85) | None,  # 95% Wilson CI; None если eligible=0
+                 "d7_ci": (0.10, 0.46) | None,
+                 "d30_ci": None},
                 ...
             ],
             "total_users": 25,
             "today": "YYYY-MM-DD",
         }
+
+        CI добавлены 2026-05-21 (PA-roadmap #7): point estimates vrut
+        при <100 users. Wilson interval — closed-form, без scipy.
         """
         from collections import defaultdict
         # Шаг 1: signup-даты
@@ -1430,17 +1479,25 @@ class AnalyticsService:
                 if target in user_active_dates:
                     bucket[f"d{day_n}_active"] += 1
 
-        # Шаг 4: % по каждой когорте
+        # Шаг 4: % по каждой когорте + Wilson 95% CI
         cohorts = []
         for week in sorted(cohort_data.keys()):
             d = cohort_data[week]
-            cohorts.append({
+            entry = {
                 "week": week,
                 "size": d["size"],
                 "d1":  d["d1_active"]  / d["d1_eligible"]  if d["d1_eligible"]  else None,
                 "d7":  d["d7_active"]  / d["d7_eligible"]  if d["d7_eligible"]  else None,
                 "d30": d["d30_active"] / d["d30_eligible"] if d["d30_eligible"] else None,
-            })
+            }
+            for day_n in (1, 7, 30):
+                eligible = d[f"d{day_n}_eligible"]
+                if eligible:
+                    low, high = wilson_interval(d[f"d{day_n}_active"], eligible)
+                    entry[f"d{day_n}_ci"] = (low, high)
+                else:
+                    entry[f"d{day_n}_ci"] = None
+            cohorts.append(entry)
         return {
             "cohorts": cohorts,
             "total_users": len(signups),
