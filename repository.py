@@ -282,7 +282,8 @@ class UserRepository:
             evening_enabled = ?,
             evening_time = ?,
             streak_enabled = ?,
-            achievements_enabled = ?
+            achievements_enabled = ?,
+            flashcard_source = ?
             WHERE user_id = ?""",
             (
                 settings.get("morning_enabled", 1),
@@ -291,6 +292,7 @@ class UserRepository:
                 settings.get("evening_time", "21:00"),
                 settings.get("streak_enabled", 1),
                 settings.get("achievements_enabled", 1),
+                settings.get("flashcard_source", "mix"),
                 user_id
             )
         )
@@ -369,6 +371,93 @@ class SessionRepository:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+
+class UserFlashcardRepository:
+    """
+    CRUD пользовательских флэш-карт (per user + subject).
+    Hash namespace: префикс 'u' + 7 hex от id — не пересекается
+    с официальными MD5(term)[:8].
+    """
+
+    MAX_PER_SUBJECT = 100
+
+    @staticmethod
+    def card_hash(card_id: int) -> str:
+        return f"u{card_id:07x}"
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def count_by_subject(self, user_id: int, subject_id: str) -> int:
+        async with self.db.execute(
+            "SELECT COUNT(*) FROM user_flashcards "
+            "WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def create(
+        self, user_id: int, subject_id: str, term: str, definition: str
+    ) -> dict:
+        """
+        INSERT новой карточки. Raises ValueError('limit_exceeded') при лимите
+        100 на (user_id, subject_id). IntegrityError при дубликате term.
+        """
+        term = term.strip()
+        definition = definition.strip()
+        count = await self.count_by_subject(user_id, subject_id)
+        if count >= self.MAX_PER_SUBJECT:
+            raise ValueError("limit_exceeded")
+        cursor = await self.db.execute(
+            "INSERT INTO user_flashcards (user_id, subject_id, term, definition) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, subject_id, term, definition),
+        )
+        await self.db.commit()
+        card_id = cursor.lastrowid
+        return {
+            "id": card_id,
+            "term": term,
+            "definition": definition,
+            "hash": self.card_hash(card_id),
+        }
+
+    async def list_by_subject(self, user_id: int, subject_id: str) -> list[dict]:
+        async with self.db.execute(
+            "SELECT id, term, definition FROM user_flashcards "
+            "WHERE user_id = ? AND subject_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (user_id, subject_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "term": row["term"],
+                "definition": row["definition"],
+                "hash": self.card_hash(row["id"]),
+            }
+            for row in rows
+        ]
+
+    async def delete(self, user_id: int, card_id: int) -> bool:
+        """Удаляет карточку и связанный SM-2 прогресс по hash."""
+        card_hash = self.card_hash(card_id)
+        cursor = await self.db.execute(
+            "DELETE FROM user_flashcards WHERE user_id = ? AND id = ?",
+            (user_id, card_id),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return False
+        await self.db.execute(
+            "DELETE FROM flashcard_progress WHERE user_id = ? AND card_hash = ?",
+            (user_id, card_hash),
+        )
+        await self.db.commit()
+        return True
 
 
 class FlashcardRepository:

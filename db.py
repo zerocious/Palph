@@ -47,7 +47,8 @@ async def init_db(db: aiosqlite.Connection):
             evening_enabled INTEGER NOT NULL DEFAULT 1,
             evening_time TEXT NOT NULL DEFAULT '21:00',
             streak_enabled INTEGER NOT NULL DEFAULT 1,
-            achievements_enabled INTEGER NOT NULL DEFAULT 1
+            achievements_enabled INTEGER NOT NULL DEFAULT 1,
+            flashcard_source TEXT NOT NULL DEFAULT 'mix'
         );
 
         -- Учебные сессии
@@ -310,6 +311,19 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_friend_invite_tokens_from
             ON friend_invite_tokens(from_user_id);
+
+        -- Пользовательские флэш-карточки (per user + subject).
+        CREATE TABLE IF NOT EXISTS user_flashcards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            subject_id TEXT NOT NULL,
+            term TEXT NOT NULL,
+            definition TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (user_id, subject_id, term)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_flashcards_lookup
+            ON user_flashcards(user_id, subject_id);
     """)
     await db.commit()
 
@@ -341,6 +355,16 @@ async def init_db(db: aiosqlite.Connection):
     # т.к. Telegram может менять username в любой момент.
     try:
         await db.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
+    # Миграция: источник флэш-карт при учёбе (mix / official / own).
+    try:
+        await db.execute(
+            "ALTER TABLE notification_settings ADD COLUMN "
+            "flashcard_source TEXT NOT NULL DEFAULT 'mix'"
+        )
         await db.commit()
     except Exception:
         pass  # колонка уже есть

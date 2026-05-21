@@ -4,6 +4,32 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-22 (user flashcards feature)
+
+Goal: пользовательские флэш-карточки по предметам, новый flow учёбы
+«предмет → режим», настройка источника карточек (микс / официальные / свои).
+
+### Changes
+
+| # | Area | Change | Files |
+|---|------|--------|-------|
+| 1 | Schema | Таблица `user_flashcards` + колонка `flashcard_source` в `notification_settings` (default `mix`) | [db.py](db.py) |
+| 2 | Repository | `UserFlashcardRepository` (CRUD, лимит 100/subject, hash `u{id:07x}`) + расширение notification settings | [repository.py](repository.py) |
+| 3 | Study flow | `load_flashcards_for_study`, перестроен FSM: ❓ Квизы → предмет → режим | [bot.py](bot.py) |
+| 4 | UI | FSM создания карточек, «📇 Мои карточки» в настройках, цикл источника в ⚙️ | [bot.py](bot.py) |
+| 5 | Progress | User cards учитываются в mastery/due блоке предмета | [bot.py](bot.py) |
+| 6 | Tests | `test_user_flashcards.py`, `test_flashcard_source.py` | [tests/](tests/) |
+
+### New study flow
+
+```
+❓ Квизы → выбор предмета → выбор режима → сессия
+```
+
+Источник флэш-карт при повторении: ⚙️ Настройки → «🃏 Флэш-карты» (Микс / Официальные / Свои).
+
+---
+
 ## Session — 2026-05-20 (post-v0.8 follow-ups)
 
 Goal: ship два deferred follow-up'а на main после merge PR #3 и PR #4:

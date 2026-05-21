@@ -6,6 +6,7 @@ import os
 import re
 import random
 import hashlib
+import sqlite3
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -31,6 +32,7 @@ from aiogram.fsm.storage.base import StorageKey
 from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
+    UserFlashcardRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
 )
@@ -113,6 +115,7 @@ user_repo: UserRepository = None
 session_repo: SessionRepository = None
 admin_repo: AdminRepository = None
 flashcard_repo: FlashcardRepository = None
+user_flashcard_repo: UserFlashcardRepository = None
 mcq_repo: McqProgressRepository = None
 task_repo: TaskProgressRepository = None
 subject_stats_repo: SubjectStatsRepository = None
@@ -229,16 +232,16 @@ class TimerStates(StatesGroup):
     active = State()
 
 class QuizStates(StatesGroup):
-    # Новый mode-picker flow (введён в v0.7 #13):
-    #   choosing_mode    — пользователь выбирает режим (situational/MCQ/...)
-    #   choosing_subject — выбирает предмет (фильтр по subjects_with_mode)
+    # Flow учёбы (v0.9 user flashcards):
+    #   choosing_subject — пользователь выбирает предмет
+    #   choosing_mode    — выбирает режим (situational/MCQ/...) для предмета
     # Существующий situational flow:
     #   choosing_section — Раздел I/II/III/IV для ОПМ
     #   answering        — open-text ответ на ситуационный вопрос
     # MCQ flow (v0.7 #13):
     #   answering_mcq    — пользователь тапает inline-кнопки с вариантами
-    choosing_mode = State()
     choosing_subject = State()
+    choosing_mode = State()
     choosing_section = State()
     answering = State()
     answering_mcq = State()
@@ -266,6 +269,11 @@ class SettingsStates(StatesGroup):
     # Универсальное состояние для ввода времени (утро/вечер).
     # Слот хранится в FSM data: {"slot": "morning" | "evening"}.
     waiting_for_time = State()
+
+
+class FlashcardCreateStates(StatesGroup):
+    waiting_for_term = State()
+    waiting_for_definition = State()
 
 
 TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]?\d)$")
@@ -455,17 +463,37 @@ def get_timer_active_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 def get_mode_keyboard() -> ReplyKeyboardMarkup:
-    """Mode-picker: показывает только режимы с непустым контентом."""
+    """Legacy helper — предпочитайте get_mode_keyboard_for_subject()."""
     builder = ReplyKeyboardBuilder()
-    for _, label in available_modes_global():
+    for _, label in STUDY_MODES:
+        builder.button(text=label)
+    builder.button(text="⬅️ Назад к предметам")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+async def get_subject_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    """Subject-picker: предметы с хотя бы одним доступным режимом."""
+    builder = ReplyKeyboardBuilder()
+    for _, label in await available_subjects(user_id):
         builder.button(text=label)
     builder.button(text="⬅️ Назад к учебе")
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
+async def get_mode_keyboard_for_subject(subject_id: str, user_id: int) -> ReplyKeyboardMarkup:
+    """Mode-picker для выбранного предмета."""
+    builder = ReplyKeyboardBuilder()
+    for _, label in await available_modes(subject_id, user_id):
+        builder.button(text=label)
+    builder.button(text="⬅️ Назад к предметам")
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
 def get_subject_keyboard_for_mode(mode_id: str) -> ReplyKeyboardMarkup:
-    """Subject-picker для конкретного режима: только предметы с контентом."""
+    """Legacy helper — предпочитайте get_subject_keyboard(user_id)."""
     builder = ReplyKeyboardBuilder()
     for _, label in subjects_with_mode(mode_id):
         builder.button(text=label)
@@ -576,12 +604,8 @@ STUDY_MODES: list[tuple[str, str]] = [
 ]
 
 
-def available_modes(subject_id: str) -> list[tuple[str, str]]:
-    """
-    Возвращает режимы, у которых для данного предмета есть непустой контент.
-    UI-слой строит меню режимов по этому списку — пустые режимы автоматически
-    скрываются (как и пустые секции в available_quiz_sections).
-    """
+def _file_based_modes(subject_id: str) -> list[tuple[str, str]]:
+    """Режимы с непустым официальным контентом (файлы на диске)."""
     subject_path = STUDY_MATERIALS_PATH / subject_id
     if not subject_path.is_dir():
         return []
@@ -604,25 +628,40 @@ def available_modes(subject_id: str) -> list[tuple[str, str]]:
     return result
 
 
-def available_subjects() -> list[tuple[str, str]]:
+async def available_modes(subject_id: str, user_id: int | None = None) -> list[tuple[str, str]]:
     """
-    Возвращает только предметы, у которых есть хотя бы один непустой режим.
-    Так пользователь не видит «mock»-кнопок предметов без контента.
+    Режимы с контентом для предмета. Учитывает пользовательские флэш-карты:
+    flashcards доступен, если есть flashcards.txt или свои карточки.
     """
-    return [(sid, label) for sid, label in SUBJECTS if available_modes(sid)]
+    result = _file_based_modes(subject_id)
+    if user_id is not None:
+        user_count = await user_flashcard_repo.count_by_subject(user_id, subject_id)
+        if user_count > 0 and not any(m[0] == "flashcards" for m in result):
+            flash_label = next(label for mid, label in STUDY_MODES if mid == "flashcards")
+            result.append(("flashcards", flash_label))
+    return result
+
+
+async def available_subjects(user_id: int) -> list[tuple[str, str]]:
+    """Предметы, у которых есть хотя бы один доступный режим."""
+    result = []
+    for sid, label in SUBJECTS:
+        if await available_modes(sid, user_id):
+            result.append((sid, label))
+    return result
 
 
 def subjects_with_mode(mode_id: str) -> list[tuple[str, str]]:
-    """Предметы, у которых есть контент для конкретного режима."""
+    """Legacy sync helper — только официальный контент на диске."""
     return [
         (sid, label)
         for sid, label in SUBJECTS
-        if any(m[0] == mode_id for m in available_modes(sid))
+        if any(m[0] == mode_id for m in _file_based_modes(sid))
     ]
 
 
 def available_modes_global() -> list[tuple[str, str]]:
-    """Режимы, у которых есть контент хотя бы для одного предмета."""
+    """Legacy: режимы с официальным контентом хотя бы для одного предмета."""
     return [(mid, label) for mid, label in STUDY_MODES if subjects_with_mode(mid)]
 
 
@@ -773,6 +812,25 @@ def load_flashcards(subject_id: str) -> list[dict]:
                     "hash": _flashcard_hash(term),
                 })
     return cards
+
+
+async def load_flashcards_for_study(
+    user_id: int,
+    subject_id: str,
+    source: str,
+) -> list[dict]:
+    """
+    Загружает пул флэш-карт для сессии учёбы.
+    source ∈ {'mix', 'official', 'own'}.
+    """
+    official = load_flashcards(subject_id)
+    own = await user_flashcard_repo.list_by_subject(user_id, subject_id)
+    if source == "official":
+        return official
+    if source == "own":
+        return own
+    return official + own
+
 
 def _word_matches_keyword(user_word: str, keyword: str) -> bool:
     """
@@ -1356,6 +1414,14 @@ PROGRESS_BAR_LENGTH = 10
 # Пороги «выучено». Можно менять централизованно.
 SITUATIONAL_MASTERY_STREAK = 3   # streak в quiz_progress
 FLASHCARD_MASTERY_REPS = 3       # repetitions в flashcard_progress
+FLASHCARD_SOURCE_LABELS = {
+    "mix": "Микс",
+    "official": "Официальные",
+    "own": "Свои",
+}
+FLASHCARD_SOURCE_CYCLE = ["mix", "official", "own"]
+USER_FLASHCARD_TERM_MAX = 200
+USER_FLASHCARD_DEFINITION_MAX = 1000
 
 
 def _render_bar(pct: float) -> str:
@@ -1459,10 +1525,11 @@ async def _build_subject_progress_block(user_id: int, subject_id: str, subject_l
         for term in load_quiz_section(key, subject_id):
             section_terms.append(term.hash)
     cards = load_flashcards(subject_id)
+    user_cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     mcq_qs = load_mcq(subject_id)
     tasks_list = load_tasks(subject_id)
 
-    card_hashes = [c["hash"] for c in cards]
+    card_hashes = [c["hash"] for c in cards] + [c["hash"] for c in user_cards]
     mcq_hashes = [_mcq_hash(q["question"]) for q in mcq_qs]
     task_ids = [t["id"] for t in tasks_list]
 
@@ -1575,7 +1642,8 @@ class NotificationSettings:
         return {
             "morning_enabled": 1, "morning_time": "09:00",
             "evening_enabled": 1, "evening_time": "21:00",
-            "streak_enabled": 1, "achievements_enabled": 1
+            "streak_enabled": 1, "achievements_enabled": 1,
+            "flashcard_source": "mix",
         }
 
     async def save(self, settings: dict):
@@ -1608,6 +1676,19 @@ class NotificationSettings:
         }
         return bool(new_value), f"{label_map[setting_type]}: {status}"
 
+    async def cycle_flashcard_source(self) -> str:
+        """mix → official → own → mix. Возвращает label нового значения."""
+        async with self.repo.db.lock:
+            settings = await self.load()
+            current = settings.get("flashcard_source", "mix")
+            if current not in FLASHCARD_SOURCE_CYCLE:
+                current = "mix"
+            idx = FLASHCARD_SOURCE_CYCLE.index(current)
+            new_source = FLASHCARD_SOURCE_CYCLE[(idx + 1) % len(FLASHCARD_SOURCE_CYCLE)]
+            settings["flashcard_source"] = new_source
+            await self.save(settings)
+        return FLASHCARD_SOURCE_LABELS[new_source]
+
     async def set_time(self, slot: str, time_str: str) -> None:
         """Сохраняет утреннее/вечернее время. slot ∈ {'morning','evening'}."""
         if slot not in ("morning", "evening"):
@@ -1636,6 +1717,9 @@ class NotificationSettings:
                 time_str = f" ({time_val})" if time_val else ""
             status = "✅ Включено" if enabled else "❌ Отключено"
             lines.append(f"{emoji} {labels[key]}{time_str}: {status}")
+        source = settings.get("flashcard_source", "mix")
+        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
+        lines.append(f"\n🃏 Флэш-карты: {source_label}")
         lines.append(f"\n🌍 Часовой пояс: {tz_label(tz)}")
         lines.append(
             f"👤 Лидерборды: "
@@ -1672,8 +1756,15 @@ class NotificationSettings:
             text=f"👤 Лидерборды: {'Скрыт' if hidden else 'Виден'}",
             callback_data=f"settings_privacy:{self.user_id}",
         )
+        source = settings.get("flashcard_source", "mix")
+        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
+        kb.button(
+            text=f"🃏 Флэш-карты: {source_label}",
+            callback_data=f"settings_flash_source:{self.user_id}",
+        )
+        kb.button(text="📇 Мои карточки", callback_data=f"fc_manage:{self.user_id}")
         kb.button(text="⬅️ Назад в профиль", callback_data=f"back_to_profile:{self.user_id}")
-        kb.adjust(2, 2, 2, 1, 1, 1)
+        kb.adjust(2, 2, 2, 1, 1, 1, 1)
         return kb.as_markup()
 
 @router.callback_query(F.data.startswith("settings_menu:"))
@@ -1700,6 +1791,269 @@ async def toggle_notification_setting(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error toggling setting: {e}")
         await callback.answer("Ошибка переключения", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("settings_flash_source:"))
+async def cycle_flashcard_source_setting(callback: CallbackQuery):
+    try:
+        target_user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != target_user_id:
+        await callback.answer("Это не твои настройки", show_alert=True)
+        return
+    ns = NotificationSettings(target_user_id, user_repo)
+    async with db.lock:
+        new_label = await ns.cycle_flashcard_source()
+    await callback.message.edit_text(
+        await ns.get_display_text(),
+        reply_markup=await ns.get_keyboard(),
+    )
+    await callback.answer(f"🃏 Источник: {new_label}")
+
+
+def _subject_label_by_id(subject_id: str) -> str:
+    for sid, label in SUBJECTS:
+        if sid == subject_id:
+            return label
+    return subject_id
+
+
+def _build_fc_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for sid, label in SUBJECTS:
+        kb.button(text=label, callback_data=f"{prefix}:{user_id}:{sid}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def _build_fc_list_text(user_id: int, subject_id: str) -> str:
+    cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
+    subject_label = _subject_label_by_id(subject_id)
+    if not cards:
+        return (
+            f"📇 Мои карточки — {subject_label}\n\n"
+            f"Пока пусто. Нажми «➕ Добавить», чтобы создать первую."
+        )
+    lines = [f"📇 Мои карточки — {subject_label}", f"Всего: {len(cards)}", ""]
+    for i, card in enumerate(cards, 1):
+        lines.append(f"{i}. {card['term']}")
+    return "\n".join(lines)
+
+
+def _build_fc_list_keyboard(user_id: int, subject_id: str, cards: list[dict]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить", callback_data=f"fc_add:{user_id}:{subject_id}")
+    for card in cards:
+        term_preview = card["term"][:30] + ("…" if len(card["term"]) > 30 else "")
+        kb.button(
+            text=f"🗑 {term_preview}",
+            callback_data=f"fc_del:{user_id}:{subject_id}:{card['id']}",
+        )
+    kb.button(text="⬅️ К предметам", callback_data=f"fc_manage:{user_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def _start_flashcard_create_wizard(
+    message: Message,
+    state: FSMContext,
+    user_id: int,
+    subject_id: str,
+) -> None:
+    subject_label = _subject_label_by_id(subject_id)
+    await state.set_state(FlashcardCreateStates.waiting_for_term)
+    await state.update_data(fc_subject_id=subject_id, fc_subject_label=subject_label)
+    await message.answer(
+        f"📇 Новая карточка — {subject_label}\n\n"
+        f"Шаг 1/2: введи термин (вопрос), до {USER_FLASHCARD_TERM_MAX} символов.",
+    )
+
+
+@router.callback_query(F.data.startswith("fc_manage:"))
+async def handle_fc_manage(callback: CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твои карточки", show_alert=True)
+        return
+    text = "📇 Мои карточки\n\nВыбери предмет:"
+    kb = _build_fc_subject_picker_keyboard(user_id, "fc_list")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fc_list:"))
+async def handle_fc_list(callback: CallbackQuery):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твои карточки", show_alert=True)
+        return
+    cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
+    text = await _build_fc_list_text(user_id, subject_id)
+    kb = _build_fc_list_keyboard(user_id, subject_id, cards)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fc_add:"))
+async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твои карточки", show_alert=True)
+        return
+    await callback.answer()
+    await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id)
+
+
+@router.callback_query(F.data.startswith("fc_del:"))
+async def handle_fc_delete(callback: CallbackQuery):
+    try:
+        _, user_id_str, subject_id, card_id_str = callback.data.split(":", 3)
+        user_id = int(user_id_str)
+        card_id = int(card_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твои карточки", show_alert=True)
+        return
+    deleted = await user_flashcard_repo.delete(user_id, card_id)
+    if deleted:
+        await event_repo.log(
+            user_id,
+            "user_flashcard_deleted",
+            {"subject_id": subject_id, "card_id": card_id},
+        )
+    cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
+    text = await _build_fc_list_text(user_id, subject_id)
+    kb = _build_fc_list_keyboard(user_id, subject_id, cards)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer("Удалено" if deleted else "Карточка не найдена")
+
+
+@router.message(FlashcardCreateStates.waiting_for_term)
+async def handle_fc_term(message: Message, state: FSMContext):
+    term = (message.text or "").strip()
+    if not term:
+        await message.answer("Термин не может быть пустым. Попробуй ещё раз.")
+        return
+    if len(term) > USER_FLASHCARD_TERM_MAX:
+        await message.answer(
+            f"Слишком длинный термин (макс. {USER_FLASHCARD_TERM_MAX} символов)."
+        )
+        return
+    await state.update_data(fc_term=term)
+    await state.set_state(FlashcardCreateStates.waiting_for_definition)
+    await message.answer(
+        f"Шаг 2/2: введи определение (ответ), "
+        f"до {USER_FLASHCARD_DEFINITION_MAX} символов."
+    )
+
+
+@router.message(FlashcardCreateStates.waiting_for_definition)
+async def handle_fc_definition(message: Message, state: FSMContext):
+    definition = (message.text or "").strip()
+    if not definition:
+        await message.answer("Определение не может быть пустым. Попробуй ещё раз.")
+        return
+    if len(definition) > USER_FLASHCARD_DEFINITION_MAX:
+        await message.answer(
+            f"Слишком длинное определение (макс. {USER_FLASHCARD_DEFINITION_MAX} символов)."
+        )
+        return
+
+    data = await state.get_data()
+    subject_id = data.get("fc_subject_id")
+    subject_label = data.get("fc_subject_label", subject_id)
+    term = data.get("fc_term", "")
+    user_id = message.from_user.id
+
+    try:
+        card = await user_flashcard_repo.create(user_id, subject_id, term, definition)
+    except ValueError as e:
+        if str(e) == "limit_exceeded":
+            await message.answer(
+                f"Достигнут лимит {UserFlashcardRepository.MAX_PER_SUBJECT} карточек "
+                f"на этот предмет. Удали старые, чтобы добавить новые."
+            )
+            await state.clear()
+            return
+        raise
+    except sqlite3.IntegrityError:
+        await message.answer(
+            f"Карточка с термином «{term}» уже есть в этом предмете. "
+            f"Введи другой термин:"
+        )
+        await state.set_state(FlashcardCreateStates.waiting_for_term)
+        return
+    except Exception as e:
+        logger.error("fc.create_failed user_id=%s reason=%s", user_id, e)
+        await message.answer("Не удалось сохранить карточку. Попробуй позже.")
+        await state.clear()
+        return
+
+    await event_repo.log(
+        user_id,
+        "user_flashcard_created",
+        {"subject_id": subject_id, "card_id": card["id"]},
+    )
+    await state.clear()
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить ещё", callback_data=f"fc_add:{user_id}:{subject_id}")
+    kb.button(text="📇 Мои карточки", callback_data=f"fc_list:{user_id}:{subject_id}")
+    kb.button(text="🃏 Начать учёбу", callback_data=f"fc_study:{user_id}:{subject_id}")
+    kb.adjust(1)
+    await message.answer(
+        f"✅ Карточка сохранена!\n\n"
+        f"<b>{term}</b>\n<i>{definition}</i>",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("fc_study:"))
+async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твоя сессия", show_alert=True)
+        return
+    subject_label = _subject_label_by_id(subject_id)
+    await callback.answer()
+    await state.set_state(QuizStates.choosing_mode)
+    await state.update_data(subject_id=subject_id, subject_label=subject_label, mode_id="flashcards")
+    await start_flashcard_session(
+        callback.message, state, subject_id, subject_label=subject_label,
+    )
 
 
 @router.callback_query(F.data.startswith("freeze_menu:"))
@@ -2286,55 +2640,29 @@ async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
     )
 
 # ------------------------------------------------------------
-# Квизы — общий flow: ❓ Квизы → mode picker → subject picker → режим
+# Квизы — общий flow: ❓ Квизы → subject picker → mode picker → режим
 # ------------------------------------------------------------
 @router.message(F.text == "❓ Квизы")
 async def handle_quiz_menu(message: Message, state: FSMContext):
-    modes = available_modes_global()
-    if not modes:
+    user_id = message.from_user.id
+    subjects = await available_subjects(user_id)
+    if not subjects:
         await message.answer(
             "🚧 Пока нет учебных материалов. Загляни позже!",
             reply_markup=get_study_keyboard(),
         )
         return
-    await state.set_state(QuizStates.choosing_mode)
-    await message.answer(
-        "📖 Выбери режим учёбы:",
-        reply_markup=get_mode_keyboard(),
-    )
-
-
-@router.message(QuizStates.choosing_mode, F.text == "⬅️ Назад к учебе")
-async def handle_mode_back(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("📖 Раздел учёбы:", reply_markup=get_study_keyboard())
-
-
-@router.message(QuizStates.choosing_mode, F.text.in_([label for _, label in STUDY_MODES]))
-async def handle_mode_picked(message: Message, state: FSMContext):
-    mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
-    if not mode_id:
-        return
-    subjects = subjects_with_mode(mode_id)
-    if not subjects:
-        await message.answer(
-            f"🚧 «{message.text}» — пока нет контента ни для одного предмета.",
-            reply_markup=get_mode_keyboard(),
-        )
-        return
-    await state.update_data(mode_id=mode_id, mode_label=message.text)
-    await event_repo.log(message.from_user.id, "mode_picked", {"mode_id": mode_id})
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
-        f"{message.text}\nВыбери предмет:",
-        reply_markup=get_subject_keyboard_for_mode(mode_id),
+        "📖 Выбери предмет:",
+        reply_markup=await get_subject_keyboard(user_id),
     )
 
 
-@router.message(QuizStates.choosing_subject, F.text == "⬅️ Назад к режимам")
-async def handle_subject_back(message: Message, state: FSMContext):
-    await state.set_state(QuizStates.choosing_mode)
-    await message.answer("📖 Выбери режим учёбы:", reply_markup=get_mode_keyboard())
+@router.message(QuizStates.choosing_subject, F.text == "⬅️ Назад к учебе")
+async def handle_subject_back_to_study(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📖 Раздел учёбы:", reply_markup=get_study_keyboard())
 
 
 @router.message(QuizStates.choosing_subject, F.text.in_([label for _, label in SUBJECTS]))
@@ -2342,31 +2670,82 @@ async def handle_subject_picked(message: Message, state: FSMContext):
     subject_id = next((sid for sid, label in SUBJECTS if label == message.text), None)
     if not subject_id:
         return
-    data = await state.get_data()
-    mode_id = data.get("mode_id")
+    user_id = message.from_user.id
+    modes = await available_modes(subject_id, user_id)
+    if not modes:
+        await message.answer(
+            f"🚧 «{message.text}» — пока нет доступных режимов.",
+            reply_markup=await get_subject_keyboard(user_id),
+        )
+        return
     await state.update_data(subject_id=subject_id, subject_label=message.text)
-    await event_repo.log(message.from_user.id, "subject_picked", {
+    await event_repo.log(user_id, "subject_picked", {"subject_id": subject_id})
+    await state.set_state(QuizStates.choosing_mode)
+    await message.answer(
+        f"{message.text}\nВыбери режим учёбы:",
+        reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить карточку", callback_data=f"fc_add:{user_id}:{subject_id}")
+    kb.button(text="📇 Мои карточки", callback_data=f"fc_list:{user_id}:{subject_id}")
+    kb.adjust(2)
+    await message.answer("Или управляй своими карточками:", reply_markup=kb.as_markup())
+
+
+@router.message(QuizStates.choosing_mode, F.text == "⬅️ Назад к предметам")
+async def handle_mode_back_to_subjects(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    await state.set_state(QuizStates.choosing_subject)
+    await message.answer(
+        "📖 Выбери предмет:",
+        reply_markup=await get_subject_keyboard(user_id),
+    )
+
+
+@router.message(QuizStates.choosing_mode, F.text.in_([label for _, label in STUDY_MODES]))
+async def handle_mode_picked(message: Message, state: FSMContext):
+    mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
+    if not mode_id:
+        return
+    data = await state.get_data()
+    subject_id = data.get("subject_id")
+    subject_label = data.get("subject_label", message.text)
+    user_id = message.from_user.id
+    if not subject_id:
+        await state.set_state(QuizStates.choosing_subject)
+        await message.answer(
+            "Сначала выбери предмет:",
+            reply_markup=await get_subject_keyboard(user_id),
+        )
+        return
+    available = await available_modes(subject_id, user_id)
+    if not any(m[0] == mode_id for m in available):
+        await message.answer(
+            f"🚧 «{message.text}» недоступен для этого предмета.",
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+        )
+        return
+    await state.update_data(mode_id=mode_id, mode_label=message.text)
+    await event_repo.log(user_id, "mode_picked", {
         "mode_id": mode_id, "subject_id": subject_id,
     })
 
     if mode_id == "situational":
-        # Существующий flow: показать раздельный picker
         await state.set_state(QuizStates.choosing_section)
         await message.answer(
-            f"📚 {message.text}\nВыбери раздел:",
+            f"📚 {subject_label}\nВыбери раздел:",
             reply_markup=get_quiz_section_keyboard(),
         )
     elif mode_id == "mcq":
-        await start_mcq_session(message, state, subject_id, subject_label=message.text)
+        await start_mcq_session(message, state, subject_id, subject_label=subject_label)
     elif mode_id == "tasks":
-        await start_task_session(message, state, subject_id, subject_label=message.text)
+        await start_task_session(message, state, subject_id, subject_label=subject_label)
     elif mode_id == "flashcards":
-        await start_flashcard_session(message, state, subject_id, subject_label=message.text)
+        await start_flashcard_session(message, state, subject_id, subject_label=subject_label)
     else:
-        # На всякий случай — не должно сюда попадать
         await message.answer(
             "Что-то пошло не так. Возвращаемся к режимам.",
-            reply_markup=get_mode_keyboard(),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
         )
         await state.set_state(QuizStates.choosing_mode)
 
@@ -2376,11 +2755,11 @@ async def handle_subject_picked(message: Message, state: FSMContext):
 # ============================================================
 async def start_mcq_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
     questions = load_mcq(subject_id)
+    user_id = message.from_user.id
     if not questions:
-        # subjects_with_mode уже фильтрует; это страховка на случай гонки с файлами
         await message.answer(
             "🚧 Для этого предмета пока нет MCQ-вопросов.",
-            reply_markup=get_mode_keyboard(),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -2540,11 +2919,11 @@ MAX_TASK_ATTEMPTS = 3
 
 async def start_task_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
     tasks = load_tasks(subject_id)
+    user_id = message.from_user.id
     if not tasks:
-        # subjects_with_mode уже фильтрует; страховка на случай гонки
         await message.answer(
             "🚧 Для этого предмета пока нет задач.",
-            reply_markup=get_mode_keyboard(),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -2779,11 +3158,31 @@ FLASH_COINS_PER_CARD = 1  # +1🪙 за просмотр независимо о
 
 
 async def start_flashcard_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
-    cards = load_flashcards(subject_id)
+    user_id = message.from_user.id
+    settings = await user_repo.get_notification_settings(user_id) or {}
+    source = settings.get("flashcard_source", "mix")
+    cards = await load_flashcards_for_study(user_id, subject_id, source)
     if not cards:
+        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
+        hints = {
+            "own": (
+                "В настройках выбран источник «Свои», но своих карточек пока нет.\n"
+                "Добавь карточки через «📇 Мои карточки» или смени источник в ⚙️ Настройки."
+            ),
+            "official": (
+                "В настройках выбран источник «Официальные», но официальных карточек "
+                "для этого предмета пока нет.\n"
+                "Смени источник на «Микс» или «Свои» в ⚙️ Настройки."
+            ),
+            "mix": (
+                "Для этого предмета пока нет флэш-карт.\n"
+                "Добавь свои через «📇 Мои карточки» или дождись официального контента."
+            ),
+        }
         await message.answer(
-            "🚧 Для этого предмета пока нет флэш-карт.",
-            reply_markup=get_mode_keyboard(),
+            f"🚧 Нет карточек для учёбы (источник: {source_label}).\n\n"
+            f"{hints.get(source, hints['mix'])}",
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -5263,13 +5662,14 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
     session_repo = SessionRepository(db)
     admin_repo = AdminRepository(db)
     flashcard_repo = FlashcardRepository(db)
+    user_flashcard_repo = UserFlashcardRepository(db)
     mcq_repo = McqProgressRepository(db)
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)
