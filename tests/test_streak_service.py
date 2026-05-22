@@ -226,6 +226,13 @@ class TestStreakFreezeIntegration:
         u = await user_repo.get_user(uid)
         assert u["current_streak"] == 5
 
+        # Симулируем следующий календарный день (idempotency marker).
+        await user_repo.db.execute(
+            "UPDATE users SET last_streak_check_date = '2000-01-01' WHERE user_id = ?",
+            (uid,),
+        )
+        await user_repo.db.commit()
+
         # День 2: again missed → freeze уже потрачен, должен сбросить
         await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
         u = await user_repo.get_user(uid)

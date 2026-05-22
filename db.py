@@ -388,6 +388,15 @@ async def init_db(db: aiosqlite.Connection):
     except Exception:
         pass  # колонка уже есть
 
+    # Миграция: idempotency marker для nightly streak processing.
+    try:
+        await db.execute(
+            "ALTER TABLE users ADD COLUMN last_streak_check_date TEXT"
+        )
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
     for col_sql in (
         "ALTER TABLE user_tips_stats ADD COLUMN tip_of_day_id TEXT",
         "ALTER TABLE user_tips_stats ADD COLUMN tip_of_day_date TEXT",

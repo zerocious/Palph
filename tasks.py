@@ -96,7 +96,7 @@ async def streak_scheduler(
                     logger.warning(f"streak_scheduler: unknown timezone {tz_name!r}, skip")
                     continue
                 now_local = datetime.now(tz)
-                if now_local.hour == 23 and now_local.minute == 59:
+                if now_local.hour == 23 and now_local.minute >= 58:
                     today = now_local.strftime("%Y-%m-%d")
                     if last_check_date.get(tz_name) != today:
                         await streak_service.process_users_in_timezone(tz_name)

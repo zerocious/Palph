@@ -191,6 +191,11 @@ class TestStreakFreezeFullCycle:
         bot.send_message.assert_called()
 
         # 3. Day 2: again missed → no freeze, streak resets
+        await user_repo.db.execute(
+            "UPDATE users SET last_streak_check_date = '2000-01-01' WHERE user_id = ?",
+            (1,),
+        )
+        await user_repo.db.commit()
         await ss.process_users_in_timezone("Europe/Moscow")
         u = await user_repo.get_user(1)
         assert u["current_streak"] == 0  # сброшен

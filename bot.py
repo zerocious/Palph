@@ -956,7 +956,13 @@ async def load_flashcards_for_study(
         return official
     if source == "own":
         return own
-    return official + own
+    # mix: own overrides official when the same term appears twice (different hashes).
+    by_term: dict[str, dict] = {}
+    for card in official:
+        by_term[card["term"].lower().strip()] = card
+    for card in own:
+        by_term[card["term"].lower().strip()] = card
+    return list(by_term.values())
 
 
 def _word_matches_keyword(user_word: str, keyword: str) -> bool:
@@ -1787,6 +1793,17 @@ def get_pet_emotion(streak: int) -> str:
 # ------------------------------------------------------------
 # Настройки
 # ------------------------------------------------------------
+async def _edit_or_answer_settings(
+    callback: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup
+) -> None:
+    """edit_text с fallback на answer — как в FAQ/progress handlers."""
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning("settings.render_failed user=%s err=%s", callback.from_user.id, e)
+        await callback.message.answer(text, reply_markup=reply_markup)
+
+
 class NotificationSettings:
     def __init__(self, user_id: int, repo: UserRepository):
         self.user_id = user_id
@@ -1926,17 +1943,17 @@ class NotificationSettings:
 
 @router.callback_query(F.data.startswith("settings_menu:"))
 async def show_settings_menu(callback: CallbackQuery):
-    await callback.answer()
     user_id = callback.from_user.id
     ns = NotificationSettings(user_id, user_repo)
-    await callback.message.edit_text(
+    await _edit_or_answer_settings(
+        callback,
         await ns.get_display_text(),
-        reply_markup=await ns.get_keyboard()
+        await ns.get_keyboard(),
     )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("settings_toggle:"))
 async def toggle_notification_setting(callback: CallbackQuery):
-    await callback.answer()
     _, setting_type, _ = callback.data.split(":")
     ns = NotificationSettings(callback.from_user.id, user_repo)
     try:
@@ -1955,10 +1972,12 @@ async def toggle_notification_setting(callback: CallbackQuery):
                 "value": int(new_value),
             },
         )
-        await callback.message.edit_text(
+        await _edit_or_answer_settings(
+            callback,
             await ns.get_display_text(),
-            reply_markup=await ns.get_keyboard()
+            await ns.get_keyboard(),
         )
+        await callback.answer()
     except Exception as e:
         logger.error(f"Error toggling setting: {e}")
         await callback.answer("Ошибка переключения", show_alert=True)
@@ -1975,16 +1994,16 @@ async def cycle_flashcard_source_setting(callback: CallbackQuery):
         await callback.answer("Это не твои настройки", show_alert=True)
         return
     ns = NotificationSettings(target_user_id, user_repo)
-    async with db.lock:
-        new_label, new_source = await ns.cycle_flashcard_source()
+    new_label, new_source = await ns.cycle_flashcard_source()
     await event_repo.log(
         target_user_id,
         "settings_changed",
         {"setting": "flashcard_source", "value": new_source},
     )
-    await callback.message.edit_text(
+    await _edit_or_answer_settings(
+        callback,
         await ns.get_display_text(),
-        reply_markup=await ns.get_keyboard(),
+        await ns.get_keyboard(),
     )
     await callback.answer(f"🃏 Источник: {new_label}")
 
@@ -2351,7 +2370,6 @@ async def freeze_confirm(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("settings_privacy:"))
 async def toggle_privacy(callback: CallbackQuery):
     """Переключает users.hidden_from_leaderboards (LEADERBOARD.md §Privacy)."""
-    await callback.answer()
     user_id = callback.from_user.id
     current = await user_repo.is_hidden_from_leaderboards(user_id)
     new_hidden = not current
@@ -2363,18 +2381,19 @@ async def toggle_privacy(callback: CallbackQuery):
     )
     ns = NotificationSettings(user_id, user_repo)
     try:
-        await callback.message.edit_text(
+        await _edit_or_answer_settings(
+            callback,
             await ns.get_display_text(),
-            reply_markup=await ns.get_keyboard(),
+            await ns.get_keyboard(),
         )
     except Exception as e:
         logger.warning("settings.privacy_toggle_render_failed user=%s err=%s", user_id, e)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("settings_time:"))
 async def request_time_change(callback: CallbackQuery, state: FSMContext):
     """Просит пользователя ввести новое время для утреннего/вечернего слота."""
-    await callback.answer()
     _, slot, _ = callback.data.split(":")
     if slot not in ("morning", "evening"):
         await callback.answer("Неизвестный слот", show_alert=True)
@@ -2386,21 +2405,24 @@ async def request_time_change(callback: CallbackQuery, state: FSMContext):
         f"🕘 Введи время {label} напоминания в формате ЧЧ:ММ (например, 09:30).\n"
         f"Для отмены отправь /cancel."
     )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("rate:"))
 async def handle_session_rating(callback: CallbackQuery):
     """Сохраняет эмодзи-оценку только что завершённой сессии."""
-    await callback.answer()
     parts = callback.data.split(":")
     if len(parts) != 3:
+        await callback.answer()
         return
     try:
         session_id = int(parts[1])
         score = int(parts[2])
     except ValueError:
+        await callback.answer()
         return
     if score < 1 or score > len(RATING_EMOJIS):
+        await callback.answer()
         return
     user_id = callback.from_user.id
     updated = await session_repo.set_session_score(session_id, user_id, score)
@@ -2414,6 +2436,7 @@ async def handle_session_rating(callback: CallbackQuery):
         await callback.message.edit_text(f"✅ Спасибо за оценку! {emoji}")
     except Exception:
         pass
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("rate_skip:"))
@@ -2445,7 +2468,6 @@ async def show_tz_picker(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("settings_tz_set:"))
 async def set_user_timezone(callback: CallbackQuery):
     """Сохраняет выбранный TZ и возвращается в меню настроек."""
-    await callback.answer()
     tz_id = callback.data.split(":", 1)[1]
     if tz_id not in TZ_IDS:
         await callback.answer("Неизвестный часовой пояс", show_alert=True)
@@ -2458,10 +2480,12 @@ async def set_user_timezone(callback: CallbackQuery):
         {"setting": "timezone", "value": tz_id},
     )
     ns = NotificationSettings(user_id, user_repo)
-    await callback.message.edit_text(
+    await _edit_or_answer_settings(
+        callback,
         await ns.get_display_text(),
-        reply_markup=await ns.get_keyboard(),
+        await ns.get_keyboard(),
     )
+    await callback.answer()
 
 
 @router.message(SettingsStates.waiting_for_time, Command("cancel"))
@@ -2509,8 +2533,14 @@ async def process_time_input(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("back_to_profile:"))
 async def back_to_profile(callback: CallbackQuery):
-    await callback.answer()
-    user_id = int(callback.data.split(":")[1])
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твой профиль", show_alert=True)
+        return
     user = await user_repo.get_user(user_id)
     if not user:
         await callback.message.answer("Пользователь не найден")
@@ -2529,26 +2559,37 @@ async def back_to_profile(callback: CallbackQuery):
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
     inline_kb.adjust(2, 1, 1, 1, 1)
-    await callback.message.edit_text(
+    text = (
         f"📊 Твой профиль:\n"
         f"🆔 ID: {user_id}\n"
         f"📚 Всего сессий: {user['total_sessions']}\n"
         f"💰 Всего монет: {user['total_coins']} 🪙\n"
         f"🔥 Стрик: {user['current_streak']} дней\n"
         f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
-        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
-        reply_markup=inline_kb.as_markup()
+        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}"
     )
+    try:
+        await callback.message.edit_text(text, reply_markup=inline_kb.as_markup())
+    except Exception as e:
+        logger.warning("profile.back_render_failed user=%s err=%s", user_id, e)
+        await callback.message.answer(text, reply_markup=inline_kb.as_markup())
+    await callback.answer()
 
 # ------------------------------------------------------------
 # Достижения
 # ------------------------------------------------------------
 @router.callback_query(F.data.startswith("show_achievements:"))
 async def show_achievements(callback: CallbackQuery):
-    await callback.answer()
     parts = callback.data.split(":")
-    user_id = int(parts[1])
-    page = int(parts[2]) if len(parts) > 2 else 1
+    try:
+        user_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 1
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer("Это не твои достижения", show_alert=True)
+        return
 
     async with db.execute(
         "SELECT achievement_id, completed, progress, target FROM user_achievements WHERE user_id = ?",
@@ -2590,6 +2631,7 @@ async def show_achievements(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
     except Exception:
         await callback.message.answer(text, reply_markup=keyboard.as_markup())
+    await callback.answer()
 
 # ------------------------------------------------------------
 # Таймеры

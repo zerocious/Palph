@@ -1,6 +1,7 @@
 # services.py
 import logging
 import os
+import threading
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,39 +60,42 @@ class UserRateLimiter:
         self._buckets: dict[int, deque] = defaultdict(deque)
         # user_id → last warning sent (чтобы не спамить warnings)
         self._warned_at: dict[int, float] = {}
+        self._lock = threading.Lock()
 
     def check(self, user_id: int) -> str:
         """Регистрирует event и возвращает ok/warn/block."""
-        now = monotonic()
-        cutoff = now - self.window_seconds
-        bucket = self._buckets[user_id]
-        # Чистим протухшие timestamps
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        current_count = len(bucket)
+        with self._lock:
+            now = monotonic()
+            cutoff = now - self.window_seconds
+            bucket = self._buckets[user_id]
+            # Чистим протухшие timestamps
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+            current_count = len(bucket)
 
-        if current_count >= self.max_actions:
-            return "block"
+            if current_count >= self.max_actions:
+                return "block"
 
-        # Регистрируем новый event
-        bucket.append(now)
-        new_count = current_count + 1
+            # Регистрируем новый event
+            bucket.append(now)
+            new_count = current_count + 1
 
-        # Warn-зона: [warn_at, max_actions). Если warn_threshold=1.0, диапазон
-        # пустой → warn'и выключены (для unit-тестов и тонкого тюнинга).
-        warn_at = int(self.max_actions * self.warn_threshold)
-        if warn_at <= new_count < self.max_actions:
-            last_warn = self._warned_at.get(user_id, 0.0)
-            if now - last_warn >= self.warn_cooldown_seconds:
-                self._warned_at[user_id] = now
-                return "warn"
+            # Warn-зона: [warn_at, max_actions). Если warn_threshold=1.0, диапазон
+            # пустой → warn'и выключены (для unit-тестов и тонкого тюнинга).
+            warn_at = int(self.max_actions * self.warn_threshold)
+            if warn_at <= new_count < self.max_actions:
+                last_warn = self._warned_at.get(user_id, 0.0)
+                if now - last_warn >= self.warn_cooldown_seconds:
+                    self._warned_at[user_id] = now
+                    return "warn"
 
-        return "ok"
+            return "ok"
 
     def reset(self, user_id: int) -> None:
         """Сбросить state для пользователя (для тестов / админ-команд)."""
-        self._buckets.pop(user_id, None)
-        self._warned_at.pop(user_id, None)
+        with self._lock:
+            self._buckets.pop(user_id, None)
+            self._warned_at.pop(user_id, None)
 
 
 # ------------------------------------------------------------
@@ -597,6 +601,10 @@ class StudyService:
         Возвращает (earned_achievements, bonus_coins, session_id).
         session_id нужен для последующей пользовательской оценки сессии.
         """
+        if duration < 1:
+            return [], 0, 0
+        duration = min(duration, 120)
+
         async with self.user_repo.db.lock:
             user = await self.user_repo.get_user(user_id)
             if not user:
@@ -611,9 +619,14 @@ class StudyService:
 
             base_coins = duration
 
-            earned, bonus = await self.achievement_service.check_and_award(
-                user_id, sessions, streak, total_minutes
-            )
+            settings = await self.user_repo.get_notification_settings(user_id)
+            achievements_enabled = not settings or settings.get("achievements_enabled", 1)
+            if achievements_enabled:
+                earned, bonus = await self.achievement_service.check_and_award(
+                    user_id, sessions, streak, total_minutes
+                )
+            else:
+                earned, bonus = [], 0
 
             await self.user_repo.increment_sessions(user_id)
             await self.user_repo.add_coins(user_id, base_coins + bonus)
@@ -860,11 +873,27 @@ class StreakService:
         incremented = 0
         reset = 0
         frozen = 0
+        skipped = 0
         bonuses_total = 0
         for user in users:
             user_id = user["user_id"]
             has_studied = user["has_studied_today"]
             current_streak = user["current_streak"]
+            streak_enabled = bool(user.get("streak_enabled", 1))
+
+            if today_local and user.get("last_streak_check_date") == today_local:
+                skipped += 1
+                continue
+
+            if not streak_enabled:
+                async with self.user_repo.db.lock:
+                    if has_studied:
+                        await self.user_repo.set_has_studied_today(user_id, False)
+                    if today_local:
+                        await self.user_repo.set_last_streak_check_date(
+                            user_id, today_local
+                        )
+                continue
 
             if has_studied:
                 new_streak = current_streak + 1
@@ -872,6 +901,10 @@ class StreakService:
                 bonus = 15 if new_streak >= 2 else 0
                 async with self.user_repo.db.lock:
                     await self.user_repo.apply_streak_increment(user_id, new_streak, bonus)
+                    if today_local:
+                        await self.user_repo.set_last_streak_check_date(
+                            user_id, today_local
+                        )
                 incremented += 1
                 bonuses_total += bonus
 
@@ -903,6 +936,11 @@ class StreakService:
                         )
                     if consumed:
                         frozen += 1
+                        if today_local:
+                            async with self.user_repo.db.lock:
+                                await self.user_repo.set_last_streak_check_date(
+                                    user_id, today_local
+                                )
                         # Notify пользователя что freeze отработал
                         if self.bot:
                             try:
@@ -921,11 +959,21 @@ class StreakService:
                     else:
                         async with self.user_repo.db.lock:
                             await self.user_repo.apply_streak_reset(user_id)
+                            if today_local:
+                                await self.user_repo.set_last_streak_check_date(
+                                    user_id, today_local
+                                )
                         reset += 1
+                elif today_local:
+                    async with self.user_repo.db.lock:
+                        await self.user_repo.set_last_streak_check_date(
+                            user_id, today_local
+                        )
 
         logger.info(
-            "streak.batch tz=%s users=%s incremented=%s reset=%s frozen=%s bonuses=%s",
-            tz, len(users), incremented, reset, frozen, bonuses_total,
+            "streak.batch tz=%s users=%s incremented=%s reset=%s frozen=%s "
+            "skipped=%s bonuses=%s",
+            tz, len(users), incremented, reset, frozen, skipped, bonuses_total,
         )
 
 

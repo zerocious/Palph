@@ -215,8 +215,14 @@ class UserRepository:
     async def get_users_for_streak_update_in_timezone(self, tz: str) -> list[dict]:
         """Пользователи указанного часового пояса для ежедневной обработки стрика."""
         async with self.db.execute(
-            "SELECT user_id, has_studied_today, current_streak, total_coins "
-            "FROM users WHERE timezone = ?",
+            """
+            SELECT u.user_id, u.has_studied_today, u.current_streak, u.total_coins,
+                   u.last_streak_check_date,
+                   COALESCE(ns.streak_enabled, 1) AS streak_enabled
+            FROM users u
+            LEFT JOIN notification_settings ns ON ns.user_id = u.user_id
+            WHERE u.timezone = ?
+            """,
             (tz,),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -253,7 +259,15 @@ class UserRepository:
             (user_id,)
         )
         await self.db.commit()
-    
+
+    async def set_last_streak_check_date(self, user_id: int, local_date: str) -> None:
+        """Отмечает, что nightly streak-check для user уже выполнен в local_date."""
+        await self.db.execute(
+            "UPDATE users SET last_streak_check_date = ? WHERE user_id = ?",
+            (local_date, user_id),
+        )
+        await self.db.commit()
+
     async def get_notification_settings(self, user_id: int) -> dict | None:
         """
         Возвращает словарь с настройками уведомлений пользователя,
@@ -270,31 +284,37 @@ class UserRepository:
 
     async def update_notification_settings(self, user_id: int, settings: dict) -> None:
         """
-        Обновляет настройки уведомлений пользователя.
-        Ожидает словарь с ключами:
-        morning_enabled, morning_time, evening_enabled, evening_time,
-        streak_enabled, achievements_enabled.
+        Создаёт или обновляет настройки уведомлений пользователя.
+        UPSERT гарантирует сохранение даже если строка notification_settings
+        отсутствует (legacy-пользователи без дефолтной записи).
         """
+        values = (
+            user_id,
+            settings.get("morning_enabled", 1),
+            settings.get("morning_time", "09:00"),
+            settings.get("evening_enabled", 1),
+            settings.get("evening_time", "21:00"),
+            settings.get("streak_enabled", 1),
+            settings.get("achievements_enabled", 1),
+            settings.get("flashcard_source", "mix"),
+        )
         await self.db.execute(
-            """UPDATE notification_settings SET
-            morning_enabled = ?,
-            morning_time = ?,
-            evening_enabled = ?,
-            evening_time = ?,
-            streak_enabled = ?,
-            achievements_enabled = ?,
-            flashcard_source = ?
-            WHERE user_id = ?""",
-            (
-                settings.get("morning_enabled", 1),
-                settings.get("morning_time", "09:00"),
-                settings.get("evening_enabled", 1),
-                settings.get("evening_time", "21:00"),
-                settings.get("streak_enabled", 1),
-                settings.get("achievements_enabled", 1),
-                settings.get("flashcard_source", "mix"),
-                user_id
-            )
+            """INSERT INTO notification_settings (
+                user_id,
+                morning_enabled, morning_time,
+                evening_enabled, evening_time,
+                streak_enabled, achievements_enabled,
+                flashcard_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                morning_enabled = excluded.morning_enabled,
+                morning_time = excluded.morning_time,
+                evening_enabled = excluded.evening_enabled,
+                evening_time = excluded.evening_time,
+                streak_enabled = excluded.streak_enabled,
+                achievements_enabled = excluded.achievements_enabled,
+                flashcard_source = excluded.flashcard_source""",
+            values,
         )
         await self.db.commit()
 
@@ -1698,8 +1718,12 @@ class LeaderboardRepository:
         """
         cursor = await self.db.execute(
             "UPDATE streak_freezes SET consumed_for_date=? "
-            "WHERE user_id=? AND consumed_for_date IS NULL",
-            (today_local, user_id),
+            "WHERE user_id=? AND granted_at = ("
+            "  SELECT granted_at FROM streak_freezes "
+            "  WHERE user_id=? AND consumed_for_date IS NULL "
+            "  ORDER BY granted_at ASC LIMIT 1"
+            ")",
+            (today_local, user_id, user_id),
         )
         await self.db.commit()
         if cursor.rowcount > 0:
