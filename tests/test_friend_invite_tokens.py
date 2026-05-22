@@ -56,12 +56,12 @@ class TestCreateInviteToken:
             row = await c.fetchone()
         assert row["from_user_id"] == 7
 
-    async def test_token_has_30day_expiry(
+    async def test_token_has_3day_expiry(
         self, friend_repo, user_repo, db
     ):
         await _make_users(user_repo, 1)
         token = await friend_repo.create_invite_token(1)
-        # expires_at должен быть ~30 days в будущем (julianday-разница в днях)
+        # expires_at должен быть ~3 days в будущем (julianday-разница в днях)
         async with db.execute(
             "SELECT julianday(expires_at) - julianday('now') AS days_remaining "
             "FROM friend_invite_tokens WHERE token=?",
@@ -69,7 +69,7 @@ class TestCreateInviteToken:
         ) as c:
             row = await c.fetchone()
         # Допуск ±0.1 дня (rounding/clock)
-        assert 29.9 < row["days_remaining"] < 30.1
+        assert 2.9 < row["days_remaining"] < 3.1
 
 
 # ============================================================

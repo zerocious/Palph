@@ -26,7 +26,7 @@ def test_cached_tips_have_required_fields():
 
 def test_format_tip_message_uses_html_title():
     tip = bot.TIME_MANAGEMENT_TIPS[0]
-    text = bot._format_tip_message("tm", tip)
+    text = bot._format_tip_message("tm", tip, "ru")
     assert "<b>" in text
     assert escape(tip["title"]) in text
     assert "Попробуй сегодня" in text

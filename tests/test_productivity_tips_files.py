@@ -33,20 +33,21 @@ def test_productivity_links_have_title_and_url():
 
 
 def test_tip_categories_reference_cache():
-    assert bot.TIP_CATEGORIES["tm"]["tips"] is bot.TIME_MANAGEMENT_TIPS
-    assert bot.TIP_CATEGORIES["mem"]["tips"] is bot.MEMORY_RETENTION_TIPS
+    assert len(bot.TIP_CATEGORIES["tm"]["tips"]) == len(bot.TIME_MANAGEMENT_TIPS)
+    assert len(bot.TIP_CATEGORIES["mem"]["tips"]) == len(bot.MEMORY_RETENTION_TIPS)
 
 
 def test_tips_inline_keyboard_random_mode():
-    markup = bot._tips_inline_keyboard("tm")
+    from i18n import t
+    markup = bot._tips_inline_keyboard("tm", "ru")
     texts = [b.text for row in markup.inline_keyboard for b in row]
-    assert "🔄 Ещё совет" in texts
-    assert "📋 Все советы" in texts
-    assert "⬅️ К категориям" in texts
+    assert t("tips.more", "ru") in texts
+    assert t("tips.all", "ru") in texts
+    assert t("tips.back_categories", "ru") in texts
 
 
 def test_tips_inline_keyboard_list_mode_has_pagination():
-    markup = bot._tips_inline_keyboard("tm", list_page=1, list_total=5)
+    markup = bot._tips_inline_keyboard("tm", "ru", list_page=1, list_total=5)
     callbacks = [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
     assert "tips:list:tm:0" in callbacks
     assert "tips:list:tm:2" in callbacks

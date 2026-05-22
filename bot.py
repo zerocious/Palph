@@ -33,7 +33,7 @@ from aiogram.fsm.storage.base import StorageKey
 from db import get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
-    UserFlashcardRepository, TipsRepository,
+    UserFlashcardRepository, UserTaskRepository, TipsRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
 )
@@ -43,6 +43,22 @@ from services import (
     freeze_cost, parse_friend_query, derive_emotion, render_pet,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
+from user_task_txt import parse_user_tasks_txt
+from i18n import t, kb_in, all_locale_texts, subject_label, study_mode_label, quiz_section_label, SUPPORTED_LOCALES
+from locale_bot import (
+    user_locale,
+    faq_items,
+    load_achievements_catalog,
+    tip_categories as tip_categories_for,
+    commands_for_locale,
+    pet_emotion,
+    flash_source_labels,
+    FLASH_SOURCE_CYCLE,
+    SUBJECT_IDS,
+    STUDY_MODE_IDS,
+    QUIZ_SECTION_KEYS,
+    FAQ_IDS,
+)
 
 # ------------------------------------------------------------
 # Настройки окружения
@@ -106,7 +122,7 @@ logger = setup_logger()
 # ------------------------------------------------------------
 ACHIEVEMENTS_FILE = Path(__file__).parent / "achievements.json"
 with open(ACHIEVEMENTS_FILE, "r", encoding="utf-8") as f:
-    ACHIEVEMENTS = json.load(f)
+    ACHIEVEMENTS = json.load(f)  # ru fallback; UI uses load_achievements_catalog(locale)
 
 # ------------------------------------------------------------
 # Глобальные объекты (заполняются в main)
@@ -117,6 +133,7 @@ session_repo: SessionRepository = None
 admin_repo: AdminRepository = None
 flashcard_repo: FlashcardRepository = None
 user_flashcard_repo: UserFlashcardRepository = None
+user_task_repo: UserTaskRepository = None
 mcq_repo: McqProgressRepository = None
 task_repo: TaskProgressRepository = None
 subject_stats_repo: SubjectStatsRepository = None
@@ -138,6 +155,9 @@ active_timers: dict[int, asyncio.Task] = {}
 # Rate limiter — защита от спама/abuse'а на уровне приложения.
 # Initialize in main(); attached to dispatcher как middleware.
 rate_limiter: UserRateLimiter = None
+
+# Anti-spam: не больше 1 свободного сообщения админам в минуту (catch-all handler).
+admin_message_limiter = UserRateLimiter(max_actions=1, window_seconds=60, warn_threshold=1.0)
 
 
 class UsernameSyncMiddleware(BaseMiddleware):
@@ -251,6 +271,7 @@ class QuizStates(StatesGroup):
     answering_flash = State()
 
 class SetupStates(StatesGroup):
+    choosing_language = State()
     choosing_path = State()
     setting_morning = State()
     setting_evening = State()
@@ -278,12 +299,17 @@ class FlashcardCreateStates(StatesGroup):
     waiting_for_definition = State()
 
 
+class UserTaskImportStates(StatesGroup):
+    waiting_for_file = State()
+
+
 TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]?\d)$")
 
 
 # Пресеты часовых поясов (IANA-имя, человекочитаемая метка).
-# Покрывают Россию от Калининграда до Камчатки + ключевые столицы СНГ.
+# Россия/СНГ — русские подписи; остальной мир — EN (флаг + город + UTC).
 TZ_PRESETS: list[tuple[str, str]] = [
+    # — Россия и СНГ —
     ("Europe/Kaliningrad",  "🇷🇺 Калининград (UTC+2)"),
     ("Europe/Moscow",       "🇷🇺 Москва / 🇧🇾 Минск (UTC+3)"),
     ("Europe/Samara",       "🇷🇺 Самара (UTC+4)"),
@@ -296,6 +322,49 @@ TZ_PRESETS: list[tuple[str, str]] = [
     ("Asia/Magadan",        "🇷🇺 Магадан (UTC+11)"),
     ("Asia/Kamchatka",      "🇷🇺 Камчатка (UTC+12)"),
     ("Europe/Kyiv",         "🇺🇦 Киев (UTC+2/+3)"),
+    # — Западная и Центральная Европа —
+    ("Europe/London",       "🇬🇧 London (UTC+0/+1)"),
+    ("Europe/Lisbon",       "🇵🇹 Lisbon (UTC+0/+1)"),
+    ("Europe/Paris",        "🇫🇷 Paris / 🇩🇪 Berlin (UTC+1/+2)"),
+    ("Europe/Athens",       "🇬🇷 Athens / 🇷🇴 Bucharest (UTC+2/+3)"),
+    ("Europe/Helsinki",     "🇫🇮 Helsinki / 🇸🇪 Stockholm (UTC+2/+3)"),
+    ("Europe/Istanbul",     "🇹🇷 Istanbul (UTC+3)"),
+    # — Америка —
+    ("America/New_York",    "🇺🇸 New York / 🇨🇦 Toronto (UTC-5/-4)"),
+    ("America/Chicago",     "🇺🇸 Chicago / 🇲🇽 Mexico City (UTC-6/-5)"),
+    ("America/Denver",      "🇺🇸 Denver (UTC-7/-6)"),
+    ("America/Phoenix",     "🇺🇸 Phoenix (UTC-7, no DST)"),
+    ("America/Los_Angeles", "🇺🇸 Los Angeles / 🇨🇦 Vancouver (UTC-8/-7)"),
+    ("America/Anchorage",   "🇺🇸 Anchorage (UTC-9/-8)"),
+    ("Pacific/Honolulu",    "🇺🇸 Honolulu (UTC-10)"),
+    ("America/Bogota",      "🇨🇴 Bogotá / 🇵🇪 Lima (UTC-5)"),
+    ("America/Santiago",    "🇨🇱 Santiago (UTC-4/-3)"),
+    ("America/Sao_Paulo",   "🇧🇷 São Paulo (UTC-3)"),
+    ("America/Argentina/Buenos_Aires", "🇦🇷 Buenos Aires (UTC-3)"),
+    # — Ближний Восток и Африка —
+    ("Asia/Dubai",          "🇦🇪 Dubai (UTC+4)"),
+    ("Asia/Riyadh",         "🇸🇦 Riyadh (UTC+3)"),
+    ("Asia/Tehran",         "🇮🇷 Tehran (UTC+3:30/+4:30)"),
+    ("Asia/Jerusalem",      "🇮🇱 Jerusalem (UTC+2/+3)"),
+    ("Africa/Cairo",        "🇪🇬 Cairo (UTC+2)"),
+    ("Africa/Johannesburg", "🇿🇦 Johannesburg (UTC+2)"),
+    ("Africa/Lagos",        "🇳🇬 Lagos (UTC+1)"),
+    ("Africa/Nairobi",      "🇰🇪 Nairobi (UTC+3)"),
+    # — Южная и Юго-Восточная Азия —
+    ("Asia/Kolkata",        "🇮🇳 Mumbai / Delhi (UTC+5:30)"),
+    ("Asia/Karachi",        "🇵🇰 Karachi (UTC+5)"),
+    ("Asia/Dhaka",          "🇧🇩 Dhaka (UTC+6)"),
+    ("Asia/Bangkok",        "🇹🇭 Bangkok / 🇻🇳 Hanoi (UTC+7)"),
+    ("Asia/Jakarta",        "🇮🇩 Jakarta (UTC+7)"),
+    ("Asia/Singapore",      "🇸🇬 Singapore / 🇲🇾 KL (UTC+8)"),
+    # — Восточная Азия и Океания —
+    ("Asia/Shanghai",       "🇨🇳 Shanghai / Beijing (UTC+8)"),
+    ("Asia/Hong_Kong",      "🇭🇰 Hong Kong (UTC+8)"),
+    ("Asia/Tokyo",          "🇯🇵 Tokyo (UTC+9)"),
+    ("Asia/Seoul",          "🇰🇷 Seoul (UTC+9)"),
+    ("Australia/Perth",     "🇦🇺 Perth (UTC+8)"),
+    ("Australia/Sydney",    "🇦🇺 Sydney / Melbourne (UTC+10/+11)"),
+    ("Pacific/Auckland",    "🇳🇿 Auckland (UTC+12/+13)"),
 ]
 TZ_IDS: set[str] = {tz for tz, _ in TZ_PRESETS}
 
@@ -317,22 +386,23 @@ RATING_EMOJIS: list[tuple[int, str]] = [
 ]
 
 
-def build_rating_keyboard(session_id: int) -> InlineKeyboardMarkup:
+def build_rating_keyboard(session_id: int, locale: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for score, emoji in RATING_EMOJIS:
         kb.button(text=emoji, callback_data=f"rate:{session_id}:{score}")
-    kb.button(text="⏭ Пропустить", callback_data=f"rate_skip:{session_id}")
+    kb.button(text=t("timer.rating_skip", locale), callback_data=f"rate_skip:{session_id}")
     kb.adjust(4, 1)
     return kb.as_markup()
 
 
-async def send_rating_prompt(chat_id: int, session_id: int) -> None:
+async def send_rating_prompt(chat_id: int, session_id: int, user_id: int) -> None:
     """Отправляет пользователю запрос на оценку только что завершённой сессии."""
+    locale = await loc(user_id)
     try:
         await bot.send_message(
             chat_id,
-            "Как прошла сессия?",
-            reply_markup=build_rating_keyboard(session_id),
+            t("timer.rating_prompt", locale),
+            reply_markup=build_rating_keyboard(session_id, locale),
         )
     except Exception as e:
         logger.error(f"send_rating_prompt: не удалось отправить запрос оценки: {e}")
@@ -359,14 +429,7 @@ def is_admin(user_id: int) -> bool:
 
 # Команды для /-пикера Telegram. Объявлены модульно, чтобы /addadmin
 # мог расширить пикер новому админу, а /rmadmin — вернуть к дефолтному.
-DEFAULT_COMMANDS = [
-    BotCommand(command="start", description="Запуск бота / в главное меню"),
-    BotCommand(command="stop", description="Остановить активный таймер"),
-    BotCommand(command="progress", description="Прогресс по предметам"),
-    BotCommand(command="pet", description="Питомец и кастомизация"),
-    BotCommand(command="leaderboard", description="Недельный лидерборд"),
-    BotCommand(command="friends", description="Друзья и рейтинг"),
-]
+DEFAULT_COMMANDS = commands_for_locale("ru")
 ADMIN_COMMANDS = DEFAULT_COMMANDS + [
     BotCommand(command="help", description="Справка по командам (для админов)"),
     BotCommand(command="reply", description="Ответ пользователю по ID"),
@@ -435,139 +498,201 @@ async def _migrate_admins_json_to_db() -> int:
 # ------------------------------------------------------------
 router = Router()
 
-def get_main_keyboard() -> ReplyKeyboardMarkup:
+
+async def loc(user_id: int) -> str:
+    return await user_locale(user_repo, user_id)
+
+
+def _all_subject_button_texts() -> list[str]:
+    return [subject_label(sid, l) for sid in SUBJECT_IDS for l in SUPPORTED_LOCALES]
+
+
+def subject_id_from_button(text: str) -> str | None:
+    for sid in SUBJECT_IDS:
+        for l in SUPPORTED_LOCALES:
+            if subject_label(sid, l) == text:
+                return sid
+    return None
+
+
+def _all_mode_button_texts() -> list[str]:
+    keys = list(STUDY_MODE_IDS) + ["tasks_own"]
+    return [study_mode_label(mid, l) for mid in keys for l in SUPPORTED_LOCALES]
+
+
+def mode_id_from_button(text: str) -> str | None:
+    for mid in list(STUDY_MODE_IDS) + ["tasks_own"]:
+        for l in SUPPORTED_LOCALES:
+            if study_mode_label(mid, l) == text:
+                return mid if mid != "tasks_own" else "tasks"
+    return None
+
+
+def language_picker_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t("lang.ru", "ru"), callback_data="lang:set:ru")
+    kb.button(text=t("lang.en", "en"), callback_data="lang:set:en")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def apply_user_bot_commands(user_id: int) -> None:
+    """Обновляет /-меню Telegram под язык пользователя."""
+    try:
+        cmds = commands_for_locale(await loc(user_id))
+        await bot.set_my_commands(cmds, scope=BotCommandScopeChat(chat_id=user_id))
+    except Exception as e:
+        logger.warning("locale.set_commands_failed uid=%s reason=%s", user_id, type(e).__name__)
+
+
+def get_main_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="📚 Учеба")
-    builder.button(text="❓ FAQ")
-    builder.button(text="📊 Мой профиль")
-    builder.button(text="📢 Новости")
+    builder.button(text=t("kb.study", locale))
+    builder.button(text=t("kb.faq", locale))
+    builder.button(text=t("kb.profile", locale))
+    builder.button(text=t("kb.news", locale))
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
-def get_study_keyboard() -> ReplyKeyboardMarkup:
+def get_study_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="⏱️ Стандартный таймер (25 мин)")
-    builder.button(text="⏱️ Кастомный таймер")
-    builder.button(text="❓ Квизы")
-    builder.button(text="🎓 Советы для продуктивности")
-    builder.button(text="🏠 Назад в меню")
+    builder.button(text=t("kb.standard_timer", locale))
+    builder.button(text=t("kb.custom_timer", locale))
+    builder.button(text=t("kb.quizzes", locale))
+    builder.button(text=t("kb.tips", locale))
+    builder.button(text=t("kb.back_main", locale))
     builder.adjust(3)
     return builder.as_markup(resize_keyboard=True)
 
-def get_tips_keyboard() -> ReplyKeyboardMarkup:
+def get_tips_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="⏰ Тайм-менеджмент")
-    builder.button(text="🧠 Техники запоминания")
-    builder.button(text="🎯 Как пользоваться ботом")
-    builder.button(text="🔗 Ссылки на статьи и книги")
-    builder.button(text="⬅️ Назад к учебе")
+    builder.button(text=t("kb.tips_time_mgmt", locale))
+    builder.button(text=t("kb.tips_memory", locale))
+    builder.button(text=t("kb.tips_bot_guide", locale))
+    builder.button(text=t("kb.tips_links", locale))
+    builder.button(text=t("kb.back_study", locale))
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-def get_timer_active_keyboard() -> ReplyKeyboardMarkup:
+def get_timer_active_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="⏹️ Остановить")
-    builder.button(text="⬅️ Назад в меню")
+    builder.button(text=t("kb.stop_timer", locale))
+    builder.button(text=t("kb.back_main", locale))
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-def get_mode_keyboard() -> ReplyKeyboardMarkup:
-    """Legacy helper — предпочитайте get_mode_keyboard_for_subject()."""
+def get_mode_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    for _, label in STUDY_MODES:
+    for mode_id in STUDY_MODE_IDS:
+        builder.button(text=study_mode_label(mode_id, locale))
+    builder.button(text=t("kb.back_subjects", locale))
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+async def get_subject_keyboard(user_id: int, locale: str) -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    for sid, _ in await available_subjects(user_id, locale):
+        builder.button(text=subject_label(sid, locale))
+    builder.button(text=t("kb.back_study", locale))
+    builder.adjust(1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+async def get_mode_keyboard_for_subject(
+    subject_id: str, user_id: int, locale: str,
+) -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    for mode_id, label in await available_modes(subject_id, user_id, locale):
         builder.button(text=label)
-    builder.button(text="⬅️ Назад к предметам")
+    builder.button(text=t("kb.back_subjects", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
-async def get_subject_keyboard(user_id: int) -> ReplyKeyboardMarkup:
-    """Subject-picker: предметы с хотя бы одним доступным режимом."""
+def get_subject_keyboard_for_mode(mode_id: str, locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    for _, label in await available_subjects(user_id):
-        builder.button(text=label)
-    builder.button(text="⬅️ Назад к учебе")
+    for sid, _ in subjects_with_mode(mode_id):
+        builder.button(text=subject_label(sid, locale))
+    builder.button(text=t("kb.back_modes", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
-async def get_mode_keyboard_for_subject(subject_id: str, user_id: int) -> ReplyKeyboardMarkup:
-    """Mode-picker для выбранного предмета."""
+def get_mcq_active_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    for _, label in await available_modes(subject_id, user_id):
-        builder.button(text=label)
-    builder.button(text="⬅️ Назад к предметам")
+    builder.button(text=t("kb.finish_session", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_subject_keyboard_for_mode(mode_id: str) -> ReplyKeyboardMarkup:
-    """Legacy helper — предпочитайте get_subject_keyboard(user_id)."""
+def get_task_active_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    for _, label in subjects_with_mode(mode_id):
-        builder.button(text=label)
-    builder.button(text="⬅️ Назад к режимам")
+    builder.button(text=t("kb.finish_session", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_mcq_active_keyboard() -> ReplyKeyboardMarkup:
-    """Активная MCQ-сессия: только кнопка выхода (выбор вариантов — inline)."""
+def get_flash_active_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="🛑 Завершить")
+    builder.button(text=t("kb.finish_session", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_task_active_keyboard() -> ReplyKeyboardMarkup:
-    """Активная photo-task сессия: только кнопка выхода (ответ — текстом)."""
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="🛑 Завершить")
-    builder.adjust(1)
-    return builder.as_markup(resize_keyboard=True)
+def quiz_sections_for(locale: str) -> list[tuple[str, str]]:
+    return [(quiz_section_label(k, locale), k) for k in QUIZ_SECTION_KEYS]
 
 
-def get_flash_active_keyboard() -> ReplyKeyboardMarkup:
-    """Активная сессия флэш-карт: только выход (рейтинг — inline)."""
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="🛑 Завершить")
-    builder.adjust(1)
-    return builder.as_markup(resize_keyboard=True)
+def _quiz_section_labels() -> list[str]:
+    labels: list[str] = []
+    for loc in SUPPORTED_LOCALES:
+        labels.extend(l for l, _ in quiz_sections_for(loc))
+    labels.extend(all_locale_texts("kb.finish_quiz"))
+    return labels
 
 
-QUIZ_SECTIONS = [
-    ("Раздел I", "i"),
-    ("Раздел II", "ii"),
-    ("Раздел III", "iii"),
-    ("Раздел IV", "iv"),
-]
+def _quiz_section_map(locale: str) -> dict[str, str]:
+    return {label: key for label, key in quiz_sections_for(locale)}
 
 
-def available_quiz_sections(subject_id: str = "industrial-management") -> list[tuple[str, str]]:
-    """
-    Возвращает только те разделы ситуационных квизов, файлы которых
-    существуют и не пусты. `subject_id` — id из SUBJECTS (имя папки).
-    """
+def _quiz_section_map_all() -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for loc in SUPPORTED_LOCALES:
+        merged.update(_quiz_section_map(loc))
+    return merged
+
+
+def _quiz_section_label_list() -> list[str]:
+    return list(_quiz_section_map_all().keys())
+
+
+def available_quiz_sections(
+    subject_id: str = "industrial-management",
+    locale: str = "ru",
+) -> list[tuple[str, str]]:
+    """Разделы ситуационных квизов с непустыми файлами (label, key)."""
     section_dir = STUDY_MATERIALS_PATH / subject_id / "situational"
     available = []
-    for label, key in QUIZ_SECTIONS:
+    for label, key in quiz_sections_for(locale):
         file_path = section_dir / f"section-{key}.txt"
         if file_path.exists() and file_path.stat().st_size > 0:
             available.append((label, key))
     return available
 
 
-def get_quiz_section_keyboard() -> ReplyKeyboardMarkup:
+def get_quiz_section_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    for label, _ in available_quiz_sections():
+    for label, _ in available_quiz_sections(locale=locale):
         builder.button(text=label)
-    builder.button(text="🛑 Завершить квиз")
+    builder.button(text=t("kb.finish_quiz", locale))
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-def get_quiz_answer_keyboard() -> ReplyKeyboardMarkup:
+
+def get_quiz_answer_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text="🛑 Завершить квиз")
+    builder.button(text=t("kb.finish_quiz", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
@@ -692,23 +817,12 @@ if not PRODUCTIVITY_LINKS and PRODUCTIVITY_LINKS_FILE.is_file():
                     "url": url_m.group(0),
                 })
 
-TIP_CATEGORIES: dict[str, dict] = {
-    "tm": {
-        "tips": TIME_MANAGEMENT_TIPS,
-        "emoji": "⏰",
-        "title": "Тайм-менеджмент",
-    },
-    "mem": {
-        "tips": MEMORY_RETENTION_TIPS,
-        "emoji": "🧠",
-        "title": "Техники запоминания",
-    },
-    "bot": {
-        "tips": BOT_GUIDE_TIPS,
-        "emoji": "🎯",
-        "title": "Как пользоваться ботом",
-    },
-}
+def _tip_cats(locale: str) -> dict[str, dict]:
+    return tip_categories_for(locale)
+
+
+# RU catalog for tests and legacy references
+TIP_CATEGORIES: dict[str, dict] = _tip_cats("ru")
 TIP_COIN_PER_DAY = 1
 TIPS_SEEN_COOLDOWN_DAYS = 7
 
@@ -724,66 +838,71 @@ SUBJECTS: list[tuple[str, str]] = [
 #   flashcards / mcq → subject/<mode>.txt (один файл)
 #   tasks → subject/tasks/task-*.json + task-*.png
 STUDY_MODES: list[tuple[str, str]] = [
-    ("situational", "🎯 Ситуационные квизы"),
-    ("flashcards",  "🃏 Флэш-карты"),
-    ("mcq",         "❓ Тест с выбором ответа"),
-    ("tasks",       "📷 Задачи с картинкой"),
+    (mid, study_mode_label(mid, "ru")) for mid in STUDY_MODE_IDS
 ]
 
 
-def _file_based_modes(subject_id: str) -> list[tuple[str, str]]:
+def _file_based_mode_ids(subject_id: str) -> list[str]:
     """Режимы с непустым официальным контентом (файлы на диске)."""
     subject_path = STUDY_MATERIALS_PATH / subject_id
     if not subject_path.is_dir():
         return []
     result = []
-    for mode_id, label in STUDY_MODES:
+    for mode_id in STUDY_MODE_IDS:
         if mode_id == "situational":
             section_dir = subject_path / "situational"
             if section_dir.is_dir() and any(
                 p.stat().st_size > 0 for p in section_dir.glob("section-*.txt")
             ):
-                result.append((mode_id, label))
+                result.append(mode_id)
         elif mode_id == "tasks":
             tasks_dir = subject_path / "tasks"
             if tasks_dir.is_dir() and any(tasks_dir.glob("task-*.json")):
-                result.append((mode_id, label))
+                result.append(mode_id)
         else:
             file_path = subject_path / f"{mode_id}.txt"
             if file_path.exists() and file_path.stat().st_size > 0:
-                result.append((mode_id, label))
+                result.append(mode_id)
     return result
 
 
-async def available_modes(subject_id: str, user_id: int | None = None) -> list[tuple[str, str]]:
+async def available_modes(
+    subject_id: str,
+    user_id: int | None = None,
+    locale: str = "ru",
+) -> list[tuple[str, str]]:
     """
-    Режимы с контентом для предмета. Учитывает пользовательские флэш-карты:
-    flashcards доступен, если есть flashcards.txt или свои карточки.
+    Режимы с контентом для предмета. Учитывает пользовательские флэш-карты и задачи.
     """
-    result = _file_based_modes(subject_id)
+    result = [
+        (mode_id, study_mode_label(mode_id, locale))
+        for mode_id in _file_based_mode_ids(subject_id)
+    ]
     if user_id is not None:
         user_count = await user_flashcard_repo.count_by_subject(user_id, subject_id)
         if user_count > 0 and not any(m[0] == "flashcards" for m in result):
-            flash_label = next(label for mid, label in STUDY_MODES if mid == "flashcards")
-            result.append(("flashcards", flash_label))
+            result.append(("flashcards", study_mode_label("flashcards", locale)))
+        user_task_count = await user_task_repo.count_by_subject(user_id, subject_id)
+        if user_task_count > 0 and not any(m[0] == "tasks" for m in result):
+            result.append(("tasks", study_mode_label("tasks_own", locale)))
     return result
 
 
-async def available_subjects(user_id: int) -> list[tuple[str, str]]:
+async def available_subjects(user_id: int, locale: str = "ru") -> list[tuple[str, str]]:
     """Предметы, у которых есть хотя бы один доступный режим."""
     result = []
-    for sid, label in SUBJECTS:
-        if await available_modes(sid, user_id):
-            result.append((sid, label))
+    for sid in SUBJECT_IDS:
+        if await available_modes(sid, user_id, locale):
+            result.append((sid, subject_label(sid, locale)))
     return result
 
 
-def subjects_with_mode(mode_id: str) -> list[tuple[str, str]]:
+def subjects_with_mode(mode_id: str, locale: str = "ru") -> list[tuple[str, str]]:
     """Legacy sync helper — только официальный контент на диске."""
     return [
-        (sid, label)
-        for sid, label in SUBJECTS
-        if any(m[0] == mode_id for m in _file_based_modes(sid))
+        (sid, subject_label(sid, locale))
+        for sid in SUBJECT_IDS
+        if mode_id in _file_based_mode_ids(sid)
     ]
 
 
@@ -894,8 +1013,16 @@ def load_tasks(subject_id: str) -> list[dict]:
             "problem": str(data.get("problem", "")),
             "accepted": [str(a) for a in accepted],
             "solution_filename": str(solution_filename),
+            "kind": "official",
         })
     return tasks
+
+
+async def load_tasks_for_study(user_id: int, subject_id: str) -> list[dict]:
+    """Официальные задачи с картинкой + пользовательские из БД."""
+    return load_tasks(subject_id) + await user_task_repo.list_by_subject(
+        user_id, subject_id
+    )
 
 
 def _normalize_task_answer(text: str) -> str:
@@ -1089,7 +1216,8 @@ async def cmd_start(message: Message, state: FSMContext):
     parts = text.split(maxsplit=1)
     deep_link_arg = parts[1].strip() if len(parts) > 1 else None
 
-    if not await user_repo.user_exists(user_id):
+    is_new = not await user_repo.user_exists(user_id)
+    if is_new:
         await user_repo.create_user(
             user_id, username=message.from_user.username
         )
@@ -1097,34 +1225,63 @@ async def cmd_start(message: Message, state: FSMContext):
         await event_repo.log(user_id, "user_registered", {
             "language_code": message.from_user.language_code,
         })
-        keyboard = ReplyKeyboardBuilder()
-        keyboard.button(text="🔧 Настроить сейчас")
-        keyboard.button(text="🚀 Начать сразу")
-        keyboard.adjust(1)
+
+    saved_locale = await user_repo.get_locale(user_id)
+    if is_new or not saved_locale:
+        await state.set_state(SetupStates.choosing_language)
         await message.answer(
-            "🐾 Привет! Я — Palph, твой цифровой питомец для учёбы!\n\n"
-            "✨ Я помогу тебе учиться регулярно и без стресса. "
-            "Даже 5 минут в день — это уже победа!\n\n"
-            "Хочешь сначала настроить уведомления под себя или начать сразу?",
-            reply_markup=keyboard.as_markup(resize_keyboard=True)
+            t("lang.picker_title_bilingual", "ru"),
+            reply_markup=language_picker_keyboard(),
         )
-        await state.set_state(SetupStates.choosing_path)
     else:
+        locale = await loc(user_id)
         user = await user_repo.get_user(user_id)
+        await apply_user_bot_commands(user_id)
         await message.answer(
-            f"😊 С возвращением! Твой питомец скучал!\n\n"
-            f"📊 Твоя статистика:\n"
-            f"• Всего сессий: {user['total_sessions']}\n"
-            f"• Всего монет: {user['total_coins']} 🪙\n"
-            f"• Твой стрик: {user['current_streak']} дней подряд 🔥\n\n"
-            f"Чем займёмся сегодня?",
-            reply_markup=get_main_keyboard()
+            t(
+                "start.welcome_back",
+                locale,
+                total_sessions=user["total_sessions"],
+                total_coins=user["total_coins"],
+                current_streak=user["current_streak"],
+            ),
+            reply_markup=get_main_keyboard(locale),
         )
 
     # Обработка deep-link invite после стандартного welcome.
     # Существующий FSM-стейт onboarding'а не трогаем — invite — side effect.
     if deep_link_arg and deep_link_arg.startswith("friend_"):
         await _process_friend_invite_link(message, deep_link_arg)
+
+
+@router.callback_query(F.data.startswith("lang:set:"))
+async def handle_language_choice(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    locale = callback.data.split(":")[-1]
+    if locale not in SUPPORTED_LOCALES:
+        await callback.answer()
+        return
+    await user_repo.set_locale(user_id, locale)
+    await apply_user_bot_commands(user_id)
+    await callback.answer()
+
+    current = await state.get_state()
+    if current == SetupStates.choosing_language.state:
+        keyboard = ReplyKeyboardBuilder()
+        keyboard.button(text=t("kb.setup_now", locale))
+        keyboard.button(text=t("kb.start_now", locale))
+        keyboard.adjust(1)
+        await callback.message.answer(
+            t("start.welcome_new", locale),
+            reply_markup=keyboard.as_markup(resize_keyboard=True),
+        )
+        await state.set_state(SetupStates.choosing_path)
+    else:
+        lang_name = t("lang.ru", locale) if locale == "ru" else t("lang.en", locale)
+        await callback.message.answer(
+            t("lang.saved", locale, locale=lang_name),
+            reply_markup=get_main_keyboard(locale),
+        )
 
 
 async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> None:
@@ -1137,9 +1294,8 @@ async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> N
     token = deep_link_arg[len("friend_"):]
     creator_id = await friend_repo.find_invite_token(token)
     if creator_id is None:
-        await message.answer(
-            "⏳ Ссылка-приглашение недействительна или истекла."
-        )
+        locale = await loc(invitee_id)
+        await message.answer(t("friends.invite_invalid", locale))
         return
 
     result = await friend_repo.accept_invite(creator_id, invitee_id)
@@ -1149,16 +1305,16 @@ async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> N
             "friend_accepted",
             {"other_user_id": creator_id, "source": "invite_link"},
         )
+        locale = await loc(invitee_id)
         await message.answer(
-            f"🎉 Ты добавлен в друзья к пользователю "
-            f"<code>{creator_id}</code>!",
+            t("friends.invite_accepted", locale, creator_id=creator_id),
             parse_mode="HTML",
         )
         try:
+            creator_locale = await loc(creator_id)
             await bot.send_message(
                 creator_id,
-                f"🎉 Пользователь <code>{invitee_id}</code> присоединился "
-                f"к тебе по ссылке-приглашению!",
+                t("friends.invite_notify_creator", creator_locale, invitee_id=invitee_id),
                 parse_mode="HTML",
             )
         except Exception as e:
@@ -1167,32 +1323,27 @@ async def _process_friend_invite_link(message: Message, deep_link_arg: str) -> N
                 creator_id, type(e).__name__,
             )
     elif result == "already_friends":
-        await message.answer("👥 Вы уже друзья.")
+        await message.answer(t("friends.already_friends", await loc(invitee_id)))
     elif result == "self":
-        await message.answer(
-            "🙂 Это твоя собственная ссылка — отправь её другим пользователям."
-        )
+        await message.answer(t("friends.own_link", await loc(invitee_id)))
 
-@router.message(SetupStates.choosing_path, F.text == "🚀 Начать сразу")
+@router.message(SetupStates.choosing_path, kb_in("kb.start_now"))
 async def setup_skip(message: Message, state: FSMContext):
     """Пропуск мастера настройки — оставляем дефолтные 09:00 / 21:00."""
+    locale = await loc(message.from_user.id)
     await state.clear()
     await message.answer(
-        "👍 Готово! Можешь начинать учиться прямо сейчас.\n"
-        "Время напоминаний можно поменять позже в «📊 Мой профиль» → «⚙️ Настройки».",
-        reply_markup=get_main_keyboard(),
+        t("setup.skip_done", locale),
+        reply_markup=get_main_keyboard(locale),
     )
 
 
-@router.message(SetupStates.choosing_path, F.text == "🔧 Настроить сейчас")
+@router.message(SetupStates.choosing_path, kb_in("kb.setup_now"))
 async def setup_start(message: Message, state: FSMContext):
     """Начало мастера: спрашиваем утреннее время."""
+    locale = await loc(message.from_user.id)
     await state.set_state(SetupStates.setting_morning)
-    await message.answer(
-        "🌅 Во сколько отправлять утреннее напоминание?\n"
-        "Введи время в формате ЧЧ:ММ (например, 09:00).\n"
-        "Если не нужно — отправь /skip.",
-    )
+    await message.answer(t("setup.morning_prompt", locale))
 
 
 def _parse_time_or_none(text: str) -> str | None:
@@ -1211,11 +1362,11 @@ async def setup_skip_morning(message: Message, state: FSMContext):
 
 @router.message(SetupStates.setting_morning)
 async def setup_morning(message: Message, state: FSMContext):
+    locale = await loc(message.from_user.id)
     normalized = _parse_time_or_none(message.text)
     if normalized is None:
         await message.answer(
-            "❌ Неверный формат. Введи время как ЧЧ:ММ, например 09:00.\n"
-            "Или /skip, если утреннее напоминание не нужно."
+            t("setup.invalid_time", locale, example="09:00", slot=t("setup.slot_morning", locale))
         )
         return
     await state.update_data(morning_time=normalized)
@@ -1223,12 +1374,9 @@ async def setup_morning(message: Message, state: FSMContext):
 
 
 async def _ask_evening(message: Message, state: FSMContext):
+    locale = await loc(message.from_user.id)
     await state.set_state(SetupStates.setting_evening)
-    await message.answer(
-        "🌙 А во сколько вечернее напоминание?\n"
-        "Введи время в формате ЧЧ:ММ (например, 21:00).\n"
-        "Если не нужно — отправь /skip."
-    )
+    await message.answer(t("setup.evening_prompt", locale))
 
 
 @router.message(SetupStates.setting_evening, Command("skip"))
@@ -1239,11 +1387,11 @@ async def setup_skip_evening(message: Message, state: FSMContext):
 
 @router.message(SetupStates.setting_evening)
 async def setup_evening(message: Message, state: FSMContext):
+    locale = await loc(message.from_user.id)
     normalized = _parse_time_or_none(message.text)
     if normalized is None:
         await message.answer(
-            "❌ Неверный формат. Введи время как ЧЧ:ММ, например 21:00.\n"
-            "Или /skip, если вечернее напоминание не нужно."
+            t("setup.invalid_time", locale, example="21:00", slot=t("setup.slot_evening", locale))
         )
         return
     await state.update_data(evening_time=normalized)
@@ -1251,6 +1399,7 @@ async def setup_evening(message: Message, state: FSMContext):
 
 
 async def _finish_setup(message: Message, state: FSMContext):
+    locale = await loc(message.from_user.id)
     data = await state.get_data()
     morning = data.get("morning_time")
     evening = data.get("evening_time")
@@ -1272,299 +1421,146 @@ async def _finish_setup(message: Message, state: FSMContext):
         await ns.save(settings)
 
     await state.clear()
-    summary_lines = ["✅ Настройки сохранены:"]
+    summary_lines = [t("setup.saved_header", locale)]
     summary_lines.append(
-        f"🌅 Утро: {morning}" if morning else "🌅 Утро: отключено"
+        t("setup.morning_on", locale, time=morning) if morning else t("setup.morning_off", locale)
     )
     summary_lines.append(
-        f"🌙 Вечер: {evening}" if evening else "🌙 Вечер: отключено"
+        t("setup.evening_on", locale, time=evening) if evening else t("setup.evening_off", locale)
     )
-    summary_lines.append("\nПоменять можно в «📊 Мой профиль» → «⚙️ Настройки».")
-    await message.answer("\n".join(summary_lines), reply_markup=get_main_keyboard())
+    summary_lines.append("\n" + t("setup.change_later", locale))
+    await message.answer("\n".join(summary_lines), reply_markup=get_main_keyboard(locale))
 
 
-FAQ_MENU_TEXT = "📖 Часто задаваемые вопросы\n\nВыбери вопрос:"
-
-# Контент FAQ — массив словарей. Порядок = порядок кнопок в меню.
-# btn: короткий лейбл для inline-кнопки (≤64 символа per Telegram API)
-# title: полная формулировка вопроса (показывается в ответе)
-# body: текст ответа
-FAQ_ITEMS: list[dict[str, str]] = [
-    {
-        "id": "mission",
-        "btn":   "1️⃣ Миссия проекта",
-        "title": "1️⃣ Какая миссия у проекта?",
-        "body": (
-            "Palph создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
-            "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки, советы) с "
-            "научно проверенными техниками запоминания (интервальное повторение, "
-            "SM-2, active recall, Pomodoro). Получается система, которая:\n"
-            "• заменяет унылую зубрёжку на серию маленьких побед,\n"
-            "• даёт мгновенную обратную связь — главный антидот к прокрастинации,\n"
-            "• поддерживает мотивацию через эмоциональную привязку к питомцу,\n"
-            "• превращает учёбу в привычку, которая не требует силы воли каждый день.\n\n"
-            "Главная цель: ты учишься эффективнее, и тебе это в кайф."
-        ),
-    },
-    {
-        "id": "efficiency",
-        "btn":   "2️⃣ Эффективность учёбы с ботом",
-        "title": "2️⃣ Почему учиться с ботом эффективнее, чем самому?",
-        "body": (
-            "Бот объединяет несколько научно доказанных техник в один цикл: "
-            "метод Помодоро (25-минутные сессии = меньше выгорания), "
-            "мгновенная мотивация (монеты, достижения, эмоции питомца), "
-            "советы по продуктивности с небольшими наградами, "
-            "регулярные напоминания и квизы с интервальным повторением. "
-            "Ты получаешь структуру и обратную связь, которые в одиночку легко терять."
-        ),
-    },
-    {
-        "id": "pet",
-        "btn":   "3️⃣ Зачем питомец",
-        "title": "3️⃣ Зачем нужен питомец и как он помогает учиться?",
-        "body": (
-            "Питомец отражает твою активность: радуется, когда ты учишься, и "
-            "грустит, если пропускаешь день. Это эмоциональный якорь — учиться "
-            "не «ради дисциплины», а «чтобы твоему питомцу было хорошо». "
-            "Связь с виртуальным персонажем доказанно повышает регулярность "
-            "привычки."
-        ),
-    },
-    {
-        "id": "spend_coins",
-        "btn":   "4️⃣ На что тратить монеты",
-        "title": "4️⃣ На что можно тратить монеты?",
-        "body": (
-            "Сейчас монеты копятся как награда за учёбу и помогают получать "
-            "достижения. В ближайших обновлениях за монеты можно будет покупать "
-            "кастомизацию питомца: цвета (оранжевый, синий, зелёный…) и аксессуары "
-            "(шляпа, очки, шарф, корона). В будущем добавим больше — следи за "
-            "каналом 📢."
-        ),
-    },
-    {
-        "id": "earn_coins",
-        "btn":   "5️⃣ Как зарабатывать монеты",
-        "title": "5️⃣ Как зарабатывать монеты?",
-        "body": (
-            "• +1 монета за каждую минуту учёбы через таймер\n"
-            "• +15 бонусом, когда стрик достигает 2+ дней подряд\n"
-            "• Бонусные монеты за получение достижений (список — в профиле)\n"
-            "• +1 монета за каждый правильный MCQ-ответ\n"
-            "• +1 монета за каждую просмотренную флэш-карту\n"
-            "• До +3 монет за решение задачи с картинкой (зависит от попытки)\n"
-            "• +1 монета за первый совет дня в разделе «🎓 Советы для продуктивности» "
-            "(тайм-менеджмент, запоминание или «как пользоваться ботом»)\n"
-            "• Бонус за достижение «💡 Любознательный» — 10 просмотренных советов (+30 🪙)\n"
-            "• В утреннем напоминании — «совет дня» (один на календарный день)"
-        ),
-    },
-    {
-        "id": "sm2",
-        "btn":   "6️⃣ SM-2 для флэш-карт",
-        "title": "6️⃣ Что такое SM-2 и почему это эффективно для флэш-карт?",
-        "body": (
-            "SM-2 (SuperMemo-2) — алгоритм, который «запоминает» сложность каждой "
-            "карточки лично для тебя. С трудом вспомнил термин — карточка вернётся "
-            "скоро; легко — через неделю или больше. Ты не тратишь время на то, "
-            "что уже знаешь, и часто видишь именно то, что ускользает из памяти. "
-            "Используется в Anki и опирается на исследования кривой забывания "
-            "Эббингауза."
-        ),
-    },
-    {
-        "id": "spaced_rep",
-        "btn":   "7️⃣ Интервальное повторение",
-        "title": "7️⃣ Что такое интервальное повторение?",
-        "body": (
-            "Принцип: материал лучше запоминается, если повторять его с растущими "
-            "промежутками — например, через 1, 3, 7, 16 дней. Каждое успешное "
-            "повторение продлевает интервал; ошибка перезапускает счётчик. "
-            "Эббингауз доказал это в 1885 году, и за 140 лет принцип подтверждён "
-            "сотнями исследований. Запоминать через дни и недели в разы "
-            "эффективнее, чем зубрить за вечер."
-        ),
-    },
-    {
-        "id": "active_recall",
-        "btn":   "8️⃣ Active recall в боте",
-        "title": "8️⃣ Что такое active recall и какие методы есть в боте?",
-        "body": (
-            "Active recall — это извлечение информации из памяти «из головы», без "
-            "подглядывания. Работает в 2–3 раза лучше, чем повторное чтение. В боте "
-            "active recall встроен в каждый учебный режим:\n"
-            "• Ситуационные квизы — вводишь определение по описанию ситуации\n"
-            "• Флэш-карты — видишь термин, вспоминаешь, проверяешь себя\n"
-            "• Советы для продуктивности — короткие техники тайм-менеджмента и памяти\n"
-            "• Тесты с выбором ответа — выбираешь правильный из 4 вариантов\n"
-            "• Задачи с картинкой — решаешь и вводишь ответ\n"
-            "Принцип: «если можешь объяснить — значит знаешь»."
-        ),
-    },
-    {
-        "id": "guarantee",
-        "btn":   "9️⃣ Гарантия эффективности",
-        "title": "9️⃣ Гарантируете ли вы результат?",
-        "body": (
-            "Эффективность очень вероятна, но 100% гарантии нет — и это нормально.\n\n"
-            "Все методики бота (интервальное повторение, SM-2, active recall, "
-            "Pomodoro, геймификация) опираются на десятилетия исследований: от "
-            "Эббингауза (1885) до современных мета-анализов. У пользователей, "
-            "которые регулярно учатся через бот, результаты заметно лучше, чем "
-            "при пассивном перечитывании.\n\n"
-            "Но реальный эффект зависит от:\n"
-            "• тебя — регулярности занятий и честности самооценки в флэш-картах\n"
-            "• контента — качества и структуры материала\n"
-            "• обстоятельств — стресс, сон и самочувствие сильно влияют на память\n"
-            "• стартовой точки — у всех разный уровень и темп\n\n"
-            "Если коротко: при регулярных занятиях ты с очень высокой вероятностью "
-            "улучшишь свои результаты. Но «гарантированно стать гением за месяц» — "
-            "не обещаем, это было бы нечестно."
-        ),
-    },
-    {
-        "id": "commands",
-        "btn":   "🔟 Быстрые команды",
-        "title": "🔟 Какие команды есть для быстрой навигации?",
-        "body": (
-            "Можно писать команды в чат вместо кнопок — так быстрее попасть "
-            "в нужный раздел:\n\n"
-            "/start — главное меню и клавиатура\n"
-            "/stop — остановить активный таймер Pomodoro\n"
-            "/progress — прогресс по всем предметам\n"
-            "/pet — экран питомца (уровень, XP, кастомизация)\n"
-            "/leaderboard — недельный рейтинг (то же, что /leaderboards)\n"
-            "/friends — друзья и недельный рейтинг среди них\n\n"
-            "Квизы, FAQ, настройки и профиль — через кнопки главного меню "
-            "или «📊 Мой профиль».\n\n"
-            "Если бот ждёт ввод (переименование питомца, время напоминания) — "
-            "отмена: /cancel."
-        ),
-    },
-]
-
-FAQ_SUPPORT_ITEM: dict[str, str] = {
-    "id":    "support",
-    "btn":   "🛠 Связаться с техподдержкой",
-    "title": "🛠 Техподдержка",
-    "body": (
-        "Если у тебя есть вопрос, баг или предложение — просто напиши его прямо "
-        "здесь, в этом чате. Сообщение перешлётся админам, тебе ответят как "
-        "можно скорее.\n\n"
-        "Прямой контакт админа: @zerocious"
-    ),
-}
+def _faq_support_item(locale: str) -> dict[str, str]:
+    return {
+        "id": "support",
+        "btn": t("faq.support.btn", locale),
+        "title": t("faq.support.title", locale),
+        "body": t("faq.support.body", locale),
+    }
 
 
-def _build_faq_menu_keyboard() -> InlineKeyboardMarkup:
-    """Главное меню FAQ — кнопки по FAQ_ITEMS + техподдержка."""
+def _build_faq_menu_keyboard(locale: str) -> InlineKeyboardMarkup:
+    """Главное меню FAQ — кнопки по faq_items + техподдержка."""
     kb = InlineKeyboardBuilder()
-    for item in FAQ_ITEMS:
+    for item in faq_items(locale):
         kb.button(text=item["btn"], callback_data=f"faq:show:{item['id']}")
-    kb.button(
-        text=FAQ_SUPPORT_ITEM["btn"],
-        callback_data=f"faq:show:{FAQ_SUPPORT_ITEM['id']}",
-    )
-    kb.adjust(1)  # 1 кнопка на строку — текст длинный, в 2 столбца не влезет
-    return kb.as_markup()
-
-
-def _build_faq_answer_keyboard() -> InlineKeyboardMarkup:
-    """Кнопка возврата в меню FAQ."""
-    kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ К списку вопросов", callback_data="faq:back")
+    support = _faq_support_item(locale)
+    kb.button(text=support["btn"], callback_data=f"faq:show:{support['id']}")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def _faq_lookup(item_id: str) -> dict | None:
-    """Найти FAQ-элемент по id (среди вопросов и техподдержки)."""
-    if item_id == FAQ_SUPPORT_ITEM["id"]:
-        return FAQ_SUPPORT_ITEM
-    for item in FAQ_ITEMS:
+def _build_faq_answer_keyboard(locale: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t("faq.back_list", locale), callback_data="faq:back")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def _faq_lookup(item_id: str, locale: str) -> dict | None:
+    if item_id == "support":
+        return _faq_support_item(locale)
+    for item in faq_items(locale):
         if item["id"] == item_id:
             return item
     return None
 
 
-@router.message(F.text == "❓ FAQ")
+@router.message(kb_in("kb.faq"))
 async def handle_faq(message: Message):
-    """Главное меню FAQ — кнопки на каждый вопрос + техподдержка."""
+    locale = await loc(message.from_user.id)
     await message.answer(
-        FAQ_MENU_TEXT,
-        reply_markup=_build_faq_menu_keyboard(),
+        t("faq.menu", locale),
+        reply_markup=_build_faq_menu_keyboard(locale),
     )
 
 
 @router.callback_query(F.data.startswith("faq:show:"))
 async def handle_faq_show(callback: CallbackQuery):
-    """Показать ответ на конкретный вопрос FAQ — edit-in-place."""
+    locale = await loc(callback.from_user.id)
     item_id = callback.data.split(":", 2)[2]
-    item = _faq_lookup(item_id)
+    item = _faq_lookup(item_id, locale)
     if item is None:
-        await callback.answer("Вопрос не найден", show_alert=True)
+        await callback.answer(t("errors.faq_not_found", locale), show_alert=True)
         return
     text = f"{item['title']}\n\n{item['body']}"
     try:
-        await callback.message.edit_text(text, reply_markup=_build_faq_answer_keyboard())
+        await callback.message.edit_text(
+            text, reply_markup=_build_faq_answer_keyboard(locale),
+        )
     except Exception as e:
-        # Если edit упал (например, сообщение старше 48ч) — шлём новое
         logger.warning("faq.edit_failed item=%s reason=%s", item_id, e)
-        await callback.message.answer(text, reply_markup=_build_faq_answer_keyboard())
+        await callback.message.answer(
+            text, reply_markup=_build_faq_answer_keyboard(locale),
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "faq:back")
 async def handle_faq_back(callback: CallbackQuery):
-    """Вернуться к списку вопросов."""
+    locale = await loc(callback.from_user.id)
+    menu = t("faq.menu", locale)
     try:
-        await callback.message.edit_text(FAQ_MENU_TEXT, reply_markup=_build_faq_menu_keyboard())
+        await callback.message.edit_text(
+            menu, reply_markup=_build_faq_menu_keyboard(locale),
+        )
     except Exception as e:
         logger.warning("faq.back_edit_failed reason=%s", e)
-        await callback.message.answer(FAQ_MENU_TEXT, reply_markup=_build_faq_menu_keyboard())
+        await callback.message.answer(
+            menu, reply_markup=_build_faq_menu_keyboard(locale),
+        )
     await callback.answer()
 
-@router.message(F.text == "📢 Новости")
-async def handle_news(message: Message):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📢 Открыть канал", url=CHANNEL_URL)
-    await message.answer(
-        "📢 Подпишись на наш канал — там анонсы, советы по учебе "
-        "и обновления бота.",
-        reply_markup=kb.as_markup(),
-    )
 
-@router.message(F.text == "📊 Мой профиль")
+@router.callback_query(F.data == "lang:picker")
+async def handle_lang_picker_from_settings(callback: CallbackQuery):
+    locale = await loc(callback.from_user.id)
+    await callback.message.answer(
+        t("lang.picker_title", locale),
+        reply_markup=language_picker_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(kb_in("kb.news"))
+async def handle_news(message: Message):
+    locale = await loc(message.from_user.id)
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t("nav.open_channel", locale), url=CHANNEL_URL)
+    await message.answer(t("nav.news_body", locale), reply_markup=kb.as_markup())
+
+
+@router.message(kb_in("kb.profile"))
 async def cmd_profile(message: Message):
     user_id = message.from_user.id
+    locale = await loc(user_id)
     user = await user_repo.get_user(user_id)
     if not user:
-        await message.answer("Сначала напиши /start для регистрации")
+        await message.answer(t("start.need_register", locale))
         return
     inline_kb = InlineKeyboardBuilder()
-    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
-    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
-    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    # Питомец: image preview + customization picker (TODO #16 Phase B).
-    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
-    # Друзья: open friends-tab. Использует существующий friends_back-handler
-    # (тот же, что callback'и accept/reject/remove). callback_data prefix
-    # 'friends_back' семантически означает «main friends-tab view».
-    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
-    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
-    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
-    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
+    inline_kb.button(text=t("profile.achievements", locale), callback_data=f"show_achievements:{user_id}:1")
+    inline_kb.button(text=t("profile.settings", locale), callback_data=f"settings_menu:{user_id}")
+    inline_kb.button(text=t("profile.progress", locale), callback_data=f"show_progress:{user_id}")
+    inline_kb.button(text=t("profile.pet", locale), callback_data=f"pet_menu:{user_id}")
+    inline_kb.button(text=t("profile.friends", locale), callback_data=f"friends_back:{user_id}")
+    inline_kb.button(text=t("profile.freeze_streak", locale), callback_data=f"freeze_menu:{user_id}")
     inline_kb.adjust(2, 1, 1, 1, 1)
+    last_session = user.get("last_session") or t("profile.never", locale)
     await message.answer(
-        f"📊 Твой профиль:\n"
-        f"🆔 ID: {user_id}\n"
-        f"📚 Всего сессий: {user['total_sessions']}\n"
-        f"💰 Всего монет: {user['total_coins']} 🪙\n"
-        f"🔥 Стрик: {user['current_streak']} дней подряд\n"
-        f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
-        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
-        reply_markup=inline_kb.as_markup()
+        t(
+            "profile.title",
+            locale,
+            user_id=user_id,
+            total_sessions=user["total_sessions"],
+            total_coins=user["total_coins"],
+            current_streak=user["current_streak"],
+            last_session=last_session,
+            pet_emotion=get_pet_emotion(user["current_streak"], locale),
+        ),
+        reply_markup=inline_kb.as_markup(),
     )
 
 # ------------------------------------------------------------
@@ -1577,14 +1573,9 @@ PROGRESS_BAR_LENGTH = 10
 # Пороги «выучено». Можно менять централизованно.
 SITUATIONAL_MASTERY_STREAK = 3   # streak в quiz_progress
 FLASHCARD_MASTERY_REPS = 3       # repetitions в flashcard_progress
-FLASHCARD_SOURCE_LABELS = {
-    "mix": "Микс",
-    "official": "Официальные",
-    "own": "Свои",
-}
-FLASHCARD_SOURCE_CYCLE = ["mix", "official", "own"]
 USER_FLASHCARD_TERM_MAX = 200
 USER_FLASHCARD_DEFINITION_MAX = 1000
+USER_TASK_FILE_MAX_BYTES = 65536
 
 
 def _render_bar(pct: float) -> str:
@@ -1594,8 +1585,8 @@ def _render_bar(pct: float) -> str:
     return PROGRESS_BAR_FILLED * filled + PROGRESS_BAR_EMPTY * (PROGRESS_BAR_LENGTH - filled)
 
 
-def _humanize_when(ts_str: str | None) -> str:
-    """'сегодня в HH:MM' / 'вчера' / 'N дней назад' / 'давно'."""
+def _humanize_when(ts_str: str | None, locale: str = "ru") -> str:
+    """Localized relative activity time."""
     if not ts_str:
         return "—"
     try:
@@ -1605,12 +1596,10 @@ def _humanize_when(ts_str: str | None) -> str:
     now = datetime.now()
     delta_days = (now.date() - ts.date()).days
     if delta_days == 0:
-        return f"сегодня в {ts.strftime('%H:%M')}"
+        return t("progress.today_at", locale, time=ts.strftime("%H:%M"))
     if delta_days == 1:
-        return "вчера"
-    if delta_days < 7:
-        return f"{delta_days} дн. назад"
-    return f"{delta_days} дн. назад"
+        return t("progress.yesterday", locale)
+    return t("progress.days_ago", locale, days=delta_days)
 
 
 async def _count_situational_mastered(user_id: int, term_hashes: list[str]) -> int:
@@ -1672,7 +1661,9 @@ async def _count_flashcards_due(user_id: int, card_hashes: list[str]) -> int:
         return row[0] if row else 0
 
 
-async def _build_subject_progress_block(user_id: int, subject_id: str, subject_label: str) -> str:
+async def _build_subject_progress_block(
+    user_id: int, subject_id: str, subject_label: str, locale: str = "ru",
+) -> str:
     """
     Строит блок для одного предмета:
       <label>
@@ -1684,24 +1675,25 @@ async def _build_subject_progress_block(user_id: int, subject_id: str, subject_l
     """
     # Загружаем все items предмета. Используем существующие load_*-функции.
     section_terms: list[str] = []  # term_hash из всех непустых разделов situational
-    for _label, key in available_quiz_sections(subject_id):
+    for _label, key in available_quiz_sections(subject_id, locale):
         for term in load_quiz_section(key, subject_id):
             section_terms.append(term.hash)
     cards = load_flashcards(subject_id)
     user_cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     mcq_qs = load_mcq(subject_id)
     tasks_list = load_tasks(subject_id)
+    user_tasks_list = await user_task_repo.list_by_subject(user_id, subject_id)
 
     card_hashes = [c["hash"] for c in cards] + [c["hash"] for c in user_cards]
     mcq_hashes = [_mcq_hash(q["question"]) for q in mcq_qs]
-    task_ids = [t["id"] for t in tasks_list]
+    task_ids = [t["id"] for t in tasks_list] + [t["id"] for t in user_tasks_list]
 
     total = len(section_terms) + len(card_hashes) + len(mcq_hashes) + len(task_ids)
     if total == 0:
         return (
             f"{subject_label}\n"
             f"{PROGRESS_BAR_EMPTY * PROGRESS_BAR_LENGTH}  0%\n"
-            f"  🚧 Контент в разработке\n"
+            f"{t('progress.coming_soon', locale)}"
         )
 
     # Сколько items освоено в каждом режиме
@@ -1721,37 +1713,40 @@ async def _build_subject_progress_block(user_id: int, subject_id: str, subject_l
     # Активность из user_subject_stats
     stats = await subject_stats_repo.get(user_id, subject_id)
     visits = stats["visits"] if stats else 0
-    last_activity = _humanize_when(stats["last_activity"] if stats else None)
+    last_activity = _humanize_when(stats["last_activity"] if stats else None, locale)
 
     lines = [
         subject_label,
         f"{_render_bar(pct)} {pct_int}%",
     ]
     if total_due > 0:
-        lines.append(f"  🔔 К повторению сегодня: {total_due}")
+        lines.append(t("progress.due_today", locale, count=total_due))
     else:
-        lines.append(f"  🔔 К повторению сегодня: ничего")
-    lines.append(f"  🕐 Активность: {last_activity}")
-    lines.append(f"  📈 Заходов: {visits}")
+        lines.append(t("progress.due_none", locale))
+    lines.append(t("progress.activity", locale, when=last_activity))
+    lines.append(t("progress.visits", locale, count=visits))
     return "\n".join(lines) + "\n"
 
 
-async def build_progress_view(user_id: int) -> str:
+async def build_progress_view(user_id: int, locale: str | None = None) -> str:
     """Полный текст экрана прогресса (Markdown/plain — без parse_mode)."""
+    user_loc = locale or await loc(user_id)
     user = await user_repo.get_user(user_id)
     if not user:
-        return "Сначала напиши /start для регистрации."
-    # Общие монеты и стрик из users; общие минуты — из study_sessions
+        return t("start.need_register", user_loc)
     total_minutes = await session_repo.get_total_minutes(user_id)
-    header = (
-        f"📊 Прогресс\n\n"
-        f"Всего: 🪙 {user['total_coins']} монет · "
-        f"⏱️ {total_minutes} мин учёбы · "
-        f"🔥 стрик {user['current_streak']} дней\n"
+    header = t(
+        "progress.title", user_loc,
+        coins=user["total_coins"],
+        minutes=total_minutes,
+        streak=user["current_streak"],
     )
     blocks = []
-    for subject_id, subject_label in SUBJECTS:
-        blocks.append(await _build_subject_progress_block(user_id, subject_id, subject_label))
+    for subject_id in SUBJECT_IDS:
+        label = subject_label(subject_id, user_loc)
+        blocks.append(
+            await _build_subject_progress_block(user_id, subject_id, label, user_loc)
+        )
     return header + "\n" + "\n".join(blocks)
 
 
@@ -1764,11 +1759,15 @@ async def handle_show_progress(callback: CallbackQuery):
         return
     # Анти-spoof: пользователь видит только свой прогресс
     if callback.from_user.id != target_user_id:
-        await callback.answer("Это не твой прогресс", show_alert=True)
+        await callback.answer(
+            t("progress.not_yours", await loc(callback.from_user.id)),
+            show_alert=True,
+        )
         return
-    text = await build_progress_view(target_user_id)
+    locale = await loc(target_user_id)
+    text = await build_progress_view(target_user_id, locale)
     kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Профиль", callback_data=f"back_to_profile:{target_user_id}")
+    kb.button(text=t("profile.back", locale), callback_data=f"back_to_profile:{target_user_id}")
     kb.adjust(1)
     try:
         await callback.message.edit_text(text, reply_markup=kb.as_markup())
@@ -1780,15 +1779,8 @@ async def handle_show_progress(callback: CallbackQuery):
 # ------------------------------------------------------------
 
 
-def get_pet_emotion(streak: int) -> str:
-    if streak == 0:
-        return "грустный 😢 (начни учиться сегодня!)"
-    elif streak < 3:
-        return "радостный 😊 (так держать!)"
-    elif streak < 7:
-        return "очень счастливый 🤗 (ты молодец!)"
-    else:
-        return "легендарный 🌟 (ты чемпион!)"
+def get_pet_emotion(streak: int, locale: str = "ru") -> str:
+    return pet_emotion(streak, locale)
 
 # ------------------------------------------------------------
 # Настройки
@@ -1823,45 +1815,48 @@ class NotificationSettings:
     async def save(self, settings: dict):
         await self.repo.update_notification_settings(self.user_id, settings)
 
-    async def toggle(self, setting_type: str) -> tuple[bool, str]:
+    async def toggle(self, setting_type: str, locale: str = "ru") -> tuple[bool, str]:
         key_map = {
             "morning": "morning_enabled",
             "evening": "evening_enabled",
             "streak": "streak_enabled",
             "achievements": "achievements_enabled"
         }
+        label_keys = {
+            "morning": "settings.label_morning",
+            "evening": "settings.label_evening",
+            "streak": "settings.label_streak",
+            "achievements": "settings.label_achievements",
+        }
         key = key_map.get(setting_type)
         if not key:
             raise ValueError(f"Unknown setting type: {setting_type}")
-        # Lock защищает load-then-save: без него быстрые двойные клики
-        # могут потерять одно из переключений.
         async with self.repo.db.lock:
             settings = await self.load()
             current = settings.get(key, 1)
             new_value = 0 if current else 1
             settings[key] = new_value
             await self.save(settings)
-        status = "включены" if new_value else "отключены"
-        label_map = {
-            "morning": "🌅 Утро",
-            "evening": "🌙 Вечер",
-            "streak": "🔥 Стрик",
-            "achievements": "🎉 Достижения"
-        }
-        return bool(new_value), f"{label_map[setting_type]}: {status}"
+        status = (
+            t("settings.enabled", locale) if new_value else t("settings.disabled", locale)
+        )
+        label = t(label_keys[setting_type], locale)
+        return bool(new_value), t("settings.toggle_status", locale, label=label, status=status)
 
     async def cycle_flashcard_source(self) -> tuple[str, str]:
         """mix → official → own → mix. Возвращает (label, source_key)."""
         async with self.repo.db.lock:
             settings = await self.load()
             current = settings.get("flashcard_source", "mix")
-            if current not in FLASHCARD_SOURCE_CYCLE:
+            if current not in FLASH_SOURCE_CYCLE:
                 current = "mix"
-            idx = FLASHCARD_SOURCE_CYCLE.index(current)
-            new_source = FLASHCARD_SOURCE_CYCLE[(idx + 1) % len(FLASHCARD_SOURCE_CYCLE)]
+            idx = FLASH_SOURCE_CYCLE.index(current)
+            new_source = FLASH_SOURCE_CYCLE[(idx + 1) % len(FLASH_SOURCE_CYCLE)]
             settings["flashcard_source"] = new_source
             await self.save(settings)
-        return FLASHCARD_SOURCE_LABELS[new_source], new_source
+        locale = await user_locale(self.repo, self.user_id)
+        labels = flash_source_labels(locale)
+        return labels[new_source], new_source
 
     async def set_time(self, slot: str, time_str: str) -> None:
         """Сохраняет утреннее/вечернее время. slot ∈ {'morning','evening'}."""
@@ -1873,15 +1868,21 @@ class NotificationSettings:
             await self.save(settings)
 
     async def get_display_text(self) -> str:
+        locale = await user_locale(self.repo, self.user_id)
         settings = await self.load()
         user = await self.repo.get_user(self.user_id)
         tz = (user or {}).get("timezone") or "Europe/Moscow"
         hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
-        lines = ["⚙️ Настройки уведомлений\n"]
+        lines = [t("settings.title", locale)]
         emoji_on = {"morning": "🌅", "evening": "🌙", "streak": "🔥", "achievements": "🎉"}
         emoji_off = {"morning": "🌚", "evening": "🌚", "streak": "❄️", "achievements": "🔕"}
         time_keys = {"morning": "morning_time", "evening": "evening_time"}
-        labels = {"morning": "Утро", "evening": "Вечер", "streak": "Стрик", "achievements": "Достижения"}
+        label_keys = {
+            "morning": "settings.label_morning",
+            "evening": "settings.label_evening",
+            "streak": "settings.label_streak",
+            "achievements": "settings.label_achievements",
+        }
         for key in ["morning", "evening", "streak", "achievements"]:
             enabled = settings.get(f"{key}_enabled", 1)
             emoji = emoji_on[key] if enabled else emoji_off[key]
@@ -1889,56 +1890,76 @@ class NotificationSettings:
             if key in time_keys:
                 time_val = settings.get(time_keys[key], "")
                 time_str = f" ({time_val})" if time_val else ""
-            status = "✅ Включено" if enabled else "❌ Отключено"
-            lines.append(f"{emoji} {labels[key]}{time_str}: {status}")
+            status = t("settings.enabled", locale) if enabled else t("settings.disabled", locale)
+            lines.append(f"{emoji} {t(label_keys[key], locale)}{time_str}: {status}")
         source = settings.get("flashcard_source", "mix")
-        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
-        lines.append(f"\n🃏 Флэш-карты: {source_label}")
-        lines.append(f"\n🌍 Часовой пояс: {tz_label(tz)}")
+        source_labels = flash_source_labels(locale)
+        lines.append(t("settings.flashcards", locale, source=source_labels.get(source, source)))
+        lines.append(t("settings.timezone", locale, tz=tz_label(tz)))
         lines.append(
-            f"👤 Лидерборды: "
-            f"{'❌ Скрыт (рейтинги не видны другим)' if hidden else '✅ Виден'}"
+            t("settings.leaderboard_hidden", locale)
+            if hidden
+            else t("settings.leaderboard_visible", locale)
         )
+        saved = await self.repo.get_locale(self.user_id) or "ru"
+        lang_label = t("lang.ru", locale) if saved == "ru" else t("lang.en", locale)
+        lines.append(t("settings.language", locale) + f": {lang_label}")
         return "\n".join(lines)
 
     async def get_keyboard(self) -> InlineKeyboardMarkup:
+        locale = await user_locale(self.repo, self.user_id)
         settings = await self.load()
         hidden = await self.repo.is_hidden_from_leaderboards(self.user_id)
         kb = InlineKeyboardBuilder()
-        labels = {"morning": "Утро", "evening": "Вечер", "streak": "Стрик", "achievements": "Достижения"}
-        # Утро: переключатель + кнопка изменения времени
+        label_keys = {
+            "morning": "settings.label_morning",
+            "evening": "settings.label_evening",
+            "streak": "settings.label_streak",
+            "achievements": "settings.label_achievements",
+        }
+        toggle_off = t("settings.toggle_off", locale)
+        toggle_on = t("settings.toggle_on", locale)
         for key in ["morning", "evening"]:
             enabled = settings.get(f"{key}_enabled", 1)
             kb.button(
-                text=f"{labels[key]}: {'Выкл' if enabled else 'Вкл'}",
+                text=f"{t(label_keys[key], locale)}: {toggle_off if enabled else toggle_on}",
                 callback_data=f"settings_toggle:{key}:{self.user_id}",
             )
             kb.button(
-                text=f"🕘 Изменить",
+                text=t("settings.change_time", locale),
                 callback_data=f"settings_time:{key}:{self.user_id}",
             )
-        # Стрик / Достижения — только переключатели
         for key in ["streak", "achievements"]:
             enabled = settings.get(f"{key}_enabled", 1)
             kb.button(
-                text=f"{labels[key]}: {'Выкл' if enabled else 'Вкл'}",
+                text=f"{t(label_keys[key], locale)}: {toggle_off if enabled else toggle_on}",
                 callback_data=f"settings_toggle:{key}:{self.user_id}",
             )
-        kb.button(text="🌍 Часовой пояс", callback_data=f"settings_tz_picker:{self.user_id}")
-        # Privacy toggle: единственная кнопка для leaderboards (LEADERBOARD.md §Privacy).
+        kb.button(text=t("settings.timezone_btn", locale), callback_data=f"settings_tz_picker:{self.user_id}")
         kb.button(
-            text=f"👤 Лидерборды: {'Скрыт' if hidden else 'Виден'}",
+            text=(
+                t("settings.leaderboard_btn_hidden", locale)
+                if hidden
+                else t("settings.leaderboard_btn_visible", locale)
+            ),
             callback_data=f"settings_privacy:{self.user_id}",
         )
         source = settings.get("flashcard_source", "mix")
-        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
+        source_labels = flash_source_labels(locale)
         kb.button(
-            text=f"🃏 Флэш-карты: {source_label}",
+            text=t("settings.flashcards", locale, source=source_labels.get(source, source)),
             callback_data=f"settings_flash_source:{self.user_id}",
         )
-        kb.button(text="📇 Мои карточки", callback_data=f"fc_manage:{self.user_id}")
-        kb.button(text="⬅️ Назад в профиль", callback_data=f"back_to_profile:{self.user_id}")
-        kb.adjust(2, 2, 2, 1, 1, 1, 1)
+        saved = await self.repo.get_locale(self.user_id) or "ru"
+        lang_label = t("lang.ru", locale) if saved == "ru" else t("lang.en", locale)
+        kb.button(
+            text=t("settings.language_btn", locale, current=lang_label),
+            callback_data="lang:picker",
+        )
+        kb.button(text=t("settings.my_cards", locale), callback_data=f"fc_manage:{self.user_id}")
+        kb.button(text=t("settings.my_tasks", locale), callback_data=f"ut_manage:{self.user_id}")
+        kb.button(text=t("settings.back_profile", locale), callback_data=f"back_to_profile:{self.user_id}")
+        kb.adjust(2, 2, 2, 1, 1, 1, 1, 1, 1)
         return kb.as_markup()
 
 @router.callback_query(F.data.startswith("settings_menu:"))
@@ -1955,9 +1976,11 @@ async def show_settings_menu(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("settings_toggle:"))
 async def toggle_notification_setting(callback: CallbackQuery):
     _, setting_type, _ = callback.data.split(":")
-    ns = NotificationSettings(callback.from_user.id, user_repo)
+    user_id = callback.from_user.id
+    locale = await loc(user_id)
+    ns = NotificationSettings(user_id, user_repo)
     try:
-        new_value, status_text = await ns.toggle(setting_type)
+        new_value, status_text = await ns.toggle(setting_type, locale)
         key_map = {
             "morning": "morning_enabled",
             "evening": "evening_enabled",
@@ -1980,7 +2003,7 @@ async def toggle_notification_setting(callback: CallbackQuery):
         await callback.answer()
     except Exception as e:
         logger.error(f"Error toggling setting: {e}")
-        await callback.answer("Ошибка переключения", show_alert=True)
+        await callback.answer(t("settings.toggle_error", locale), show_alert=True)
 
 
 @router.callback_query(F.data.startswith("settings_flash_source:"))
@@ -1991,7 +2014,7 @@ async def cycle_flashcard_source_setting(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != target_user_id:
-        await callback.answer("Это не твои настройки", show_alert=True)
+        await callback.answer(t("common.not_yours_settings", await loc(callback.from_user.id)), show_alert=True)
         return
     ns = NotificationSettings(target_user_id, user_repo)
     new_label, new_source = await ns.cycle_flashcard_source()
@@ -2074,7 +2097,7 @@ async def handle_fc_manage(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твои карточки", show_alert=True)
+        await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
     text = "📇 Мои карточки\n\nВыбери предмет:"
     kb = _build_fc_subject_picker_keyboard(user_id, "fc_list")
@@ -2094,7 +2117,7 @@ async def handle_fc_list(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твои карточки", show_alert=True)
+        await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     text = await _build_fc_list_text(user_id, subject_id)
@@ -2115,7 +2138,7 @@ async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твои карточки", show_alert=True)
+        await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
     await callback.answer()
     await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id)
@@ -2131,7 +2154,7 @@ async def handle_fc_delete(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твои карточки", show_alert=True)
+        await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
     deleted = await user_flashcard_repo.delete(user_id, card_id)
     if deleted:
@@ -2147,67 +2170,62 @@ async def handle_fc_delete(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
         await callback.message.answer(text, reply_markup=kb)
-    await callback.answer("Удалено" if deleted else "Карточка не найдена")
+    locale = await loc(callback.from_user.id); await callback.answer(t("fc.deleted_ok", locale) if deleted else t("fc.deleted_fail", locale))
 
 
 @router.message(FlashcardCreateStates.waiting_for_term)
 async def handle_fc_term(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     term = (message.text or "").strip()
     if not term:
-        await message.answer("Термин не может быть пустым. Попробуй ещё раз.")
+        await message.answer(t("fc.term_empty", locale))
         return
     if len(term) > USER_FLASHCARD_TERM_MAX:
-        await message.answer(
-            f"Слишком длинный термин (макс. {USER_FLASHCARD_TERM_MAX} символов)."
-        )
+        await message.answer(t("fc.term_too_long", locale, max=USER_FLASHCARD_TERM_MAX))
         return
     await state.update_data(fc_term=term)
     await state.set_state(FlashcardCreateStates.waiting_for_definition)
     await message.answer(
-        f"Шаг 2/2: введи определение (ответ), "
-        f"до {USER_FLASHCARD_DEFINITION_MAX} символов."
+        t("fc.definition_prompt", locale, max=USER_FLASHCARD_DEFINITION_MAX),
     )
 
 
 @router.message(FlashcardCreateStates.waiting_for_definition)
 async def handle_fc_definition(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     definition = (message.text or "").strip()
     if not definition:
-        await message.answer("Определение не может быть пустым. Попробуй ещё раз.")
+        await message.answer(t("fc.definition_empty", locale))
         return
     if len(definition) > USER_FLASHCARD_DEFINITION_MAX:
         await message.answer(
-            f"Слишком длинное определение (макс. {USER_FLASHCARD_DEFINITION_MAX} символов)."
+            t("fc.definition_too_long", locale, max=USER_FLASHCARD_DEFINITION_MAX),
         )
         return
 
     data = await state.get_data()
     subject_id = data.get("fc_subject_id")
-    subject_label = data.get("fc_subject_label", subject_id)
     term = data.get("fc_term", "")
-    user_id = message.from_user.id
 
     try:
         card = await user_flashcard_repo.create(user_id, subject_id, term, definition)
     except ValueError as e:
         if str(e) == "limit_exceeded":
             await message.answer(
-                f"Достигнут лимит {UserFlashcardRepository.MAX_PER_SUBJECT} карточек "
-                f"на этот предмет. Удали старые, чтобы добавить новые."
+                t("fc.limit_reached", locale, max=UserFlashcardRepository.MAX_PER_SUBJECT),
             )
             await state.clear()
             return
         raise
     except sqlite3.IntegrityError:
-        await message.answer(
-            f"Карточка с термином «{term}» уже есть в этом предмете. "
-            f"Введи другой термин:"
-        )
+        await message.answer(t("fc.duplicate_term", locale, term=term))
         await state.set_state(FlashcardCreateStates.waiting_for_term)
         return
     except Exception as e:
         logger.error("fc.create_failed user_id=%s reason=%s", user_id, e)
-        await message.answer("Не удалось сохранить карточку. Попробуй позже.")
+        await message.answer(t("fc.save_failed", locale))
         await state.clear()
         return
 
@@ -2219,13 +2237,12 @@ async def handle_fc_definition(message: Message, state: FSMContext):
     await state.clear()
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Добавить ещё", callback_data=f"fc_add:{user_id}:{subject_id}")
-    kb.button(text="📇 Мои карточки", callback_data=f"fc_list:{user_id}:{subject_id}")
-    kb.button(text="🃏 Начать учёбу", callback_data=f"fc_study:{user_id}:{subject_id}")
+    kb.button(text=t("fc.add_more", locale), callback_data=f"fc_add:{user_id}:{subject_id}")
+    kb.button(text=t("fc.list_btn", locale), callback_data=f"fc_list:{user_id}:{subject_id}")
+    kb.button(text=t("fc.start_study", locale), callback_data=f"fc_study:{user_id}:{subject_id}")
     kb.adjust(1)
     await message.answer(
-        f"✅ Карточка сохранена!\n\n"
-        f"<b>{term}</b>\n<i>{definition}</i>",
+        t("fc.saved", locale, term=term, definition=definition),
         parse_mode="HTML",
         reply_markup=kb.as_markup(),
     )
@@ -2240,13 +2257,254 @@ async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твоя сессия", show_alert=True)
+        await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
         return
     subject_label = _subject_label_by_id(subject_id)
     await callback.answer()
     await state.set_state(QuizStates.choosing_mode)
     await state.update_data(subject_id=subject_id, subject_label=subject_label, mode_id="flashcards")
     await start_flashcard_session(
+        callback.message, state, subject_id, subject_label=subject_label,
+    )
+
+
+def _build_ut_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for sid, label in SUBJECTS:
+        kb.button(text=label, callback_data=f"{prefix}:{user_id}:{sid}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def _build_ut_list_text(user_id: int, subject_id: str) -> str:
+    tasks = await user_task_repo.list_by_subject(user_id, subject_id)
+    subject_label = _subject_label_by_id(subject_id)
+    if not tasks:
+        return (
+            f"📋 Мои задачи — {subject_label}\n\n"
+            f"Пока пусто. Нажми «➕ Загрузить .txt», чтобы импортировать задачи."
+        )
+    lines = [f"📋 Мои задачи — {subject_label}", f"Всего: {len(tasks)}", ""]
+    for i, task in enumerate(tasks, 1):
+        preview = task["problem"][:50] + ("…" if len(task["problem"]) > 50 else "")
+        lines.append(f"{i}. {preview}")
+    return "\n".join(lines)
+
+
+def _build_ut_list_keyboard(
+    user_id: int, subject_id: str, tasks: list[dict]
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Загрузить .txt", callback_data=f"ut_import:{user_id}:{subject_id}")
+    for task in tasks:
+        db_id = int(task["id"][1:], 16)
+        preview = task["problem"][:28] + ("…" if len(task["problem"]) > 28 else "")
+        kb.button(
+            text=f"🗑 {preview}",
+            callback_data=f"ut_del:{user_id}:{subject_id}:{db_id}",
+        )
+    kb.button(text="📋 Начать решать", callback_data=f"ut_study:{user_id}:{subject_id}")
+    kb.button(text="⬅️ К предметам", callback_data=f"ut_manage:{user_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+@router.callback_query(F.data.startswith("ut_manage:"))
+async def handle_ut_manage(callback: CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    text = "📋 Мои задачи\n\nВыбери предмет:"
+    kb = _build_ut_subject_picker_keyboard(user_id, "ut_list")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ut_list:"))
+async def handle_ut_list(callback: CallbackQuery):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    tasks = await user_task_repo.list_by_subject(user_id, subject_id)
+    text = await _build_ut_list_text(user_id, subject_id)
+    kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ut_import:"))
+async def handle_ut_import_start(callback: CallbackQuery, state: FSMContext):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(UserTaskImportStates.waiting_for_file)
+    await state.update_data(
+        ut_subject_id=subject_id,
+        ut_subject_label=_subject_label_by_id(subject_id),
+    )
+    locale = await loc(user_id)
+    await callback.message.answer(
+        t("user_tasks.instruction", locale),
+        parse_mode="HTML",
+    )
+
+
+@router.message(UserTaskImportStates.waiting_for_file, Command("cancel"))
+async def handle_ut_import_cancel(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    await state.clear()
+    await message.answer(
+        t("user_tasks.import_cancelled", locale),
+        reply_markup=get_main_keyboard(locale),
+    )
+
+
+@router.message(UserTaskImportStates.waiting_for_file, F.document)
+async def handle_ut_import_file(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    doc = message.document
+    if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
+        await message.answer(t("user_tasks.need_txt", locale))
+        return
+    if doc.file_size and doc.file_size > USER_TASK_FILE_MAX_BYTES:
+        await message.answer(
+            t("user_tasks.file_too_big", locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
+        )
+        return
+
+    from io import BytesIO
+
+    buffer = BytesIO()
+    try:
+        await bot.download(doc, destination=buffer)
+        raw = buffer.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        await message.answer(t("user_tasks.read_error", locale))
+        return
+    except Exception as e:
+        logger.error("ut.import_download_failed user=%s reason=%s", user_id, e)
+        await message.answer(t("user_tasks.download_error", locale))
+        return
+
+    parsed, errors = parse_user_tasks_txt(raw)
+    if not parsed and errors:
+        await message.answer(
+            t("user_tasks.parse_no_valid", locale, errors="\n".join(errors[:10])),
+        )
+        return
+    if not parsed:
+        await message.answer(t("user_tasks.empty_file", locale))
+        return
+
+    data = await state.get_data()
+    subject_id = data.get("ut_subject_id")
+    added, err = await user_task_repo.bulk_create(user_id, subject_id, parsed)
+    if err == "limit_exceeded":
+        await message.answer(
+            t("user_tasks.limit_exceeded", locale, max=UserTaskRepository.MAX_PER_SUBJECT),
+        )
+        await state.clear()
+        return
+
+    await state.clear()
+    await event_repo.log(
+        user_id,
+        "user_tasks_imported",
+        {"subject_id": subject_id, "count": added},
+    )
+    lines = [f"✅ Добавлено задач: {added}"]
+    if errors:
+        lines.append(f"⚠️ Пропущено строк: {len(errors)}")
+        lines.append("\n".join(errors[:5]))
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📋 Список задач", callback_data=f"ut_list:{user_id}:{subject_id}")
+    kb.button(text="📋 Начать решать", callback_data=f"ut_study:{user_id}:{subject_id}")
+    kb.adjust(1)
+    await message.answer("\n\n".join(lines), reply_markup=kb.as_markup())
+
+
+@router.message(UserTaskImportStates.waiting_for_file)
+async def handle_ut_import_wrong(message: Message):
+    await message.answer(
+        "Отправь файл .txt с задачами или /cancel для отмены."
+    )
+
+
+@router.callback_query(F.data.startswith("ut_del:"))
+async def handle_ut_delete(callback: CallbackQuery):
+    try:
+        _, user_id_str, subject_id, task_db_id_str = callback.data.split(":", 3)
+        user_id = int(user_id_str)
+        task_db_id = int(task_db_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    deleted = await user_task_repo.delete(user_id, task_db_id)
+    if deleted:
+        await event_repo.log(
+            user_id,
+            "user_task_deleted",
+            {"subject_id": subject_id, "task_db_id": task_db_id},
+        )
+    tasks = await user_task_repo.list_by_subject(user_id, subject_id)
+    text = await _build_ut_list_text(user_id, subject_id)
+    kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
+    locale = await loc(callback.from_user.id); await callback.answer(t("common.deleted", locale) if deleted else t("common.task_not_found", locale))
+
+
+@router.callback_query(F.data.startswith("ut_study:"))
+async def handle_ut_study(callback: CallbackQuery, state: FSMContext):
+    try:
+        _, user_id_str, subject_id = callback.data.split(":", 2)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    subject_label = _subject_label_by_id(subject_id)
+    await callback.answer()
+    await state.set_state(QuizStates.choosing_mode)
+    await state.update_data(
+        subject_id=subject_id,
+        subject_label=subject_label,
+        mode_id="tasks",
+    )
+    await start_task_session(
         callback.message, state, subject_id, subject_label=subject_label,
     )
 
@@ -2395,15 +2653,18 @@ async def toggle_privacy(callback: CallbackQuery):
 async def request_time_change(callback: CallbackQuery, state: FSMContext):
     """Просит пользователя ввести новое время для утреннего/вечернего слота."""
     _, slot, _ = callback.data.split(":")
+    locale = await loc(callback.from_user.id)
     if slot not in ("morning", "evening"):
-        await callback.answer("Неизвестный слот", show_alert=True)
+        await callback.answer(t("settings.unknown_slot", locale), show_alert=True)
         return
-    label = "утреннего" if slot == "morning" else "вечернего"
+    slot_label = t(
+        "settings.slot_morning" if slot == "morning" else "settings.slot_evening",
+        locale,
+    )
     await state.set_state(SettingsStates.waiting_for_time)
     await state.update_data(slot=slot, return_to="settings")
     await callback.message.answer(
-        f"🕘 Введи время {label} напоминания в формате ЧЧ:ММ (например, 09:30).\n"
-        f"Для отмены отправь /cancel."
+        t("settings.time_change_prompt", locale, slot=slot_label),
     )
     await callback.answer()
 
@@ -2428,12 +2689,12 @@ async def handle_session_rating(callback: CallbackQuery):
     updated = await session_repo.set_session_score(session_id, user_id, score)
     if not updated:
         # Сессия не принадлежит этому пользователю или не существует.
-        await callback.answer("Не удалось сохранить оценку", show_alert=True)
+        await callback.answer(t("rating.save_failed", await loc(user_id)), show_alert=True)
         return
     logger.info("session.rated user_id=%s session_id=%s score=%s", user_id, session_id, score)
     emoji = next((e for s, e in RATING_EMOJIS if s == score), "")
     try:
-        await callback.message.edit_text(f"✅ Спасибо за оценку! {emoji}")
+        await callback.message.edit_text(t("rating.thanks", await loc(user_id), emoji=emoji))
     except Exception:
         pass
     await callback.answer()
@@ -2444,7 +2705,7 @@ async def handle_session_rating_skip(callback: CallbackQuery):
     """Пропуск оценки — просто убираем клавиатуру."""
     await callback.answer()
     try:
-        await callback.message.edit_text("Без проблем 👌")
+        await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
 
@@ -2457,10 +2718,11 @@ async def show_tz_picker(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     for tz_id, label in TZ_PRESETS:
         kb.button(text=label, callback_data=f"settings_tz_set:{tz_id}")
-    kb.button(text="⬅️ Назад в настройки", callback_data=f"settings_menu:{user_id}")
+    locale = await loc(user_id)
+    kb.button(text=t("settings.tz_back", locale), callback_data=f"settings_menu:{user_id}")
     kb.adjust(1)
     await callback.message.edit_text(
-        "🌍 Выбери свой часовой пояс — напоминания и сброс стрика будут привязаны к нему:",
+        t("settings.tz_picker_title", locale),
         reply_markup=kb.as_markup(),
     )
 
@@ -2470,7 +2732,7 @@ async def set_user_timezone(callback: CallbackQuery):
     """Сохраняет выбранный TZ и возвращается в меню настроек."""
     tz_id = callback.data.split(":", 1)[1]
     if tz_id not in TZ_IDS:
-        await callback.answer("Неизвестный часовой пояс", show_alert=True)
+        await callback.answer(t("common.unknown_tz", await loc(callback.from_user.id)), show_alert=True)
         return
     user_id = callback.from_user.id
     await user_repo.set_timezone(user_id, tz_id)
@@ -2490,19 +2752,23 @@ async def set_user_timezone(callback: CallbackQuery):
 
 @router.message(SettingsStates.waiting_for_time, Command("cancel"))
 async def cancel_time_input(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     await state.clear()
-    await message.answer("Отменено.", reply_markup=get_main_keyboard())
+    await message.answer(
+        t("common.cancelled", locale),
+        reply_markup=get_main_keyboard(locale),
+    )
 
 
 @router.message(SettingsStates.waiting_for_time)
 async def process_time_input(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     text = (message.text or "").strip()
     match = TIME_RE.match(text)
     if not match:
-        await message.answer(
-            "❌ Неверный формат. Введи время как ЧЧ:ММ, например 09:30.\n"
-            "Для отмены отправь /cancel."
-        )
+        await message.answer(t("settings.time_invalid", locale))
         return
     # Нормализуем "9:5" → "09:05"
     hours, minutes = match.group(1), match.group(2)
@@ -2512,10 +2778,11 @@ async def process_time_input(message: Message, state: FSMContext):
     slot = data.get("slot")
     if slot not in ("morning", "evening"):
         await state.clear()
-        await message.answer("Ошибка состояния, попробуй ещё раз.", reply_markup=get_main_keyboard())
+        await message.answer(
+            t("errors.state_error", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
         return
-
-    user_id = message.from_user.id
     ns = NotificationSettings(user_id, user_repo)
     await ns.set_time(slot, normalized)
     await event_repo.log(
@@ -2525,10 +2792,13 @@ async def process_time_input(message: Message, state: FSMContext):
     )
     await state.clear()
 
-    label = "утреннее" if slot == "morning" else "вечернее"
+    slot_label = t(
+        "settings.slot_morning" if slot == "morning" else "settings.slot_evening",
+        locale,
+    )
     await message.answer(
-        f"✅ Новое {label} время сохранено: {normalized}",
-        reply_markup=get_main_keyboard(),
+        t("settings.time_saved", locale, slot=slot_label, time=normalized),
+        reply_markup=get_main_keyboard(locale),
     )
 
 @router.callback_query(F.data.startswith("back_to_profile:"))
@@ -2539,7 +2809,7 @@ async def back_to_profile(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твой профиль", show_alert=True)
+        await callback.answer(t("common.not_yours_profile", await loc(callback.from_user.id)), show_alert=True)
         return
     user = await user_repo.get_user(user_id)
     if not user:
@@ -2559,14 +2829,17 @@ async def back_to_profile(callback: CallbackQuery):
     # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
     inline_kb.adjust(2, 1, 1, 1, 1)
-    text = (
-        f"📊 Твой профиль:\n"
-        f"🆔 ID: {user_id}\n"
-        f"📚 Всего сессий: {user['total_sessions']}\n"
-        f"💰 Всего монет: {user['total_coins']} 🪙\n"
-        f"🔥 Стрик: {user['current_streak']} дней\n"
-        f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
-        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}"
+    locale = await loc(user_id)
+    last_session = user.get("last_session") or t("profile.never", locale)
+    text = t(
+        "profile.title",
+        locale,
+        user_id=user_id,
+        total_sessions=user["total_sessions"],
+        total_coins=user["total_coins"],
+        current_streak=user["current_streak"],
+        last_session=last_session,
+        pet_emotion=get_pet_emotion(user["current_streak"], locale),
     )
     try:
         await callback.message.edit_text(text, reply_markup=inline_kb.as_markup())
@@ -2588,7 +2861,7 @@ async def show_achievements(callback: CallbackQuery):
         await callback.answer()
         return
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твои достижения", show_alert=True)
+        await callback.answer(t("common.not_yours_achievements", await loc(callback.from_user.id)), show_alert=True)
         return
 
     async with db.execute(
@@ -2664,21 +2937,18 @@ async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration
             for ach_id in earned:
                 await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
             user = await user_repo.get_user(user_id)
-            response = (
-                f"🎉 Таймер завершён!\n"
-                f"⏱️ Сессия: {duration} минут\n"
-                f"🪙 Получено: {duration} монет"
-            )
+            locale = await loc(user_id)
+            response = t("timer.finished", locale, duration=duration)
             if bonus > 0:
-                response += f"\n✨ Бонус за достижения: +{bonus} монет"
-            response += f"\n📊 Всего монет: {user['total_coins']}"
+                response += t("timer.bonus", locale, bonus=bonus)
+            response += t("timer.total_coins", locale, total_coins=user["total_coins"])
             try:
-                await bot.send_message(chat_id, response, reply_markup=get_main_keyboard())
+                await bot.send_message(chat_id, response, reply_markup=get_main_keyboard(locale))
             except Exception as e:
                 logger.error(f"Ошибка отправки завершения таймера {user_id}: {e}")
             if earned:
                 await send_achievement_notification(user_id, earned)
-            await send_rating_prompt(chat_id, session_id)
+            await send_rating_prompt(chat_id, session_id, user_id)
             await state.clear()
     except asyncio.CancelledError:
         pass
@@ -2698,110 +2968,129 @@ async def send_achievement_notification(user_id: int, achievement_ids: list):
     settings = await user_repo.get_notification_settings(user_id)
     if settings and not settings.get("achievements_enabled", 1):
         return
+    locale = await loc(user_id)
+    catalog = load_achievements_catalog(locale)
+    default_name = t("achievements_notify.default_name", locale)
     if len(achievement_ids) == 1:
         ach_id = achievement_ids[0]
-        ach = ACHIEVEMENTS.get(ach_id, {})
-        msg = (
-            f"🎉 ПОЗДРАВЛЯЕМ! Ты получил(а) новое достижение:\n\n"
-            f"{ach.get('icon', '🏆')} {ach.get('name', 'Достижение')}\n"
-            f"{ach.get('description', '')}\n\n"
-            f"🪙 Бонус: +{ach.get('reward', 0)} монет\n"
-            f"🐾 Твой питомец гордится тобой!"
+        ach = catalog.get(ach_id, {})
+        msg = t(
+            "achievements_notify.single",
+            locale,
+            icon=ach.get("icon", "🏆"),
+            name=ach.get("name", default_name),
+            description=ach.get("description", ""),
+            reward=ach.get("reward", 0),
         )
     else:
         achievements_list = []
         total_reward = 0
         for ach_id in achievement_ids:
-            ach = ACHIEVEMENTS.get(ach_id, {})
-            achievements_list.append(f"{ach.get('icon', '🏆')} {ach.get('name', 'Достижение')} (+{ach.get('reward', 0)} монет)")
-            total_reward += ach.get('reward', 0)
+            ach = catalog.get(ach_id, {})
+            achievements_list.append(
+                t(
+                    "achievements_notify.multiple_item",
+                    locale,
+                    icon=ach.get("icon", "🏆"),
+                    name=ach.get("name", default_name),
+                    reward=ach.get("reward", 0),
+                )
+            )
+            total_reward += ach.get("reward", 0)
         msg = (
-            f"🎊 ВАУ! Ты получил(а) несколько достижений за одну сессию:\n\n" +
-            "\n".join(achievements_list) +
-            f"\n\n🪙 Общий бонус: +{total_reward} монет\n"
-            f"🔥 Ты настоящий чемпион учёбы!"
+            t("achievements_notify.multiple_header", locale)
+            + "\n".join(achievements_list)
+            + t("achievements_notify.multiple_footer", locale, total_reward=total_reward)
         )
     try:
         await bot.send_message(user_id, msg)
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления о достижении {user_id}: {e}")
 
-@router.message(F.text == "⏱️ Стандартный таймер (25 мин)")
+@router.message(kb_in("kb.standard_timer"))
 async def handle_standard_timer(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
         await user_repo.create_user(
             user_id, username=message.from_user.username
         )
+        await apply_user_bot_commands(user_id)
+    locale = await loc(user_id)
     current_state = await state.get_state()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
         if not start_time:
-            await message.answer("Таймер повреждён, начните заново.", reply_markup=get_study_keyboard())
+            await message.answer(
+                t("timer.corrupted", locale),
+                reply_markup=get_study_keyboard(locale),
+            )
             await state.clear()
             return
         elapsed = (datetime.now() - start_time).total_seconds() / 60
         remaining = max(0, data["duration"] - elapsed)
         await message.answer(
-            f"⏱️ Таймер уже запущен!\n"
-            f"Осталось: {remaining:.0f} минут\n",
-            reply_markup=get_timer_active_keyboard()
+            t("timer.already_running", locale, remaining=remaining),
+            reply_markup=get_timer_active_keyboard(locale),
         )
         return
     duration = 25
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
     await message.answer(
-        f"⏱️ Таймер запущен на {duration} минут!\n"
-        f"Ваш питомец ждёт вашего возвращения 🐾",
-        reply_markup=get_timer_active_keyboard()
+        t("timer.started", locale, duration=duration),
+        reply_markup=get_timer_active_keyboard(locale),
     )
     await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "standard"})
     start_timer(message.chat.id, state, user_id, duration)
 
-@router.message(F.text == "⏱️ Кастомный таймер")
+@router.message(kb_in("kb.custom_timer"))
 async def handle_custom_timer_start(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     current_state = await state.get_state()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
         if not start_time:
-            await message.answer("Таймер повреждён, начните заново.", reply_markup=get_study_keyboard())
+            await message.answer(
+                t("timer.corrupted", locale),
+                reply_markup=get_study_keyboard(locale),
+            )
             await state.clear()
             return
         elapsed = (datetime.now() - start_time).total_seconds() / 60
         remaining = max(0, data["duration"] - elapsed)
         await message.answer(
-            f"⏱️ Таймер уже запущен!\n"
-            f"Осталось: {remaining:.0f} минут\n",
-            reply_markup=get_timer_active_keyboard()
+            t("timer.already_running", locale, remaining=remaining),
+            reply_markup=get_timer_active_keyboard(locale),
         )
         return
-    await message.answer("🔢 Сколько минут учиться? (5–120)")
+    await message.answer(t("timer.custom_ask", locale))
     await state.set_state(TimerStates.waiting_for_duration)
 
 @router.message(TimerStates.waiting_for_duration)
 async def process_duration(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     text = ''.join(filter(str.isdigit, message.text))
     if not text:
-        await message.answer("❌ Введите число от 5 до 120:")
+        await message.answer(t("timer.custom_invalid", locale))
         return
     duration = int(text)
     if duration < 5 or duration > 120:
-        await message.answer("⚠️ Минимум 5, максимум 120 минут. Попробуйте ещё раз:")
+        await message.answer(t("timer.custom_range", locale))
         return
-    user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
         await user_repo.create_user(
             user_id, username=message.from_user.username
         )
+        await apply_user_bot_commands(user_id)
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
     await message.answer(
-        f"⏱️ Таймер запущен на {duration} минут!\n"
-        f"Ваш питомец ждёт вашего возвращения 🐾",
-        reply_markup=get_timer_active_keyboard()
+        t("timer.started", locale, duration=duration),
+        reply_markup=get_timer_active_keyboard(locale),
     )
     await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "custom"})
     start_timer(message.chat.id, state, user_id, duration)
@@ -2830,8 +3119,12 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     duration = data["duration"]
     elapsed = (datetime.now() - start_time).total_seconds() / 60
     actual = min(int(elapsed), duration)
+    locale = await loc(user_id)
     if actual < 1:
-        await message.answer("Слишком короткая сессия, монеты не начислены.", reply_markup=get_main_keyboard())
+        await message.answer(
+            t("timer.too_short", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
         await state.clear()
         return True
     earned, bonus, session_id = await study_service.complete_session(user_id, actual)
@@ -2847,127 +3140,150 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     for ach_id in earned:
         await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
     user = await user_repo.get_user(user_id)
-    response = f"⏹️ Таймер остановлен!\n⏱️ Фактическая сессия: {actual} мин\n🪙 Получено: {actual} монет"
+    response = t("timer.stopped", locale, actual=actual)
     if bonus > 0:
-        response += f"\n✨ Бонус за достижения: +{bonus} монет"
-    response += f"\n📊 Всего монет: {user['total_coins']}"
-    await message.answer(response, reply_markup=get_main_keyboard())
+        response += t("timer.bonus", locale, bonus=bonus)
+    response += t("timer.total_coins", locale, total_coins=user["total_coins"])
+    await message.answer(response, reply_markup=get_main_keyboard(locale))
     if earned:
         await send_achievement_notification(user_id, earned)
-    await send_rating_prompt(message.chat.id, session_id)
+    await send_rating_prompt(message.chat.id, session_id, message.from_user.id)
     await state.clear()
     return True
 
 
-@router.message(TimerStates.active, F.text == "⏹️ Остановить")
+@router.message(TimerStates.active, kb_in("kb.stop_timer"))
 async def handle_stop_timer(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     if not await stop_active_timer(message, state):
-        await message.answer("Таймер уже завершён.", reply_markup=get_study_keyboard())
+        await message.answer(
+            t("timer.already_done", locale),
+            reply_markup=get_study_keyboard(locale),
+        )
 
 
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, state: FSMContext):
     """Останавливает активный таймер из любого места (например, из главного меню)."""
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     if not await stop_active_timer(message, state):
-        await message.answer("Сейчас нет активного таймера.", reply_markup=get_main_keyboard())
+        await message.answer(
+            t("timer.no_active", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
 
 
-@router.message(TimerStates.active, F.text == "⬅️ Назад в меню")
+@router.message(TimerStates.active, kb_in("kb.back_main"))
 async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
+    locale = await loc(message.from_user.id)
     await message.answer(
-        "🐾 Ты вернулся в главное меню.\n"
-        "Таймер продолжает работать в фоне — сессия завершится автоматически.\n\n"
-        "Чтобы остановить досрочно, отправь /stop.",
-        reply_markup=get_main_keyboard()
+        t("timer.back_menu", locale),
+        reply_markup=get_main_keyboard(locale),
     )
 
 # ------------------------------------------------------------
 # Квизы — общий flow: ❓ Квизы → subject picker → mode picker → режим
 # ------------------------------------------------------------
-@router.message(F.text == "❓ Квизы")
+@router.message(kb_in("kb.quizzes"))
 async def handle_quiz_menu(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    subjects = await available_subjects(user_id)
+    locale = await loc(user_id)
+    subjects = await available_subjects(user_id, locale)
     if not subjects:
         await message.answer(
-            "🚧 Пока нет учебных материалов. Загляни позже!",
-            reply_markup=get_study_keyboard(),
+            t("nav.no_materials", locale),
+            reply_markup=get_study_keyboard(locale),
         )
         return
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
-        "📖 Выбери предмет:",
-        reply_markup=await get_subject_keyboard(user_id),
+        t("nav.pick_subject", locale),
+        reply_markup=await get_subject_keyboard(user_id, locale),
     )
 
 
-@router.message(QuizStates.choosing_subject, F.text == "⬅️ Назад к учебе")
+@router.message(QuizStates.choosing_subject, kb_in("kb.back_study"))
 async def handle_subject_back_to_study(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     await state.clear()
-    await message.answer("📖 Раздел учёбы:", reply_markup=get_study_keyboard())
+    await message.answer(t("nav.study_section", locale), reply_markup=get_study_keyboard(locale))
 
 
-@router.message(QuizStates.choosing_subject, F.text.in_([label for _, label in SUBJECTS]))
+@router.message(QuizStates.choosing_subject, F.text.in_(_all_subject_button_texts()))
 async def handle_subject_picked(message: Message, state: FSMContext):
-    subject_id = next((sid for sid, label in SUBJECTS if label == message.text), None)
+    subject_id = subject_id_from_button(message.text)
     if not subject_id:
         return
     user_id = message.from_user.id
-    modes = await available_modes(subject_id, user_id)
+    locale = await loc(user_id)
+    subject_lbl = subject_label(subject_id, locale)
+    modes = await available_modes(subject_id, user_id, locale)
     if not modes:
         await message.answer(
-            f"🚧 «{message.text}» — пока нет доступных режимов.",
-            reply_markup=await get_subject_keyboard(user_id),
+            t("nav.no_modes", locale, subject=subject_lbl),
+            reply_markup=await get_subject_keyboard(user_id, locale),
         )
         return
-    await state.update_data(subject_id=subject_id, subject_label=message.text)
+    await state.update_data(subject_id=subject_id, subject_label=subject_lbl)
     await event_repo.log(user_id, "subject_picked", {"subject_id": subject_id})
     await state.set_state(QuizStates.choosing_mode)
     await message.answer(
-        f"{message.text}\nВыбери режим учёбы:",
-        reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+        t("nav.pick_mode", locale, subject_label=subject_lbl),
+        reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
     )
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Добавить карточку", callback_data=f"fc_add:{user_id}:{subject_id}")
-    kb.button(text="📇 Мои карточки", callback_data=f"fc_list:{user_id}:{subject_id}")
+    kb.button(
+        text=t("fc.add_btn", locale),
+        callback_data=f"fc_add:{user_id}:{subject_id}",
+    )
+    kb.button(
+        text=t("fc.list_btn", locale),
+        callback_data=f"fc_list:{user_id}:{subject_id}",
+    )
     kb.adjust(2)
-    await message.answer("Или управляй своими карточками:", reply_markup=kb.as_markup())
+    await message.answer(t("nav.manage_cards", locale), reply_markup=kb.as_markup())
 
 
-@router.message(QuizStates.choosing_mode, F.text == "⬅️ Назад к предметам")
+@router.message(QuizStates.choosing_mode, kb_in("kb.back_subjects"))
 async def handle_mode_back_to_subjects(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    locale = await loc(user_id)
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
-        "📖 Выбери предмет:",
-        reply_markup=await get_subject_keyboard(user_id),
+        t("nav.pick_subject", locale),
+        reply_markup=await get_subject_keyboard(user_id, locale),
     )
 
 
-@router.message(QuizStates.choosing_mode, F.text.in_([label for _, label in STUDY_MODES]))
+@router.message(QuizStates.choosing_mode, F.text.in_(_all_mode_button_texts()))
 async def handle_mode_picked(message: Message, state: FSMContext):
-    mode_id = next((mid for mid, label in STUDY_MODES if label == message.text), None)
+    mode_id = mode_id_from_button(message.text)
     if not mode_id:
         return
     data = await state.get_data()
     subject_id = data.get("subject_id")
-    subject_label = data.get("subject_label", message.text)
     user_id = message.from_user.id
+    locale = await loc(user_id)
+    subject_lbl = data.get("subject_label", subject_label(subject_id or "", locale))
     if not subject_id:
         await state.set_state(QuizStates.choosing_subject)
         await message.answer(
-            "Сначала выбери предмет:",
-            reply_markup=await get_subject_keyboard(user_id),
+            t("nav.pick_subject", locale),
+            reply_markup=await get_subject_keyboard(user_id, locale),
         )
         return
-    available = await available_modes(subject_id, user_id)
+    available = await available_modes(subject_id, user_id, locale)
     if not any(m[0] == mode_id for m in available):
         await message.answer(
-            f"🚧 «{message.text}» недоступен для этого предмета.",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+            t("nav.no_modes", locale, subject=study_mode_label(mode_id, locale)),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
         )
         return
-    await state.update_data(mode_id=mode_id, mode_label=message.text)
+    mode_lbl = study_mode_label(mode_id, locale)
+    await state.update_data(mode_id=mode_id, mode_label=mode_lbl)
     await event_repo.log(user_id, "mode_picked", {
         "mode_id": mode_id, "subject_id": subject_id,
     })
@@ -2975,19 +3291,19 @@ async def handle_mode_picked(message: Message, state: FSMContext):
     if mode_id == "situational":
         await state.set_state(QuizStates.choosing_section)
         await message.answer(
-            f"📚 {subject_label}\nВыбери раздел:",
-            reply_markup=get_quiz_section_keyboard(),
+            t("quiz.pick_section_menu", locale, subject=subject_lbl),
+            reply_markup=get_quiz_section_keyboard(locale),
         )
     elif mode_id == "mcq":
-        await start_mcq_session(message, state, subject_id, subject_label=subject_label)
+        await start_mcq_session(message, state, subject_id, subject_label=subject_lbl)
     elif mode_id == "tasks":
-        await start_task_session(message, state, subject_id, subject_label=subject_label)
+        await start_task_session(message, state, subject_id, subject_label=subject_lbl)
     elif mode_id == "flashcards":
-        await start_flashcard_session(message, state, subject_id, subject_label=subject_label)
+        await start_flashcard_session(message, state, subject_id, subject_label=subject_lbl)
     else:
         await message.answer(
-            "Что-то пошло не так. Возвращаемся к режимам.",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+            t("errors.generic", locale),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
         )
         await state.set_state(QuizStates.choosing_mode)
 
@@ -2998,10 +3314,11 @@ async def handle_mode_picked(message: Message, state: FSMContext):
 async def start_mcq_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
     questions = load_mcq(subject_id)
     user_id = message.from_user.id
+    locale = await loc(user_id)
     if not questions:
         await message.answer(
-            "🚧 Для этого предмета пока нет MCQ-вопросов.",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+            t("mcq.no_questions", locale),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -3015,9 +3332,8 @@ async def start_mcq_session(message: Message, state: FSMContext, subject_id: str
     )
     await state.set_state(QuizStates.answering_mcq)
     await message.answer(
-        f"📝 MCQ — {subject_label}\n"
-        f"Вопросов: {len(questions)}. За каждый правильный +1 🪙.",
-        reply_markup=get_mcq_active_keyboard(),
+        t("mcq.session_intro", locale, subject_label=subject_label, count=len(questions)),
+        reply_markup=get_mcq_active_keyboard(locale),
     )
     await _send_next_mcq_question(message.chat.id, state)
 
@@ -3043,9 +3359,11 @@ async def _send_next_mcq_question(chat_id: int, state: FSMContext):
         mcq_current_correct_idx=correct_idx,
         mcq_current_correct_text=q["correct"],
     )
+    uid = data.get("mcq_user_id", chat_id)
+    locale = await loc(uid)
     await bot.send_message(
         chat_id,
-        f"❓ Вопрос {idx + 1}/{len(questions)}\n\n{q['question']}",
+        t("mcq.question", locale, idx=idx + 1, total=len(questions), question=q["question"]),
         reply_markup=kb.as_markup(),
     )
 
@@ -3054,36 +3372,36 @@ async def _finish_mcq_session(chat_id: int, state: FSMContext):
     data = await state.get_data()
     correct = data.get("mcq_correct_count", 0)
     total = len(data.get("mcq_questions", []))
-    subject_label = data.get("subject_label", "")
+    subj_lbl = data.get("subject_label", "")
+    uid = data.get("mcq_user_id", chat_id)
+    locale = await loc(uid)
     logger.info(
         "mcq.session.complete user_id=%s subject=%s correct=%s total=%s coins=%s",
-        data.get("mcq_user_id"), data.get("subject_id"), correct, total, correct,
+        uid, data.get("subject_id"), correct, total, correct,
     )
     await bot.send_message(
         chat_id,
-        f"🎉 Готово! {subject_label}\n"
-        f"Правильных: {correct} из {total}\n"
-        f"🪙 Заработано: {correct} монет",
-        reply_markup=get_study_keyboard(),
+        t("mcq.done", locale, subject_label=subj_lbl, correct=correct, total=total),
+        reply_markup=get_study_keyboard(locale),
     )
     await state.clear()
 
 
-@router.message(QuizStates.answering_mcq, F.text == "🛑 Завершить")
+@router.message(QuizStates.answering_mcq, kb_in("kb.finish_session"))
 async def handle_mcq_stop(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     data = await state.get_data()
     correct = data.get("mcq_correct_count", 0)
     answered = data.get("mcq_index", 0)
     total = len(data.get("mcq_questions", []))
     logger.info(
         "mcq.session.stop user_id=%s subject=%s answered=%s/%s correct=%s",
-        message.from_user.id, data.get("subject_id"), answered, total, correct,
+        user_id, data.get("subject_id"), answered, total, correct,
     )
     await message.answer(
-        f"⏹ MCQ остановлен.\n"
-        f"Отвечено: {answered}/{total} (правильных: {correct})\n"
-        f"🪙 Получено: {correct} монет",
-        reply_markup=get_study_keyboard(),
+        t("mcq.stopped", locale, answered=answered, total=total, correct=correct),
+        reply_markup=get_study_keyboard(locale),
     )
     await state.clear()
 
@@ -3092,7 +3410,7 @@ async def handle_mcq_stop(message: Message, state: FSMContext):
 async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
     current_state = await state.get_state()
     if current_state != QuizStates.answering_mcq.state:
-        await callback.answer("Сессия завершена", show_alert=False)
+        await callback.answer(t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False)
         return
     try:
         user_idx = int(callback.data.split(":", 1)[1])
@@ -3105,7 +3423,7 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
     correct_text = data.get("mcq_current_correct_text", "")
     if correct_idx is None:
         # Не должно случиться: state без current_correct_idx
-        await callback.answer("Состояние повреждено", show_alert=True)
+        await callback.answer(t("mcq.state_broken", await loc(callback.from_user.id)), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -3126,12 +3444,12 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
         # Leaderboard: MCQ считается quiz'ом (LEADERBOARD.md §3).
         await leaderboard_repo.grant_quiz_pts_correct(user_id)
         await user_repo.add_coins(user_id, 1)
-        feedback = "✅ Верно! +1 🪙"
+        feedback = t("mcq.correct", await loc(user_id))
         await state.update_data(mcq_correct_count=data.get("mcq_correct_count", 0) + 1)
     else:
         # Wrong → сбрасываем series counter (LEADERBOARD.md §3).
         await leaderboard_repo.reset_quiz_series(user_id)
-        feedback = f"❌ Неверно.\nПравильный ответ: {correct_text}"
+        feedback = t("mcq.wrong", await loc(user_id), answer=correct_text)
 
     # Убираем inline-кнопки + дописываем feedback, чтобы повторный тап не сработал
     try:
@@ -3160,12 +3478,13 @@ MAX_TASK_ATTEMPTS = 3
 
 
 async def start_task_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
-    tasks = load_tasks(subject_id)
     user_id = message.from_user.id
+    tasks = await load_tasks_for_study(user_id, subject_id)
     if not tasks:
         await message.answer(
-            "🚧 Для этого предмета пока нет задач.",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+            "🚧 Для этого предмета пока нет задач.\n\n"
+            "Добавь свои через «⚙️ Настройки» → «📋 Мои задачи» → «➕ Загрузить .txt».",
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, await loc(user_id)),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -3188,7 +3507,7 @@ async def start_task_session(message: Message, state: FSMContext, subject_id: st
         f"📷 Задачи — {subject_label}\n"
         f"Задач: {len(tasks)}. До 3 попыток на задачу. "
         f"Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение.",
-        reply_markup=get_task_active_keyboard(),
+        reply_markup=get_task_active_keyboard(await loc(user_id)),
     )
     await _send_next_task(message.chat.id, state)
 
@@ -3202,10 +3521,28 @@ async def _send_next_task(chat_id: int, state: FSMContext):
         return
     subject_id = data.get("task_subject_id", "")
     task = tasks[idx]
+    await state.update_data(task_attempts=0)
+
+    lines = [f"📋 Задача {idx + 1}/{len(tasks)}"]
+    if task.get("problem"):
+        lines.append("")
+        lines.append(task["problem"])
+    lines.append("")
+    lines.append("✏️ Введи ответ:")
+    text = "\n".join(lines)
+
+    if task.get("kind") == "user":
+        try:
+            await bot.send_message(chat_id, text)
+        except Exception as e:
+            logger.error("task.send_text_failed task_id=%s reason=%s", task["id"], e)
+            await state.update_data(task_index=idx + 1, task_attempts=0)
+            await _send_next_task(chat_id, state)
+        return
+
     tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
     image_path = tasks_dir / f"{task['id']}.png"
     if not image_path.exists():
-        # Контент изменился во время сессии — пропускаем
         logger.warning(
             "task.image_missing_at_send task_id=%s subject=%s expected=%s",
             task["id"], subject_id, image_path.name,
@@ -3213,22 +3550,11 @@ async def _send_next_task(chat_id: int, state: FSMContext):
         await state.update_data(task_index=idx + 1, task_attempts=0)
         await _send_next_task(chat_id, state)
         return
-    # Сбрасываем счётчик попыток для новой задачи
-    await state.update_data(task_attempts=0)
-
-    caption_lines = [f"📷 Задача {idx + 1}/{len(tasks)}"]
-    if task.get("problem"):
-        caption_lines.append("")
-        caption_lines.append(task["problem"])
-    caption_lines.append("")
-    caption_lines.append("✏️ Введи ответ:")
-    caption = "\n".join(caption_lines)
 
     try:
-        await bot.send_photo(chat_id, FSInputFile(image_path), caption=caption)
+        await bot.send_photo(chat_id, FSInputFile(image_path), caption=text)
     except Exception as e:
         logger.error("task.send_photo_failed task_id=%s reason=%s", task["id"], e)
-        # На случай если бот не смог отправить фото — переходим к следующей
         await state.update_data(task_index=idx + 1, task_attempts=0)
         await _send_next_task(chat_id, state)
 
@@ -3244,18 +3570,20 @@ async def _finish_task_session(chat_id: int, state: FSMContext):
         data.get("task_user_id"), data.get("task_subject_id"),
         correct, total, coins,
     )
+    uid = data.get("task_user_id", chat_id)
+    locale = await loc(uid)
     await bot.send_message(
         chat_id,
-        f"🎉 Готово! {subject_label}\n"
-        f"Решено: {correct} из {total}\n"
-        f"🪙 Заработано: {coins} монет",
-        reply_markup=get_study_keyboard(),
+        t("task.done", locale, subject_label=subject_label, correct=correct, total=total, coins=coins),
+        reply_markup=get_study_keyboard(locale),
     )
     await state.clear()
 
 
-@router.message(QuizStates.answering_task, F.text == "🛑 Завершить")
+@router.message(QuizStates.answering_task, kb_in("kb.finish_session"))
 async def handle_task_stop(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     data = await state.get_data()
     correct = data.get("task_correct_count", 0)
     coins = data.get("task_coins_earned", 0)
@@ -3263,14 +3591,12 @@ async def handle_task_stop(message: Message, state: FSMContext):
     total = len(data.get("task_questions", []))
     logger.info(
         "task.session.stop user_id=%s subject=%s answered=%s/%s correct=%s coins=%s",
-        message.from_user.id, data.get("task_subject_id"),
+        user_id, data.get("task_subject_id"),
         idx, total, correct, coins,
     )
     await message.answer(
-        f"⏹ Задачи остановлены.\n"
-        f"Решено: {idx}/{total} (правильных: {correct})\n"
-        f"🪙 Получено: {coins} монет",
-        reply_markup=get_study_keyboard(),
+        t("task.stopped", locale, idx=idx, total=total, correct=correct, coins=coins),
+        reply_markup=get_study_keyboard(locale),
     )
     await state.clear()
 
@@ -3340,9 +3666,41 @@ async def handle_task_answer(message: Message, state: FSMContext):
 
     # 3-я неверная — открываем решение
     subject_id = data.get("task_subject_id", "")
+    correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
+    if task.get("kind") == "user":
+        hint = (task.get("hint") or "").strip()
+        solution_text = (
+            f"💡 Подсказка:\n{hint}\n\n"
+            f"Правильный ответ: {correct_answer}\n"
+            f"Монеты за эту задачу: 0 🪙"
+            if hint
+            else (
+                f"💡 Правильный ответ: {correct_answer}\n"
+                f"Монеты за эту задачу: 0 🪙"
+            )
+        )
+        await task_repo.record_attempt(
+            user_id, task["id"], attempts_used=new_attempts, succeeded=False
+        )
+        await event_repo.log(user_id, "task_attempted", {
+            "subject_id": subject_id,
+            "task_id": task["id"],
+            "attempts_used": new_attempts,
+            "succeeded": False,
+            "coins": 0,
+        })
+        logger.info(
+            "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
+            user_id, task["id"], new_attempts,
+        )
+        await message.answer(solution_text)
+        await state.update_data(task_index=idx + 1, task_attempts=0)
+        await asyncio.sleep(1.0)
+        await _send_next_task(message.chat.id, state)
+        return
+
     tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
     solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
-    correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
     # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
@@ -3405,7 +3763,8 @@ async def start_flashcard_session(message: Message, state: FSMContext, subject_i
     source = settings.get("flashcard_source", "mix")
     cards = await load_flashcards_for_study(user_id, subject_id, source)
     if not cards:
-        source_label = FLASHCARD_SOURCE_LABELS.get(source, source)
+        locale = await loc(user_id)
+        source_label = flash_source_labels(locale).get(source, source)
         hints = {
             "own": (
                 "В настройках выбран источник «Свои», но своих карточек пока нет.\n"
@@ -3424,7 +3783,7 @@ async def start_flashcard_session(message: Message, state: FSMContext, subject_i
         await message.answer(
             f"🚧 Нет карточек для учёбы (источник: {source_label}).\n\n"
             f"{hints.get(source, hints['mix'])}",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, await loc(user_id)),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
@@ -3436,7 +3795,7 @@ async def start_flashcard_session(message: Message, state: FSMContext, subject_i
         await message.answer(
             "🎉 Все карточки этого предмета уже проработаны на сегодня!\n"
             "Возвращайся позже — SM-2 покажет их, когда придёт срок повторения.",
-            reply_markup=get_study_keyboard(),
+            reply_markup=get_study_keyboard(await loc(user_id)),
         )
         return
 
@@ -3455,7 +3814,7 @@ async def start_flashcard_session(message: Message, state: FSMContext, subject_i
     await message.answer(
         f"🃏 Флэш-карты — {subject_label}\n"
         f"Алгоритм SM-2 подбирает интервалы автоматически. Будь честен с собой при оценке.",
-        reply_markup=get_flash_active_keyboard(),
+        reply_markup=get_flash_active_keyboard(await loc(user_id)),
     )
     await _send_flashcard(message.chat.id, state, next_hash)
 
@@ -3491,32 +3850,33 @@ async def _finish_flashcard_session(chat_id: int, state: FSMContext):
         data.get("flash_user_id"), data.get("flash_subject_id"),
         reviewed, coins,
     )
+    uid = data.get("flash_user_id", chat_id)
+    locale = await loc(uid)
     if reviewed == 0:
-        msg = "🎉 Все карточки уже проработаны. Возвращайся позже!"
+        msg = t("flash.all_reviewed", locale)
     else:
-        msg = (
-            f"🎉 Сессия завершена!\n{subject_label}\n"
-            f"Просмотрено карточек: {reviewed}\n"
-            f"🪙 Заработано: {coins} монет"
+        msg = t(
+            "flash.session_done", locale,
+            subject_label=subject_label, reviewed=reviewed, coins=coins,
         )
-    await bot.send_message(chat_id, msg, reply_markup=get_study_keyboard())
+    await bot.send_message(chat_id, msg, reply_markup=get_study_keyboard(locale))
     await state.clear()
 
 
-@router.message(QuizStates.answering_flash, F.text == "🛑 Завершить")
+@router.message(QuizStates.answering_flash, kb_in("kb.finish_session"))
 async def handle_flashcard_stop(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     data = await state.get_data()
     reviewed = data.get("flash_reviewed_count", 0)
     coins = data.get("flash_coins_earned", 0)
     logger.info(
         "flash.session.stop user_id=%s subject=%s reviewed=%s coins=%s",
-        message.from_user.id, data.get("flash_subject_id"), reviewed, coins,
+        user_id, data.get("flash_subject_id"), reviewed, coins,
     )
     await message.answer(
-        f"⏹ Сессия флэш-карт остановлена.\n"
-        f"Просмотрено: {reviewed}\n"
-        f"🪙 Получено: {coins} монет",
-        reply_markup=get_study_keyboard(),
+        t("flash.stopped", locale, reviewed=reviewed, coins=coins),
+        reply_markup=get_study_keyboard(locale),
     )
     await state.clear()
 
@@ -3526,13 +3886,13 @@ async def handle_flashcard_show(callback: CallbackQuery, state: FSMContext):
     """Тап «💡 Показать ответ» — открывает определение + 3-кнопочный рейтинг."""
     current_state = await state.get_state()
     if current_state != QuizStates.answering_flash.state:
-        await callback.answer("Сессия завершена", show_alert=False)
+        await callback.answer(t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False)
         return
     card_hash = callback.data.split(":", 2)[2]
     data = await state.get_data()
     card = data.get("flash_cards_by_hash", {}).get(card_hash)
     if not card:
-        await callback.answer("Карточка не найдена", show_alert=True)
+        await callback.answer(t("common.card_not_found", await loc(callback.from_user.id)), show_alert=True)
         return
 
     kb = InlineKeyboardBuilder()
@@ -3559,13 +3919,13 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
     """Тап рейтинга — применяем SM-2, начисляем монету, шлём следующую."""
     current_state = await state.get_state()
     if current_state != QuizStates.answering_flash.state:
-        await callback.answer("Сессия завершена", show_alert=False)
+        await callback.answer(t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False)
         return
     try:
         _, _, card_hash, quality_str = callback.data.split(":", 3)
         quality = int(quality_str)
     except (ValueError, IndexError):
-        await callback.answer("Сломанный callback", show_alert=True)
+        await callback.answer(t("common.broken_callback", await loc(callback.from_user.id)), show_alert=True)
         return
     if quality not in (1, 3, 5):
         await callback.answer()
@@ -3661,21 +4021,40 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
 # ============================================================
 # Situational quiz flow (existing)
 # ============================================================
-@router.message(QuizStates.choosing_section, F.text.in_([label for label, _ in QUIZ_SECTIONS]))
+@router.message(QuizStates.choosing_section, kb_in("kb.finish_quiz"))
+async def handle_quiz_exit_from_section(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    await state.clear()
+    await message.answer(
+        t("quiz.finished_saved", locale),
+        reply_markup=get_study_keyboard(locale),
+    )
+
+
+@router.message(QuizStates.choosing_section, F.text.in_(_quiz_section_label_list()))
 async def handle_quiz_section(message: Message, state: FSMContext):
-    section_map = {label: key for label, key in QUIZ_SECTIONS}
-    section_key = section_map[message.text]
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    section_key = _quiz_section_map_all().get(message.text)
+    if not section_key:
+        return
     data = await state.get_data()
     subject_id = data.get("subject_id", "industrial-management")
     terms = load_quiz_section(section_key, subject_id)
     if not terms:
-        await message.answer("Раздел не найден или пуст.", reply_markup=get_quiz_section_keyboard())
+        await message.answer(
+            t("quiz.section_empty", locale),
+            reply_markup=get_quiz_section_keyboard(locale),
+        )
         return
-    user_id = message.from_user.id
     await subject_stats_repo.bump_visit(user_id, subject_id)
     next_term = await get_next_quiz_term(user_id, terms)
     if not next_term:
-        await message.answer("🎉 Все термины раздела повторены! Отличная работа! 🏆", reply_markup=get_quiz_section_keyboard())
+        await message.answer(
+            t("quiz.section_done_great", locale),
+            reply_markup=get_quiz_section_keyboard(locale),
+        )
         return
     await state.update_data(
         current_term=next_term.to_dict(),
@@ -3684,32 +4063,39 @@ async def handle_quiz_section(message: Message, state: FSMContext):
     )
     await state.set_state(QuizStates.answering)
     await message.answer(
-        f"✏️ Раздел: {message.text}\n\n"
-        f"Напиши ДОСЛОВНОЕ определение термина:\n"
-        f"«{next_term.term}»",
-        reply_markup=get_quiz_answer_keyboard()
+        t("quiz.answer_prompt", locale, section=message.text, term=next_term.term),
+        reply_markup=get_quiz_answer_keyboard(locale),
     )
 
-@router.message(QuizStates.answering, F.text == "🛑 Завершить квиз")
+@router.message(QuizStates.answering, kb_in("kb.finish_quiz"))
 async def handle_quiz_exit(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     await state.clear()
-    await message.answer("✅ Квиз завершён. Прогресс сохранён.", reply_markup=get_study_keyboard())
+    await message.answer(
+        t("quiz.finished_saved", locale),
+        reply_markup=get_study_keyboard(locale),
+    )
 
 @router.message(QuizStates.answering)
 async def handle_quiz_answer(message: Message, state: FSMContext):
     data = await state.get_data()
     term = data.get("current_term")
+    user_id = message.from_user.id
+    locale = await loc(user_id)
     if not term:
-        await message.answer("Ошибка, начните заново.", reply_markup=get_quiz_section_keyboard())
+        await message.answer(
+            t("quiz.restart", locale),
+            reply_markup=get_quiz_section_keyboard(locale),
+        )
         await state.clear()
         return
     is_correct, feedback = check_text_answer(message.text, term["definition"], term["keywords"])
-    user_id = message.from_user.id
     progress = await get_quiz_progress(user_id, term["hash"])
     streak = progress["streak"]
     if is_correct:
         streak += 1
-        feedback += f"\n\n🔥 Термин будет повторён через {quiz_interval_days(streak)} дн."
+        feedback += t("quiz.repeat_in_days", locale, days=quiz_interval_days(streak))
         # Leaderboard: 5 pts + возможный series-bonus (LEADERBOARD.md §3).
         await leaderboard_repo.grant_quiz_pts_correct(user_id)
     else:
@@ -3731,13 +4117,14 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
     if next_term:
         await state.update_data(current_term=next_term.to_dict())
         await message.answer(
-            f"✏️ Раздел: {data['section_name']}\n\n"
-            f"Напиши ДОСЛОВНОЕ определение термина:\n"
-            f"«{next_term.term}»",
-            reply_markup=get_quiz_answer_keyboard()
+            t("quiz.answer_prompt", locale, section=data["section_name"], term=next_term.term),
+            reply_markup=get_quiz_answer_keyboard(locale),
         )
     else:
-        await message.answer("🎉 Все термины раздела повторены! Ты молодец!", reply_markup=get_quiz_section_keyboard())
+        await message.answer(
+            t("quiz.section_done", locale),
+            reply_markup=get_quiz_section_keyboard(locale),
+        )
         await state.clear()
 
 # ------------------------------------------------------------
@@ -3746,12 +4133,13 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
 def _format_tip_message(
     category: str,
     tip: dict,
+    locale: str,
     *,
     page: int | None = None,
     total: int | None = None,
 ) -> str:
     """HTML: жирный заголовок, тело, строка «Попробуй сегодня»."""
-    meta = TIP_CATEGORIES[category]
+    meta = _tip_cats(locale)[category]
     emoji = tip.get("emoji") or meta["emoji"]
     title = html_escape(tip["title"])
     body = html_escape(tip["body"])
@@ -3764,40 +4152,41 @@ def _format_tip_message(
         lines = [header, "", body]
     action = (tip.get("action") or "").strip()
     if action:
-        lines.extend(["", f"💡 <i>Попробуй сегодня:</i> {html_escape(action)}"])
+        lines.extend(["", t("tips.try_today", locale, action=html_escape(action))])
     return "\n".join(lines)
 
 
 def _tips_inline_keyboard(
     category: str,
+    locale: str,
     *,
     list_page: int | None = None,
     list_total: int | None = None,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if list_page is None:
-        kb.button(text="🔄 Ещё совет", callback_data=f"tips:more:{category}")
-        kb.button(text="📋 Все советы", callback_data=f"tips:list:{category}:0")
-        kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+        kb.button(text=t("tips.more", locale), callback_data=f"tips:more:{category}")
+        kb.button(text=t("tips.all", locale), callback_data=f"tips:list:{category}:0")
+        kb.button(text=t("tips.back_categories", locale), callback_data="tips:menu")
         kb.adjust(2, 1)
     else:
         if list_page > 0:
             kb.button(text="◀️", callback_data=f"tips:list:{category}:{list_page - 1}")
-        kb.button(text="🔄 Случайный", callback_data=f"tips:more:{category}")
+        kb.button(text=t("tips.random", locale), callback_data=f"tips:more:{category}")
         if list_total and list_page < list_total - 1:
             kb.button(text="▶️", callback_data=f"tips:list:{category}:{list_page + 1}")
-        kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+        kb.button(text=t("tips.back_categories", locale), callback_data="tips:menu")
         kb.adjust(3, 1)
     return kb.as_markup()
 
 
-def _productivity_links_keyboard() -> InlineKeyboardMarkup:
+def _productivity_links_keyboard(locale: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for link in PRODUCTIVITY_LINKS:
         title = link["title"]
         label = title if len(title) <= 64 else f"{title[:61]}…"
         kb.button(text=label, url=link["url"])
-    kb.button(text="⬅️ К категориям", callback_data="tips:menu")
+    kb.button(text=t("tips.back_categories", locale), callback_data="tips:menu")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -3815,9 +4204,9 @@ def _category_key_from_tip_id(tip_id: str) -> str:
     return tip_id.split("-", 1)[0] if tip_id and "-" in tip_id else "tm"
 
 
-def _all_tips_flat() -> list[dict]:
+def _all_tips_flat(locale: str = "ru") -> list[dict]:
     out: list[dict] = []
-    for meta in TIP_CATEGORIES.values():
+    for meta in _tip_cats(locale).values():
         out.extend(meta["tips"])
     return out
 
@@ -3835,9 +4224,9 @@ async def _preferred_tip_tags(user_id: int) -> set[str]:
     return tags
 
 
-async def _pick_tip(user_id: int, category: str) -> dict | None:
+async def _pick_tip(user_id: int, category: str, locale: str) -> dict | None:
     """Совет с учётом cooldown (7 дн.) и контекста (таймер, стрик, карточки)."""
-    tips = TIP_CATEGORIES.get(category, {}).get("tips", [])
+    tips = _tip_cats(locale).get(category, {}).get("tips", [])
     if not tips:
         return None
     seen = await tips_repo.get_recently_seen_tip_ids(user_id, TIPS_SEEN_COOLDOWN_DAYS)
@@ -3852,21 +4241,23 @@ async def _pick_tip(user_id: int, category: str) -> dict | None:
 
 async def build_morning_tip_block(user_id: int, tz: str) -> str:
     """HTML-блок «совет дня» для утреннего напоминания."""
+    locale = await loc(user_id)
     user = await user_repo.get_user(user_id)
     local_date = _user_local_date_str(user)
-    tip = await tips_repo.resolve_tip_of_day(user_id, local_date, _all_tips_flat())
+    tip = await tips_repo.resolve_tip_of_day(user_id, local_date, _all_tips_flat(locale))
     if not tip:
         return ""
     cat_key = _category_key_from_tip_id(tip["id"])
-    if cat_key not in TIP_CATEGORIES:
+    if cat_key not in _tip_cats(locale):
         cat_key = "tm"
-    body = _format_tip_message(cat_key, tip)
-    return f"\n\n———\n🌟 <b>Совет дня</b>\n\n{body}"
+    body = _format_tip_message(cat_key, tip, locale)
+    return t("reminders.tip_of_day_header", locale) + body
 
 
 async def _on_tip_viewed(user_id: int, category: str, tip_id: str | None = None) -> str:
     """Монета за первый совет дня, ачивка за 10 советов, событие tip_viewed."""
-    if category not in TIP_CATEGORIES:
+    locale = await loc(user_id)
+    if category not in _tip_cats(locale):
         return ""
     if tip_id:
         await tips_repo.record_seen(user_id, tip_id)
@@ -3894,24 +4285,27 @@ async def _on_tip_viewed(user_id: int, category: str, tip_id: str | None = None)
 
     lines: list[str] = []
     if coin_granted:
-        lines.append(f"\n\n+{TIP_COIN_PER_DAY} 🪙 за совет сегодня")
+        lines.append(t("tips.coin_today", locale, coins=TIP_COIN_PER_DAY))
     if new_ach:
-        tip_reward = ACHIEVEMENTS.get("10_tips_read", {}).get("reward", 30)
-        lines.append(f"\n🏆 Достижение «Любознательный» — +{tip_reward} 🪙")
+        catalog = load_achievements_catalog(locale)
+        tip_reward = catalog.get("10_tips_read", {}).get("reward", 30)
+        lines.append(t("tips.achievement_curiosity", locale, reward=tip_reward))
     elif total_views < 10:
-        lines.append(f"\n\n📊 Прочитано советов: {total_views}/10")
+        lines.append(t("tips.read_count", locale, count=total_views))
     return "".join(lines)
 
 
 async def _send_random_tip(message: Message, category: str) -> None:
-    tip = await _pick_tip(message.from_user.id, category)
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    tip = await _pick_tip(user_id, category, locale)
     if not tip:
-        await message.answer("Советы пока не загружены.")
+        await message.answer(t("tips.not_loaded", locale))
         return
-    suffix = await _on_tip_viewed(message.from_user.id, category, tip.get("id"))
+    suffix = await _on_tip_viewed(user_id, category, tip.get("id"))
     await message.answer(
-        _format_tip_message(category, tip) + suffix,
-        reply_markup=_tips_inline_keyboard(category),
+        _format_tip_message(category, tip, locale) + suffix,
+        reply_markup=_tips_inline_keyboard(category, locale),
         parse_mode="HTML",
     )
 
@@ -3923,14 +4317,16 @@ async def _edit_or_send_tip(
     *,
     page: int | None = None,
 ) -> None:
-    tips = TIP_CATEGORIES[category]["tips"]
+    locale = await loc(callback.from_user.id)
+    tips = _tip_cats(locale)[category]["tips"]
     total = len(tips)
     suffix = await _on_tip_viewed(callback.from_user.id, category, tip.get("id"))
     body = _format_tip_message(
-        category, tip, page=page, total=total if page is not None else None,
+        category, tip, locale, page=page, total=total if page is not None else None,
     ) + suffix
     markup = _tips_inline_keyboard(
         category,
+        locale,
         list_page=page,
         list_total=total if page is not None else None,
     )
@@ -3940,57 +4336,61 @@ async def _edit_or_send_tip(
         await callback.message.answer(body, reply_markup=markup, parse_mode="HTML")
 
 
-@router.message(F.text == "🎓 Советы для продуктивности")
+@router.message(kb_in("kb.tips"))
 async def handle_tips_menu(message: Message):
-    await message.answer("📚 Выберите категорию:", reply_markup=get_tips_keyboard())
+    locale = await loc(message.from_user.id)
+    await message.answer(t("tips.menu", locale), reply_markup=get_tips_keyboard(locale))
 
 
-@router.message(F.text == "⏰ Тайм-менеджмент")
+@router.message(kb_in("kb.tips_time_mgmt"))
 async def handle_time_management(message: Message):
     await _send_random_tip(message, "tm")
 
 
-@router.message(F.text == "🧠 Техники запоминания")
+@router.message(kb_in("kb.tips_memory"))
 async def handle_memory_retention(message: Message):
     await _send_random_tip(message, "mem")
 
 
-@router.message(F.text == "🎯 Как пользоваться ботом")
+@router.message(kb_in("kb.tips_bot_guide"))
 async def handle_bot_guide_tips(message: Message):
     await _send_random_tip(message, "bot")
 
 
-@router.message(F.text == "🔗 Ссылки на статьи и книги")
+@router.message(kb_in("kb.tips_links"))
 async def handle_links(message: Message):
+    locale = await loc(message.from_user.id)
     if not PRODUCTIVITY_LINKS:
-        await message.answer("Файл со ссылками пуст.")
+        await message.answer(t("tips.links_empty", locale))
         return
     await message.answer(
-        "📚 Полезные материалы — нажми кнопку, чтобы открыть:",
-        reply_markup=_productivity_links_keyboard(),
+        t("tips.links_title", locale),
+        reply_markup=_productivity_links_keyboard(locale),
     )
 
 
 @router.callback_query(F.data.startswith("tips:more:"))
 async def handle_tips_more(callback: CallbackQuery):
+    locale = await loc(callback.from_user.id)
     category = callback.data.split(":", 2)[2]
-    if category not in TIP_CATEGORIES:
-        await callback.answer("Неизвестная категория", show_alert=True)
+    if category not in _tip_cats(locale):
+        await callback.answer(t("tips.unknown_category", locale), show_alert=True)
         return
-    tips = TIP_CATEGORIES[category]["tips"]
+    tips = _tip_cats(locale)[category]["tips"]
     if not tips:
-        await callback.answer("Советы пусты", show_alert=True)
+        await callback.answer(t("tips.empty_category", locale), show_alert=True)
         return
     await callback.answer()
-    tip = await _pick_tip(callback.from_user.id, category)
+    tip = await _pick_tip(callback.from_user.id, category, locale)
     if not tip:
-        await callback.answer("Советы пусты", show_alert=True)
+        await callback.answer(t("tips.empty_category", locale), show_alert=True)
         return
     await _edit_or_send_tip(callback, category, tip)
 
 
 @router.callback_query(F.data.startswith("tips:list:"))
 async def handle_tips_list(callback: CallbackQuery):
+    locale = await loc(callback.from_user.id)
     parts = callback.data.split(":")
     if len(parts) != 4:
         await callback.answer()
@@ -4001,12 +4401,12 @@ async def handle_tips_list(callback: CallbackQuery):
     except ValueError:
         await callback.answer()
         return
-    if category not in TIP_CATEGORIES:
-        await callback.answer("Неизвестная категория", show_alert=True)
+    if category not in _tip_cats(locale):
+        await callback.answer(t("tips.unknown_category", locale), show_alert=True)
         return
-    tips = TIP_CATEGORIES[category]["tips"]
+    tips = _tip_cats(locale)[category]["tips"]
     if not tips:
-        await callback.answer("Советы пусты", show_alert=True)
+        await callback.answer(t("tips.empty_category", locale), show_alert=True)
         return
     page = max(0, min(page, len(tips) - 1))
     await callback.answer()
@@ -4015,8 +4415,9 @@ async def handle_tips_list(callback: CallbackQuery):
 
 @router.callback_query(F.data == "tips:menu")
 async def handle_tips_menu_callback(callback: CallbackQuery):
+    locale = await loc(callback.from_user.id)
     await callback.answer()
-    await callback.message.answer("📚 Выберите категорию:", reply_markup=get_tips_keyboard())
+    await callback.message.answer(t("tips.menu", locale), reply_markup=get_tips_keyboard(locale))
 
 # ------------------------------------------------------------
 # Админка и обратная связь
@@ -4938,7 +5339,7 @@ def _build_analytics_export_menu_keyboard() -> InlineKeyboardMarkup:
 async def _anlt_check_admin(callback: CallbackQuery) -> bool:
     """Анти-spoof: callbacks из /analytics доступны только админам."""
     if not is_admin(callback.from_user.id):
-        await callback.answer("Только для админов", show_alert=True)
+        await callback.answer(t("common.admin_only", await loc(callback.from_user.id)), show_alert=True)
         return False
     return True
 
@@ -5177,7 +5578,7 @@ async def handle_anlt_export_table(callback: CallbackQuery):
         await callback.answer("📦 ZIP sent")
         return
     if alias not in AnalyticsService.EXPORTABLE_TABLES:
-        await callback.answer("Неизвестная таблица", show_alert=True)
+        await callback.answer(t("common.unknown_table", await loc(callback.from_user.id)), show_alert=True)
         return
     try:
         csv_bytes, row_count = await analytics_service.export_table_csv(alias)
@@ -5788,15 +6189,20 @@ async def pet_back_to_profile(callback: CallbackQuery):
     inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
     inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
     inline_kb.adjust(2, 1, 1, 1, 1)
+    locale = await loc(user_id)
+    last_session = user.get("last_session") or t("profile.never", locale)
     await bot.send_message(
         callback.message.chat.id,
-        f"📊 Твой профиль:\n"
-        f"🆔 ID: {user_id}\n"
-        f"📚 Всего сессий: {user['total_sessions']}\n"
-        f"💰 Всего монет: {user['total_coins']} 🪙\n"
-        f"🔥 Стрик: {user['current_streak']} дней подряд\n"
-        f"⏱️ Последняя сессия: {user.get('last_session', 'никогда')}\n\n"
-        f"🐾 Твой питомец: {get_pet_emotion(user['current_streak'])}",
+        t(
+            "profile.title",
+            locale,
+            user_id=user_id,
+            total_sessions=user["total_sessions"],
+            total_coins=user["total_coins"],
+            current_streak=user["current_streak"],
+            last_session=last_session,
+            pet_emotion=get_pet_emotion(user["current_streak"], locale),
+        ),
         reply_markup=inline_kb.as_markup(),
     )
 
@@ -5805,9 +6211,10 @@ async def pet_back_to_profile(callback: CallbackQuery):
 # Friends system (Phase 4 / LEADERBOARD.md §Segments → Friends)
 # ============================================================
 def _friends_menu_keyboard(user_id: int, pending_count: int = 0) -> InlineKeyboardMarkup:
-    """Inline-клавиатура для friends-tab: 3 действия + опциональный badge на pending."""
+    """Inline-клавиатура для friends-tab: add / invite-link / pending / remove."""
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить друга", callback_data=f"friend_add_start:{user_id}")
+    kb.button(text="🔗 Пригласить по ссылке", callback_data=f"friend_share_link:{user_id}")
     pending_label = (
         f"📩 Запросы ({pending_count})" if pending_count > 0 else "📩 Запросы"
     )
@@ -5817,32 +6224,67 @@ def _friends_menu_keyboard(user_id: int, pending_count: int = 0) -> InlineKeyboa
     return kb.as_markup()
 
 
+async def _build_friend_invite_message(user_id: int) -> str | None:
+    """
+    Создаёт invite-token и возвращает HTML-текст с deep-link
+    (t.me/Bot?start=friend_<token>). None — если @username бота недоступен.
+    """
+    if not bot_username:
+        return None
+    token = await friend_repo.create_invite_token(user_id)
+    link = f"https://t.me/{bot_username}?start=friend_{token}"
+    return (
+        f"👥 <b>Поделись этой ссылкой с друзьями:</b>\n\n"
+        f"<code>{link}</code>\n\n"
+        f"Кто откроет ссылку — автоматически станет твоим другом 🎉\n"
+        f"Срок действия: 3 дня."
+    )
+
+
+_BOT_USERNAME_UNAVAILABLE = (
+    "⚠️ Бот ещё не определил свой @username (не удалось получить "
+    "его при старте). Попробуй позже."
+)
+
+
 @router.message(Command("share_friend"))
 async def cmd_share_friend(message: Message):
     """
     Создаёт invite-token и шлёт пользователю deep-link, которым тот
     может поделиться. Кто откроет ссылку — автоматически становится
-    другом (skip pending). 30-day TTL, multiuse.
+    другом (skip pending). 3-day TTL, multiuse.
     """
     user_id = message.from_user.id
     if not await user_repo.user_exists(user_id):
         await message.answer("Сначала отправь /start.")
         return
-    if not bot_username:
-        await message.answer(
-            "⚠️ Бот ещё не определил свой @username (не удалось получить "
-            "его при старте). Попробуй позже."
-        )
+    invite_text = await _build_friend_invite_message(user_id)
+    if invite_text is None:
+        await message.answer(_BOT_USERNAME_UNAVAILABLE)
         return
-    token = await friend_repo.create_invite_token(user_id)
-    link = f"https://t.me/{bot_username}?start=friend_{token}"
-    await message.answer(
-        f"👥 <b>Поделись этой ссылкой с друзьями:</b>\n\n"
-        f"<code>{link}</code>\n\n"
-        f"Кто откроет ссылку — автоматически станет твоим другом 🎉\n"
-        f"Срок действия: 30 дней.",
-        parse_mode="HTML",
-    )
+    await message.answer(invite_text, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("friend_share_link:"))
+async def friend_share_link(callback: CallbackQuery):
+    """Кнопка «Пригласить по ссылке» в friends-tab."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    invite_text = await _build_friend_invite_message(user_id)
+    if invite_text is None:
+        await callback.message.answer(_BOT_USERNAME_UNAVAILABLE)
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ К друзьям", callback_data=f"friends_back:{user_id}")
+    try:
+        await callback.message.edit_text(
+            invite_text,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup(),
+        )
+    except Exception as e:
+        logger.warning("friends.share_link_render_failed user=%s err=%s", user_id, e)
+        await callback.message.answer(invite_text, parse_mode="HTML")
 
 
 @router.message(Command("friends"))
@@ -6066,7 +6508,7 @@ async def friend_accept(callback: CallbackQuery):
         return
     accepted = await friend_repo.accept_request(from_uid, me)
     if not accepted:
-        await callback.answer("Запрос уже не активен.", show_alert=True)
+        await callback.answer(t("common.request_inactive", await loc(callback.from_user.id)), show_alert=True)
     else:
         await event_repo.log(
             me,
@@ -6265,19 +6707,31 @@ async def cmd_help(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
-@router.message(F.text.in_(["📚 Учеба", "⬅️ Назад к учебе"]))
+@router.message(kb_in("kb.study", "kb.back_study"))
 async def handle_back_to_study(message: Message):
-    await message.answer("📖 Раздел учёбы:", reply_markup=get_study_keyboard())
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    await message.answer(t("nav.study_section", locale), reply_markup=get_study_keyboard(locale))
 
-@router.message(F.text == "🏠 Назад в меню")
+@router.message(kb_in("kb.back_main"))
 async def handle_back_to_main(message: Message):
-    await message.answer("🐾 Главное меню", reply_markup=get_main_keyboard())
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
 
 @router.message()
 async def handle_any_message(message: Message):
     user_id = message.from_user.id
     if is_admin(user_id):
         await message.answer("Используйте /reply для ответа пользователям.")
+        return
+    locale = await loc(user_id)
+    if admin_message_limiter.check(user_id) == "block":
+        logger.info("admin_message.ratelimited user_id=%s", user_id)
+        await message.answer(
+            t("support.rate_limited", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
         return
     user_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -6302,9 +6756,8 @@ async def handle_any_message(message: Message):
         except Exception:
             pass
     await message.answer(
-        "✅ Твое сообщение отправлено! Администратор ответит в ближайшее время.\n\n"
-        "А пока можешь продолжить учиться — выбери Учеба в меню ниже 👇",
-        reply_markup=get_main_keyboard()
+        t("support.message_sent", locale),
+        reply_markup=get_main_keyboard(locale),
     )
 
 # ------------------------------------------------------------
@@ -6378,14 +6831,12 @@ async def reconcile_stale_timers():
                     await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
                 try:
                     user = await user_repo.get_user(user_id)
-                    msg = (
-                        f"🎉 Таймер на {duration} мин завершился, пока бот был офлайн.\n"
-                        f"🪙 Получено: {duration} монет"
-                    )
+                    locale = await loc(user_id)
+                    msg = t("timer.reconcile_finished", locale, duration=duration)
                     if bonus > 0:
-                        msg += f"\n✨ Бонус за достижения: +{bonus} монет"
-                    msg += f"\n📊 Всего монет: {user['total_coins']}"
-                    await bot.send_message(chat_id, msg, reply_markup=get_main_keyboard())
+                        msg += t("timer.bonus", locale, bonus=bonus)
+                    msg += t("timer.total_coins", locale, total_coins=user["total_coins"])
+                    await bot.send_message(chat_id, msg, reply_markup=get_main_keyboard(locale))
                     if earned:
                         await send_achievement_notification(user_id, earned)
                 except TelegramForbiddenError:
@@ -6417,11 +6868,11 @@ async def reconcile_stale_timers():
                     user_id, duration, elapsed, remaining_min,
                 )
                 try:
+                    resume_locale = await loc(user_id)
                     await bot.send_message(
                         chat_id,
-                        f"♻️ Бот перезапустился — но твой таймер продолжается!\n"
-                        f"⏱️ Осталось: {remaining_min} мин",
-                        reply_markup=get_timer_active_keyboard(),
+                        t("timer.reconcile_resumed", resume_locale, remaining=remaining_min),
+                        reply_markup=get_timer_active_keyboard(resume_locale),
                     )
                 except TelegramForbiddenError:
                     logger.info("reconcile.notify_failed user_id=%s reason=blocked", user_id)
@@ -6443,7 +6894,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -6451,6 +6902,7 @@ async def main():
     admin_repo = AdminRepository(db)
     flashcard_repo = FlashcardRepository(db)
     user_flashcard_repo = UserFlashcardRepository(db)
+    user_task_repo = UserTaskRepository(db)
     mcq_repo = McqProgressRepository(db)
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)

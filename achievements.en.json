@@ -1,0 +1,72 @@
+{
+  "10_tips_read": {
+    "name": "Curious",
+    "description": "Read 10 productivity tips",
+    "reward": 30,
+    "icon": "💡",
+    "page": 1
+  },
+  "first_session": {
+    "name": "First step",
+    "description": "Complete your first study session",
+    "reward": 25,
+    "icon": "🐣",
+    "page": 1
+  },
+  "3_day_streak": {
+    "name": "On fire",
+    "description": "3 days in a row without missing",
+    "reward": 50,
+    "icon": "🔥",
+    "page": 1
+  },
+  "100_minutes": {
+    "name": "Marathoner",
+    "description": "Reach 100 total study minutes",
+    "reward": 75,
+    "icon": "🏃",
+    "page": 1
+  },
+  "10_sessions": {
+    "name": "Tenth step",
+    "description": "Complete your tenth study session",
+    "reward": 50,
+    "icon": "🔟",
+    "page": 2
+  },
+  "7_day_streak": {
+    "name": "Week of fire",
+    "description": "7 days in a row without missing",
+    "reward": 75,
+    "icon": "📅",
+    "page": 2
+  },
+  "300_minutes": {
+    "name": "Marathon",
+    "description": "Reach 300 total study minutes",
+    "reward": 100,
+    "icon": "🏅",
+    "page": 2
+  },
+  "30_sessions": {
+    "name": "Thirtieth step",
+    "description": "Complete 30 study sessions",
+    "reward": 75,
+    "icon": "🎯",
+    "page": 3
+  },
+  "14_day_streak": {
+    "name": "Two weeks of fire",
+    "description": "14 days in a row without missing",
+    "reward": 100,
+    "icon": "🔥🔥",
+    "page": 3
+  },
+  "750_minutes": {
+    "name": "Ultramarathon",
+    "description": "Reach 750 total study minutes",
+    "reward": 125,
+    "icon": "🚀",
+    "page": 3
+  }
+}

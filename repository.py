@@ -1,4 +1,5 @@
 # repository.py
+import json
 import math
 
 import aiosqlite
@@ -147,6 +148,22 @@ class UserRepository:
         await self.db.execute(
             "UPDATE users SET timezone = ? WHERE user_id = ?",
             (tz, user_id),
+        )
+        await self.db.commit()
+
+    async def get_locale(self, user_id: int) -> str:
+        """UI locale: 'ru', 'en' или '' если пользователь ещё не выбирал."""
+        async with self.db.execute(
+            "SELECT locale FROM users WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return (row["locale"] or "") if row else ""
+
+    async def set_locale(self, user_id: int, locale: str) -> None:
+        await self.db.execute(
+            "UPDATE users SET locale = ? WHERE user_id = ?",
+            (locale, user_id),
         )
         await self.db.commit()
 
@@ -475,6 +492,98 @@ class UserFlashcardRepository:
         await self.db.execute(
             "DELETE FROM flashcard_progress WHERE user_id = ? AND card_hash = ?",
             (user_id, card_hash),
+        )
+        await self.db.commit()
+        return True
+
+
+class UserTaskRepository:
+    """
+    CRUD пользовательских задач (текст без картинки).
+    task_id для прогресса: префикс 't' + 7 hex от id.
+    """
+
+    MAX_PER_SUBJECT = 50
+
+    @staticmethod
+    def task_id(db_id: int) -> str:
+        return f"t{db_id:07x}"
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def count_by_subject(self, user_id: int, subject_id: str) -> int:
+        async with self.db.execute(
+            "SELECT COUNT(*) FROM user_tasks WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def list_by_subject(self, user_id: int, subject_id: str) -> list[dict]:
+        async with self.db.execute(
+            "SELECT id, problem, accepted, hint FROM user_tasks "
+            "WHERE user_id = ? AND subject_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (user_id, subject_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            accepted = json.loads(row["accepted"])
+            tid = self.task_id(row["id"])
+            result.append({
+                "id": tid,
+                "problem": row["problem"],
+                "accepted": accepted,
+                "hint": row["hint"] or "",
+                "kind": "user",
+            })
+        return result
+
+    async def bulk_create(
+        self, user_id: int, subject_id: str, tasks: list[dict]
+    ) -> tuple[int, str | None]:
+        """
+        Добавляет список задач [{problem, accepted, hint?}].
+        Возвращает (added_count, error_code).
+        error_code: 'limit_exceeded' | None
+        """
+        if not tasks:
+            return 0, None
+        current = await self.count_by_subject(user_id, subject_id)
+        if current + len(tasks) > self.MAX_PER_SUBJECT:
+            return 0, "limit_exceeded"
+        added = 0
+        for task in tasks:
+            accepted_json = json.dumps(task["accepted"], ensure_ascii=False)
+            await self.db.execute(
+                "INSERT INTO user_tasks (user_id, subject_id, problem, accepted, hint) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    subject_id,
+                    task["problem"],
+                    accepted_json,
+                    task.get("hint") or None,
+                ),
+            )
+            added += 1
+        await self.db.commit()
+        return added, None
+
+    async def delete(self, user_id: int, db_id: int) -> bool:
+        tid = self.task_id(db_id)
+        cursor = await self.db.execute(
+            "DELETE FROM user_tasks WHERE user_id = ? AND id = ?",
+            (user_id, db_id),
+        )
+        if cursor.rowcount == 0:
+            await self.db.commit()
+            return False
+        await self.db.execute(
+            "DELETE FROM task_progress WHERE user_id = ? AND task_id = ?",
+            (user_id, tid),
         )
         await self.db.commit()
         return True
@@ -1950,7 +2059,7 @@ class FriendRepository:
     # ------------------------------------------------------------
     async def create_invite_token(self, from_uid: int) -> str:
         """
-        Создаёт новый invite-token для пользователя. TTL 30 дней.
+        Создаёт новый invite-token для пользователя. TTL 3 дня.
         Multiuse: токен можно отдать многим людям, каждый клик → новая
         дружба. Возвращает сам токен (URL-safe строка ~16 символов).
         """
@@ -1958,7 +2067,7 @@ class FriendRepository:
         token = secrets.token_urlsafe(12)
         await self.db.execute(
             "INSERT INTO friend_invite_tokens (token, from_user_id, expires_at) "
-            "VALUES (?, ?, datetime('now', '+30 days'))",
+            "VALUES (?, ?, datetime('now', '+3 days'))",
             (token, from_uid),
         )
         await self.db.commit()

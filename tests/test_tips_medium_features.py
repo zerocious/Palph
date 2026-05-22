@@ -26,7 +26,7 @@ class TestTipsSeenCooldown:
         await tips_repo.record_seen(created_user, tips[0]["id"])
         monkeypatch.setattr(bot, "tips_repo", tips_repo)
         monkeypatch.setattr(bot, "user_repo", user_repo)
-        picked = await bot._pick_tip(created_user, "tm")
+        picked = await bot._pick_tip(created_user, "tm", "ru")
         assert picked["id"] != tips[0]["id"]
 
 
@@ -72,5 +72,6 @@ class TestBotGuideCategory:
         assert "bot" in bot.TIP_CATEGORIES
 
     def test_tips_keyboard_has_bot_button(self):
-        texts = [btn.text for row in bot.get_tips_keyboard().keyboard for btn in row]
-        assert "🎯 Как пользоваться ботом" in texts
+        from i18n import t
+        texts = [btn.text for row in bot.get_tips_keyboard("ru").keyboard for btn in row]
+        assert t("kb.tips_bot_guide", "ru") in texts

@@ -299,7 +299,7 @@ async def init_db(db: aiosqlite.Connection):
 
         -- Friend invite tokens — Telegram deep-link «t.me/Bot?start=friend_<token>».
         -- Создаются через /share_friend, multiuse (один токен → много друзей),
-        -- expires_at = created_at + 30 days. При клике на ссылку invitee
+        -- expires_at = created_at + 3 days. При клике на ссылку invitee
         -- автоматически становится другом creator'а (skip pending state),
         -- т.к. ссылка = consent от creator, click = consent от invitee.
         -- BACKLOG → ship 2026-05-19.
@@ -324,6 +324,19 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_user_flashcards_lookup
             ON user_flashcards(user_id, subject_id);
+
+        -- Пользовательские задачи (текст, без картинки; импорт из .txt).
+        CREATE TABLE IF NOT EXISTS user_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            subject_id TEXT NOT NULL,
+            problem TEXT NOT NULL,
+            accepted TEXT NOT NULL,
+            hint TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_tasks_lookup
+            ON user_tasks(user_id, subject_id);
 
         -- Статистика просмотров советов по продуктивности (геймификация).
         CREATE TABLE IF NOT EXISTS user_tips_stats (
@@ -392,6 +405,15 @@ async def init_db(db: aiosqlite.Connection):
     try:
         await db.execute(
             "ALTER TABLE users ADD COLUMN last_streak_check_date TEXT"
+        )
+        await db.commit()
+    except Exception:
+        pass  # колонка уже есть
+
+    # UI locale: ru | en (пусто = ещё не выбран при первом /start).
+    try:
+        await db.execute(
+            "ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT ''"
         )
         await db.commit()
     except Exception:

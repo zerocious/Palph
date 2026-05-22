@@ -1,0 +1,1355 @@
+"""Generate locales/ru.json and locales/en.json from bot UI strings."""
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+LOCALES = ROOT / "locales"
+
+USER_TASK_INSTRUCTION_RU = """📋 <b>Как добавить свои задачи из .txt</b>
+
+<b>Формат файла</b> (кодировка UTF-8, расширение .txt):
+
+Каждая задача — <b>одна строка</b>:
+<code>вопрос || ответ | другой ответ</code>
+
+Разделитель <code>||</code> между условием и ответами.
+Несколько правильных ответов — через <code>|</code>.
+
+<b>Примеры:</b>
+<code>2+2 сколько? || 4 | четыре</code>
+<code>Метод фотографии рабочего времени? || фотография | фото</code>
+
+<b>Подсказка</b> (необязательно), после ответов через <code>##</code>:
+<code>Сколько планет? || 8 ## В Солнечной системе 8 планет</code>
+
+<b>Комментарии</b> — строка начинается с <code>#</code>
+Пустые строки пропускаются.
+
+<b>Лимиты:</b> до 50 задач на предмет, файл до 64 КБ.
+
+<b>Уже есть текст задач?</b> Скопируй промпт ниже в ChatGPT, Claude или другую нейросеть, замени <code>ВСТАВЬ_СЮДА_СВОЙ_ТЕКСТ</code> на свой материал, сохрани ответ в .txt (UTF-8) и отправь файл сюда.
+
+<pre>Преобразуй учебные задачи ниже в формат для Telegram-бота.
+
+Правила вывода (строго):
+- Одна задача = одна строка текста
+- Формат строки: вопрос || ответ1 | ответ2
+- Между вопросом и ответами ровно два символа ||
+- Несколько правильных ответов разделяй одним символом |
+- Подсказка (если есть в исходнике): после ответов через ## текст подсказки
+- Без нумерации, маркеров, заголовков и пустых строк
+- Без пояснений — выведи только готовые строки задач
+
+Пример строки:
+2+2 сколько? || 4 | четыре
+
+Исходный текст задач:
+---
+ВСТАВЬ_СЮДА_СВОЙ_ТЕКСТ
+---</pre>
+
+Отправь готовый .txt файл в этот чат.
+Для отмены — /cancel"""
+
+USER_TASK_INSTRUCTION_EN = """📋 <b>How to add your own tasks from a .txt file</b>
+
+<b>File format</b> (UTF-8 encoding, .txt extension):
+
+Each task is <b>one line</b>:
+<code>question || answer | other answer</code>
+
+Use <code>||</code> between the prompt and answers.
+Multiple correct answers are separated by <code>|</code>.
+
+<b>Examples:</b>
+<code>What is 2+2? || 4 | four</code>
+<code>Work sampling method? || photography | photo</code>
+
+<b>Hint</b> (optional), after answers with <code>##</code>:
+<code>How many planets? || 8 ## There are 8 planets in the Solar System</code>
+
+<b>Comments</b> — lines starting with <code>#</code>
+Empty lines are ignored.
+
+<b>Limits:</b> up to 50 tasks per subject, file up to 64 KB.
+
+<b>Already have task text?</b> Copy the prompt below into ChatGPT, Claude, or another AI, replace <code>PASTE_YOUR_TEXT_HERE</code> with your material, save the reply as .txt (UTF-8), and send the file here.
+
+<pre>Convert the study tasks below into the format for this Telegram bot.
+
+Output rules (strict):
+- One task = one line of text
+- Line format: question || answer1 | answer2
+- Exactly two || characters between question and answers
+- Separate multiple correct answers with a single |
+- Hint (if any in the source): after answers use ## hint text
+- No numbering, bullets, headings, or blank lines
+- No explanations — output only ready task lines
+
+Example line:
+What is 2+2? || 4 | four
+
+Source task text:
+---
+PASTE_YOUR_TEXT_HERE
+---</pre>
+
+Send the finished .txt file in this chat.
+To cancel — /cancel"""
+
+
+def ru_bundle():
+    return {
+        "kb": {
+            "study": "📚 Учеба",
+            "faq": "❓ FAQ",
+            "profile": "📊 Мой профиль",
+            "news": "📢 Новости",
+            "standard_timer": "⏱️ Стандартный таймер (25 мин)",
+            "custom_timer": "⏱️ Кастомный таймер",
+            "quizzes": "❓ Квизы",
+            "tips": "🎓 Советы для продуктивности",
+            "back_main": "🏠 Назад в меню",
+            "stop_timer": "⏹️ Остановить",
+            "back_study": "⬅️ Назад к учебе",
+            "back_subjects": "⬅️ Назад к предметам",
+            "back_modes": "⬅️ Назад к режимам",
+            "finish_quiz": "🛑 Завершить квиз",
+            "finish_session": "🛑 Завершить",
+            "tips_time_mgmt": "⏰ Тайм-менеджмент",
+            "tips_memory": "🧠 Техники запоминания",
+            "tips_bot_guide": "🎯 Как пользоваться ботом",
+            "tips_links": "🔗 Ссылки на статьи и книги",
+            "setup_now": "🔧 Настроить сейчас",
+            "start_now": "🚀 Начать сразу",
+        },
+        "lang": {
+            "picker_title": "🌍 Выбери язык интерфейса",
+            "ru": "🇷🇺 Русский",
+            "en": "🇬🇧 English",
+            "saved": "✅ Язык изменён на {locale}",
+        },
+        "start": {
+            "welcome_new": (
+                "🐾 Привет! Я — Palph, твой цифровой питомец для учёбы!\n\n"
+                "✨ Я помогу тебе учиться регулярно и без стресса. "
+                "Даже 5 минут в день — это уже победа!\n\n"
+                "Хочешь сначала настроить уведомления под себя или начать сразу?"
+            ),
+            "welcome_back": (
+                "😊 С возвращением! Твой питомец скучал!\n\n"
+                "📊 Твоя статистика:\n"
+                "• Всего сессий: {total_sessions}\n"
+                "• Всего монет: {total_coins} 🪙\n"
+                "• Твой стрик: {current_streak} дней подряд 🔥\n\n"
+                "Чем займёмся сегодня?"
+            ),
+            "need_register": "Сначала напиши /start для регистрации",
+        },
+        "setup": {
+            "skip_done": (
+                "👍 Готово! Можешь начинать учиться прямо сейчас.\n"
+                "Время напоминаний можно поменять позже в «📊 Мой профиль» → «⚙️ Настройки»."
+            ),
+            "morning_prompt": (
+                "🌅 Во сколько отправлять утреннее напоминание?\n"
+                "Введи время в формате ЧЧ:ММ (например, 09:00).\n"
+                "Если не нужно — отправь /skip."
+            ),
+            "evening_prompt": (
+                "🌙 А во сколько вечернее напоминание?\n"
+                "Введи время в формате ЧЧ:ММ (например, 21:00).\n"
+                "Если не нужно — отправь /skip."
+            ),
+            "invalid_time": (
+                "❌ Неверный формат. Введи время как ЧЧ:ММ, например {example}.\n"
+                "Или /skip, если {slot} напоминание не нужно."
+            ),
+            "slot_morning": "утреннее",
+            "slot_evening": "вечернее",
+            "saved_header": "✅ Настройки сохранены:",
+            "morning_on": "🌅 Утро: {time}",
+            "morning_off": "🌅 Утро: отключено",
+            "evening_on": "🌙 Вечер: {time}",
+            "evening_off": "🌙 Вечер: отключено",
+            "change_later": "Поменять можно в «📊 Мой профиль» → «⚙️ Настройки».",
+        },
+        "nav": {
+            "study_section": "📖 Раздел учёбы:",
+            "pick_subject": "📖 Выбери предмет:",
+            "pick_mode": "{subject_label}\nВыбери режим учёбы:",
+            "manage_cards": "Или управляй своими карточками:",
+            "no_materials": "🚧 Пока нет учебных материалов. Загляни позже!",
+            "no_modes": "🚧 «{subject}» — пока нет доступных режимов.",
+            "news_body": (
+                "📢 Подпишись на наш канал — там анонсы, советы по учебе "
+                "и обновления бота."
+            ),
+            "open_channel": "📢 Открыть канал",
+        },
+        "study": {
+            "section_quiz": "❓ Квизы",
+        },
+        "timer": {
+            "rating_prompt": "Как прошла сессия?",
+            "rating_skip": "⏭ Пропустить",
+            "already_running": "⏱️ Таймер уже запущен!\nОсталось: {remaining:.0f} минут\n",
+            "started": "⏱️ Таймер запущен на {duration} минут!\nВаш питомец ждёт вашего возвращения 🐾",
+            "custom_ask": "🔢 Сколько минут учиться? (5–120)",
+            "custom_invalid": "❌ Введите число от 5 до 120:",
+            "custom_range": "⚠️ Минимум 5, максимум 120 минут. Попробуйте ещё раз:",
+            "corrupted": "Таймер повреждён, начните заново.",
+            "too_short": "Слишком короткая сессия, монеты не начислены.",
+            "stopped": (
+                "⏹️ Таймер остановлен!\n⏱️ Фактическая сессия: {actual} мин\n"
+                "🪙 Получено: {actual} монет"
+            ),
+            "bonus": "\n✨ Бонус за достижения: +{bonus} монет",
+            "total_coins": "\n📊 Всего монет: {total_coins}",
+            "finished": (
+                "🎉 Таймер завершён!\n⏱️ Сессия: {duration} минут\n"
+                "🪙 Получено: {duration} монет"
+            ),
+            "already_done": "Таймер уже завершён.",
+            "no_active": "Сейчас нет активного таймера.",
+            "back_menu": (
+                "🐾 Ты вернулся в главное меню.\n"
+                "Таймер продолжает работать в фоне — сессия завершится автоматически.\n\n"
+                "Чтобы остановить досрочно, отправь /stop."
+            ),
+        },
+        "quiz": {
+            "pick_section": "✏️ Раздел: {section_name}\n\nНапиши ДОСЛОВНОЕ определение термина:\n«{term}»",
+            "repeat_in_days": "\n\n🔥 Термин будет повторён через {days} дн.",
+            "section_done": "🎉 Все термины раздела повторены! Ты молодец!",
+            "no_sections": "🚧 Для этого предмета пока нет ситуационных квизов.",
+        },
+        "flash": {
+            "session_start": (
+                "🃏 Флэш-карты — {subject_label}\n"
+                "Алгоритм SM-2 подбирает интервалы автоматически. Будь честен с собой при оценке."
+            ),
+            "card": "🃏 Карточка #{num}\n\n<b>{term}</b>",
+            "show_answer": "💡 Показать ответ",
+            "no_cards": "🚧 Нет карточек для учёбы (источник: {source_label}).\n\n{hint}",
+            "all_done_today": (
+                "🎉 Все карточки этого предмета уже проработаны на сегодня!\n"
+                "Возвращайся позже — SM-2 покажет их, когда придёт срок повторения."
+            ),
+            "session_done": (
+                "🎉 Сессия завершена!\n{subject_label}\n"
+                "Просмотрено карточек: {reviewed}\n🪙 Заработано: {coins} монет"
+            ),
+            "all_reviewed": "🎉 Все карточки уже проработаны. Возвращайся позже!",
+            "hint_own": (
+                "В настройках выбран источник «Свои», но своих карточек пока нет.\n"
+                "Добавь карточки через «📇 Мои карточки» или смени источник в ⚙️ Настройки."
+            ),
+            "hint_official": (
+                "В настройках выбран источник «Официальные», но официальных карточек "
+                "для этого предмета пока нет.\n"
+                "Смени источник на «Микс» или «Свои» в ⚙️ Настройки."
+            ),
+            "hint_mix": (
+                "Для этого предмета пока нет флэш-карт.\n"
+                "Добавь свои через «📇 Мои карточки» или дождись официального контента."
+            ),
+            "rate_hard": "❌ Не знал",
+            "rate_medium": "😐 Сложно",
+            "rate_easy": "✅ Легко",
+        },
+        "mcq": {
+            "question": "❓ Вопрос {idx}/{total}\n\n{question}",
+            "correct": "✅ Верно! +1 🪙",
+            "wrong": "❌ Неверно.\nПравильный ответ: {answer}",
+            "done": (
+                "🎉 Готово! {subject_label}\n"
+                "Правильных: {correct} из {total}\n🪙 Заработано: {correct} монет"
+            ),
+            "stopped": (
+                "⏹ MCQ остановлен.\n"
+                "Отвечено: {answered}/{total} (правильных: {correct})\n"
+                "🪙 Получено: {correct} монет"
+            ),
+            "session_ended": "Сессия завершена",
+            "state_broken": "Состояние повреждено",
+        },
+        "task": {
+            "no_tasks": (
+                "🚧 Для этого предмета пока нет задач.\n\n"
+                "Добавь свои через «⚙️ Настройки» → «📋 Мои задачи» → «➕ Загрузить .txt»."
+            ),
+            "session_start": (
+                "📷 Задачи — {subject_label}\n"
+                "Задач: {count}. До 3 попыток на задачу. "
+                "Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение."
+            ),
+            "item": "📋 Задача {idx}/{total}",
+            "enter_answer": "✏️ Введи ответ:",
+            "wrong_retry": "❌ Неверно. Попробуй ещё (осталось попыток: {remaining}).",
+            "hint_block": "💡 Подсказка:\n{hint}\n\nПравильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
+            "solution": "💡 Правильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
+            "solution_image": "💡 Решение:\nПравильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
+            "solution_missing_image": (
+                "💡 Правильный ответ: {answer}\n"
+                "(Изображение решения не найдено)\n"
+                "Монеты за эту задачу: 0 🪙"
+            ),
+        },
+        "settings": {
+            "title": "⚙️ Настройки уведомлений\n",
+            "label_morning": "Утро",
+            "label_evening": "Вечер",
+            "label_streak": "Стрик",
+            "label_achievements": "Достижения",
+            "enabled": "✅ Включено",
+            "disabled": "❌ Отключено",
+            "toggle_on": "Вкл",
+            "toggle_off": "Выкл",
+            "change_time": "🕘 Изменить",
+            "flashcards": "🃏 Флэш-карты: {source}",
+            "timezone": "🌍 Часовой пояс: {tz}",
+            "leaderboard_visible": "👤 Лидерборды: ✅ Виден",
+            "leaderboard_hidden": "👤 Лидерборды: ❌ Скрыт (рейтинги не видны другим)",
+            "leaderboard_btn_visible": "👤 Лидерборды: Виден",
+            "leaderboard_btn_hidden": "👤 Лидерборды: Скрыт",
+            "timezone_btn": "🌍 Часовой пояс",
+            "my_cards": "📇 Мои карточки",
+            "my_tasks": "📋 Мои задачи",
+            "back_profile": "⬅️ Назад в профиль",
+            "toggle_status": "{label}: {status}",
+            "source_changed": "🃏 Источник: {label}",
+            "not_yours": "Это не твои настройки",
+            "toggle_error": "Ошибка переключения",
+            "flash_mix": "Микс",
+            "flash_official": "Официальные",
+            "flash_own": "Свои",
+        },
+        "profile": {
+            "title": (
+                "📊 Твой профиль:\n"
+                "🆔 ID: {user_id}\n"
+                "📚 Всего сессий: {total_sessions}\n"
+                "💰 Всего монет: {total_coins} 🪙\n"
+                "🔥 Стрик: {current_streak} дней подряд\n"
+                "⏱️ Последняя сессия: {last_session}\n\n"
+                "🐾 Твой питомец: {pet_emotion}"
+            ),
+            "achievements": "🏆 Достижения",
+            "settings": "⚙️ Настройки",
+            "progress": "📊 Прогресс по предметам",
+            "pet": "🐾 Питомец",
+            "friends": "👥 Друзья",
+            "freeze_streak": "❄️ Заморозить стрик",
+            "back": "◀️ Профиль",
+            "never": "никогда",
+        },
+        "progress": {
+            "title": (
+                "📊 Прогресс\n\n"
+                "Всего: 🪙 {coins} монет · ⏱️ {minutes} мин учёбы · "
+                "🔥 стрик {streak} дней\n"
+            ),
+            "due_today": "  🔔 К повторению сегодня: {count}",
+            "due_none": "  🔔 К повторению сегодня: ничего",
+            "activity": "  🕐 Активность: {when}",
+            "visits": "  📈 Заходов: {count}",
+            "coming_soon": "  🚧 Контент в разработке\n",
+            "not_yours": "Это не твой прогресс",
+            "today_at": "сегодня в {time}",
+            "yesterday": "вчера",
+            "days_ago": "{days} дн. назад",
+        },
+        "errors": {
+            "faq_not_found": "Вопрос не найден",
+            "state_error": "Ошибка состояния, попробуй ещё раз.",
+            "generic": "Что-то пошло не так. Попробуй позже.",
+            "rate_limit_msg": "⏸ Слишком быстро! Подожди немного и продолжи.",
+            "rate_limit_cb": "⏸ Слишком быстро — подожди немного.",
+        },
+        "common": {
+            "cancelled": "Отменено.",
+            "not_yours_session": "Это не твоя сессия",
+            "not_yours_cards": "Это не твои карточки",
+            "not_yours_tasks": "Это не твои задачи",
+            "deleted": "Удалено",
+            "card_not_found": "Карточка не найдена",
+            "task_not_found": "Задача не найдена",
+        },
+        "subjects": {
+            "industrial-management": "🏭 Основы производственного менеджмента",
+            "math": "🧮 Математика",
+            "english": "🇬🇧 Английский",
+        },
+        "study_modes": {
+            "situational": "🎯 Ситуационные квизы",
+            "flashcards": "🃏 Флэш-карты",
+            "mcq": "❓ Тест с выбором ответа",
+            "tasks": "📷 Задачи с картинкой",
+            "tasks_own": "📋 Мои задачи",
+        },
+        "quiz_sections": {
+            "i": "Раздел I",
+            "ii": "Раздел II",
+            "iii": "Раздел III",
+            "iv": "Раздел IV",
+        },
+        "tips": {
+            "menu": "📚 Выберите категорию:",
+            "tm": "Тайм-менеджмент",
+            "mem": "Техники запоминания",
+            "bot": "Как пользоваться ботом",
+            "links_title": "📚 Полезные материалы — нажми кнопку, чтобы открыть:",
+            "links_empty": "Файл со ссылками пуст.",
+            "not_loaded": "Советы пока не загружены.",
+            "more": "🔄 Ещё совет",
+            "all": "📋 Все советы",
+            "back_categories": "⬅️ К категориям",
+            "random": "🔄 Случайный",
+            "try_today": "💡 <i>Попробуй сегодня:</i> {action}",
+            "coin_today": "\n\n+{coins} 🪙 за совет сегодня",
+            "achievement_curiosity": "\n🏆 Достижение «Любознательный» — +{reward} 🪙",
+            "read_count": "\n\n📊 Прочитано советов: {count}/10",
+            "unknown_category": "Неизвестная категория",
+            "empty_category": "Советы пусты",
+        },
+        "faq": {
+            "menu": "📖 Часто задаваемые вопросы\n\nВыбери вопрос:",
+            "back_list": "◀️ К списку вопросов",
+            "mission": {
+                "btn": "1️⃣ Миссия проекта",
+                "title": "1️⃣ Какая миссия у проекта?",
+                "body": (
+                    "Palph создан, чтобы учёба перестала быть «надо» и стала «хочу».\n\n"
+                    "Мы соединяем геймификацию (монеты, стрики, питомец, ачивки, советы) с "
+                    "научно проверенными техниками запоминания (интервальное повторение, "
+                    "SM-2, active recall, Pomodoro). Получается система, которая:\n"
+                    "• заменяет унылую зубрёжку на серию маленьких побед,\n"
+                    "• даёт мгновенную обратную связь — главный антидот к прокрастинации,\n"
+                    "• поддерживает мотивацию через эмоциональную привязку к питомцу,\n"
+                    "• превращает учёбу в привычку, которая не требует силы воли каждый день.\n\n"
+                    "Главная цель: ты учишься эффективнее, и тебе это в кайф."
+                ),
+            },
+            "efficiency": {
+                "btn": "2️⃣ Эффективность учёбы с ботом",
+                "title": "2️⃣ Почему учиться с ботом эффективнее, чем самому?",
+                "body": (
+                    "Бот объединяет несколько научно доказанных техник в один цикл: "
+                    "метод Помодоро (25-минутные сессии = меньше выгорания), "
+                    "мгновенная мотивация (монеты, достижения, эмоции питомца), "
+                    "советы по продуктивности с небольшими наградами, "
+                    "регулярные напоминания и квизы с интервальным повторением. "
+                    "Ты получаешь структуру и обратную связь, которые в одиночку легко терять."
+                ),
+            },
+            "pet": {
+                "btn": "3️⃣ Зачем питомец",
+                "title": "3️⃣ Зачем нужен питомец и как он помогает учиться?",
+                "body": (
+                    "Питомец отражает твою активность: радуется, когда ты учишься, и "
+                    "грустит, если пропускаешь день. Это эмоциональный якорь — учиться "
+                    "не «ради дисциплины», а «чтобы твоему питомцу было хорошо». "
+                    "Связь с виртуальным персонажем доказанно повышает регулярность "
+                    "привычки."
+                ),
+            },
+            "spend_coins": {
+                "btn": "4️⃣ На что тратить монеты",
+                "title": "4️⃣ На что можно тратить монеты?",
+                "body": (
+                    "Сейчас монеты копятся как награда за учёбу и помогают получать "
+                    "достижения. В ближайших обновлениях за монеты можно будет покупать "
+                    "кастомизацию питомца: цвета (оранжевый, синий, зелёный…) и аксессуары "
+                    "(шляпа, очки, шарф, корона). В будущем добавим больше — следи за "
+                    "каналом 📢."
+                ),
+            },
+            "earn_coins": {
+                "btn": "5️⃣ Как зарабатывать монеты",
+                "title": "5️⃣ Как зарабатывать монеты?",
+                "body": (
+                    "• +1 монета за каждую минуту учёбы через таймер\n"
+                    "• +15 бонусом, когда стрик достигает 2+ дней подряд\n"
+                    "• Бонусные монеты за получение достижений (список — в профиле)\n"
+                    "• +1 монета за каждый правильный MCQ-ответ\n"
+                    "• +1 монета за каждую просмотренную флэш-карту\n"
+                    "• До +3 монет за решение задачи с картинкой (зависит от попытки)\n"
+                    "• +1 монета за первый совет дня в разделе «🎓 Советы для продуктивности» "
+                    "(тайм-менеджмент, запоминание или «как пользоваться ботом»)\n"
+                    "• Бонус за достижение «💡 Любознательный» — 10 просмотренных советов (+30 🪙)\n"
+                    "• В утреннем напоминании — «совет дня» (один на календарный день)"
+                ),
+            },
+            "sm2": {
+                "btn": "6️⃣ SM-2 для флэш-карт",
+                "title": "6️⃣ Что такое SM-2 и почему это эффективно для флэш-карт?",
+                "body": (
+                    "SM-2 (SuperMemo-2) — алгоритм, который «запоминает» сложность каждой "
+                    "карточки лично для тебя. С трудом вспомнил термин — карточка вернётся "
+                    "скоро; легко — через неделю или больше. Ты не тратишь время на то, "
+                    "что уже знаешь, и часто видишь именно то, что ускользает из памяти. "
+                    "Используется в Anki и опирается на исследования кривой забывания "
+                    "Эббингауза."
+                ),
+            },
+            "spaced_rep": {
+                "btn": "7️⃣ Интервальное повторение",
+                "title": "7️⃣ Что такое интервальное повторение?",
+                "body": (
+                    "Принцип: материал лучше запоминается, если повторять его с растущими "
+                    "промежутками — например, через 1, 3, 7, 16 дней. Каждое успешное "
+                    "повторение продлевает интервал; ошибка перезапускает счётчик. "
+                    "Эббингауз доказал это в 1885 году, и за 140 лет принцип подтверждён "
+                    "сотнями исследований. Запоминать через дни и недели в разы "
+                    "эффективнее, чем зубрить за вечер."
+                ),
+            },
+            "active_recall": {
+                "btn": "8️⃣ Active recall в боте",
+                "title": "8️⃣ Что такое active recall и какие методы есть в боте?",
+                "body": (
+                    "Active recall — это извлечение информации из памяти «из головы», без "
+                    "подглядывания. Работает в 2–3 раза лучше, чем повторное чтение. В боте "
+                    "active recall встроен в каждый учебный режим:\n"
+                    "• Ситуационные квизы — вводишь определение по описанию ситуации\n"
+                    "• Флэш-карты — видишь термин, вспоминаешь, проверяешь себя\n"
+                    "• Советы для продуктивности — короткие техники тайм-менеджмента и памяти\n"
+                    "• Тесты с выбором ответа — выбираешь правильный из 4 вариантов\n"
+                    "• Задачи с картинкой — решаешь и вводишь ответ\n"
+                    "Принцип: «если можешь объяснить — значит знаешь»."
+                ),
+            },
+            "support": {
+                "btn": "🛠 Связаться с техподдержкой",
+                "title": "🛠 Техподдержка",
+                "body": (
+                    "Если у тебя есть вопрос, баг или предложение — просто напиши его прямо "
+                    "здесь, в этом чате. Сообщение перешлётся админам, тебе ответят как "
+                    "можно скорее.\n\n"
+                    "Прямой контакт админа: @zerocious"
+                ),
+            },
+        },
+        "commands": {
+            "start": "Запуск бота / в главное меню",
+            "stop": "Остановить активный таймер",
+            "progress": "Прогресс по предметам",
+            "pet": "Питомец и кастомизация",
+            "leaderboard": "Недельный лидерборд",
+            "friends": "Друзья и рейтинг",
+            "share_friend": "Ссылка-приглашение в друзья",
+        },
+        "reminders": {
+            "morning": (
+                "🌅 Доброе утро!\n"
+                "Твой питомец ждёт первую сессию сегодня 🐾\n"
+                "Даже 5 минут — это уже победа."
+            ),
+            "evening_sad": (
+                "🌙 Вечер.\n"
+                "🐾😢 Питомец загрустил — ты сегодня ещё не учился.\n"
+                "Поучись хотя бы 5 минут до полуночи, и стрик сохранится 🔥"
+            ),
+            "evening_fallback": (
+                "🌙 Вечер!\n"
+                "Сегодня ещё не было ни одной учебной сессии — "
+                "успей хотя бы 5 минут до полуночи, чтобы сохранить стрик 🔥"
+            ),
+            "streak_bonus": (
+                "🌙 Добрый вечер! Твой стрик обновлён:\n"
+                "🔥 {streak} дней подряд\n"
+                "🪙 +{bonus} монет за упорство!"
+            ),
+            "freeze_used": (
+                "❄️ Заморозка стрика сработала.\n"
+                "🔥 Стрик сохранён: {streak} дн."
+            ),
+            "tip_of_day_header": "\n\n———\n🌟 <b>Совет дня</b>\n\n",
+        },
+        "achievements_notify": {
+            "single": (
+                "🎉 ПОЗДРАВЛЯЕМ! Ты получил(а) новое достижение:\n\n"
+                "{icon} {name}\n"
+                "{description}\n\n"
+                "🪙 Бонус: +{reward} монет\n"
+                "🐾 Твой питомец гордится тобой!"
+            ),
+            "multiple_header": "🎊 ВАУ! Ты получил(а) несколько достижений за одну сессию:\n\n",
+            "multiple_item": "{icon} {name} (+{reward} монет)",
+            "multiple_footer": (
+                "\n\n🪙 Общий бонус: +{total_reward} монет\n"
+                "🔥 Ты настоящий чемпион учёбы!"
+            ),
+            "default_name": "Достижение",
+        },
+        "user_tasks": {
+            "instruction": USER_TASK_INSTRUCTION_RU,
+            "import_cancelled": "Импорт отменён.",
+            "send_file": "Отправь файл .txt с задачами или /cancel для отмены.",
+            "need_txt": "Нужен файл с расширением .txt. См. инструкцию выше.",
+            "file_too_big": "Файл слишком большой (макс. {max_kb} КБ).",
+            "read_error": "Не удалось прочитать файл. Сохрани его в кодировке UTF-8.",
+            "download_error": "Не удалось скачать файл. Попробуй ещё раз.",
+            "empty_file": "Файл пустой или содержит только комментарии.",
+            "limit_reached": "Удали старые или разбей на несколько предметов.",
+            "parse_no_separator": "Строка {line_no}: нет «||» — нужен формат «вопрос || ответ».",
+            "parse_empty_question": "Строка {line_no}: пустой вопрос.",
+            "parse_no_answer": "Строка {line_no}: нет правильного ответа.",
+        },
+        "friends": {
+            "invite_invalid": "⏳ Ссылка-приглашение недействительна или истекла.",
+            "invite_accepted": "🎉 Ты добавлен в друзья к пользователю <code>{creator_id}</code>!",
+            "invite_notify_creator": (
+                "🎉 Пользователь <code>{invitee_id}</code> присоединился "
+                "к тебе по ссылке-приглашению!"
+            ),
+            "already_friends": "👥 Вы уже друзья.",
+            "own_link": "🙂 Это твоя собственная ссылка — отправь её другим пользователям.",
+            "add_prompt": (
+                "🆔 Введи <b>@username</b> или <b>Telegram ID</b> пользователя.\n\n"
+                "Примеры:\n"
+                "  • <code>@alice</code>\n"
+                "  • <code>alice</code> (без @)\n"
+                "  • <code>123456789</code>\n\n"
+                "💡 Username сработает, только если пользователь хотя бы раз "
+                "взаимодействовал с ботом — на /start мы запоминаем его @handle. "
+                "Если поиск не нашёл — попроси прислать тебе свой Telegram ID "
+                "через @userinfobot.\n\n"
+                "Для отмены отправь /cancel."
+            ),
+            "add_cancelled": "Добавление отменено.",
+            "parse_fail": "❌ Не понял ввод. Введи @username или числовой Telegram ID (или /cancel).",
+            "user_not_found": (
+                "❌ Пользователь <code>@{username}</code> не найден.\n"
+                "Возможно, он ещё не открывал бота, скрыл @handle или "
+                "имя написано с опечаткой. Попроси его прислать тебе "
+                "свой числовой Telegram ID и попробуй снова через /friends."
+            ),
+            "self_target": "🙂 Нельзя добавить самого себя.",
+            "id_not_registered": "❌ Пользователь с таким ID не зарегистрирован в боте.",
+            "pending_exists": "📩 Запрос уже отправлен; ждём ответа.",
+            "auto_accepted": (
+                "🎉 У этого пользователя уже был запрос к тебе — "
+                "вы автоматически стали друзьями!"
+            ),
+            "sent": "✅ Запрос отправлен. Жди подтверждения.",
+            "incoming_request": "👥 Пользователь <code>{user_id}</code> хочет добавить тебя в друзья.",
+            "auto_accept_notify": (
+                "🎉 Пользователь <code>{user_id}</code> отправил тебе запрос — "
+                "вы автоматически стали друзьями (у тебя был встречный запрос)."
+            ),
+            "notify_failed": (
+                "\n\n⚠️ Не удалось доставить уведомление — возможно, пользователь заблокировал бота."
+            ),
+            "no_pending": "📩 Входящих запросов нет.",
+            "pending_header": "📩 <b>Входящие запросы:</b>",
+            "accept": "✅ Принять",
+            "reject": "❌ Отклонить",
+            "add_btn": "➕ Добавить",
+            "pending_btn": "📩 Запросы ({count})",
+            "share_link": "🔗 Ссылка-приглашение",
+            "back": "◀️ К друзьям",
+            "cancel": "◀️ Отмена",
+            "empty_list": (
+                "У тебя пока нет добавленных друзей.\n"
+                "Используй <b>/friends</b> и кнопку «➕ Добавить», "
+                "чтобы пригласить кого-то по Telegram ID."
+            ),
+        },
+        "pet": {
+            "emotion_0": "грустный 😢 (начни учиться сегодня!)",
+            "emotion_low": "радостный 😊 (так держать!)",
+            "emotion_mid": "очень счастливый 🤗 (ты молодец!)",
+            "emotion_high": "легендарный 🌟 (ты чемпион!)",
+            "caption": (
+                "🐾 <b>{name}</b>\n\n"
+                "Уровень: <b>{level}</b>\n"
+                "XP: {xp}\n"
+                "Цвет: {color}  ·  Аксессуар: {accessory}\n"
+                "Эмоция сейчас: {emotion}\n\n"
+                "💰 Баланс: {coins} 🪙"
+            ),
+            "image_unavailable": "\n\n<i>(изображение питомца недоступно)</i>",
+            "colors": "🎨 Цвета",
+            "accessories": "🎁 Аксессуары",
+            "rename": "✏️ Переименовать",
+            "back_profile": "◀️ Профиль",
+            "back_pet": "◀️ Назад к питомцу",
+            "picker_legend": (
+                "<b>{title}</b>\n\n"
+                "⭐ — надето\n"
+                "✓ — куплено (нажми чтобы надеть)\n"
+                "💰 — доступно к покупке\n"
+                "🔒 — заблокировано до указанного уровня\n\n"
+                "Уровень: <b>{level}</b>"
+            ),
+            "level_up": (
+                "🎉 <b>Уровень повышен!</b>\n"
+                "🐾 Питомец вырос: {old_level} → <b>{new_level}</b>"
+            ),
+            "level_up_unlocked": (
+                "\n\n<b>Открылись новые предметы:</b>\n{items}\n\n"
+                "Купить можно в профиле через customization picker."
+            ),
+            "level_up_none": "\n\nНа этом уровне новых предметов не открылось — продолжай!",
+            "default_name": "Питомец",
+        },
+        "leaderboard": {
+            "title": "<b>📊 Лидерборд недели · {week}</b>",
+            "segment_newbie": "🆕 Новички",
+            "segment_main": "🏆 Основной",
+            "segment_line": "Сегмент: {label}",
+            "empty_week": "Пока никто не набрал очков в этой неделе.",
+            "top_header": "<b>Топ:</b>",
+            "row": "{marker} {rank}. id={user_id}  {pts:.0f} pts  (×{mult:.2f})",
+            "no_points": "Вы пока без очков на этой неделе.",
+            "your_rank": "Ваш ранг: <b>{rank}</b>  {pts:.0f} pts{hidden}",
+            "hidden_note": " · Вы скрыты",
+        },
+        "freeze": {
+            "title": "❄️ <b>Заморозка стрика</b>",
+            "current": "🔥 Текущий стрик: <b>{streak}</b> дн.",
+            "balance": "💰 Баланс: <b>{balance}</b> 🪙",
+            "cost": "💸 Цена: <b>{cost}</b> 🪙",
+            "has_active": (
+                "✅ У тебя уже есть активная заморозка — "
+                "сработает при следующем пропущенном дне."
+            ),
+            "cooldown": "⏳ Кулдаун: следующая заморозка через <b>{days}</b> дн.",
+            "insufficient": "❌ Не хватает <b>{missing}</b> 🪙.",
+            "description": (
+                "Заморозка сохранит стрик при ОДНОМ пропущенном дне. "
+                "Покупка действует до использования."
+            ),
+            "buy_btn": "✅ Купить за {cost} 🪙",
+            "purchased": (
+                "❄️ Заморозка куплена за <b>{cost}</b> 🪙.\n\n"
+                "🔥 Стрик: <b>{streak}</b> дн. — сохранится при следующем пропущенном дне."
+            ),
+            "not_enough_coins": "❌ Не хватает монет.",
+            "cooldown_active": "⏳ Заморозка уже покупалась в последние 7 дней.",
+        },
+    }
+
+
+def en_bundle():
+    r = ru_bundle()
+    # Deep-copy structure via JSON roundtrip for translation pass
+    import copy
+    b = copy.deepcopy(r)
+
+    b["lang"] = {
+        "picker_title": "🌍 Choose interface language",
+        "ru": "🇷🇺 Russian",
+        "en": "🇬🇧 English",
+        "saved": "✅ Language changed to {locale}",
+    }
+    b["start"]["welcome_new"] = (
+        "🐾 Hi! I'm Palph, your digital study pet!\n\n"
+        "✨ I'll help you study regularly without stress. "
+        "Even 5 minutes a day is already a win!\n\n"
+        "Want to set up notifications first or jump right in?"
+    )
+    b["start"]["welcome_back"] = (
+        "😊 Welcome back! Your pet missed you!\n\n"
+        "📊 Your stats:\n"
+        "• Total sessions: {total_sessions}\n"
+        "• Total coins: {total_coins} 🪙\n"
+        "• Streak: {current_streak} days in a row 🔥\n\n"
+        "What shall we do today?"
+    )
+    b["start"]["need_register"] = "Please send /start first to register"
+
+    b["kb"] = {
+        "study": "📚 Study",
+        "faq": "❓ FAQ",
+        "profile": "📊 My profile",
+        "news": "📢 News",
+        "standard_timer": "⏱️ Standard timer (25 min)",
+        "custom_timer": "⏱️ Custom timer",
+        "quizzes": "❓ Quizzes",
+        "tips": "🎓 Productivity tips",
+        "back_main": "🏠 Back to menu",
+        "stop_timer": "⏹️ Stop",
+        "back_study": "⬅️ Back to study",
+        "back_subjects": "⬅️ Back to subjects",
+        "back_modes": "⬅️ Back to modes",
+        "finish_quiz": "🛑 End quiz",
+        "finish_session": "🛑 Finish",
+        "tips_time_mgmt": "⏰ Time management",
+        "tips_memory": "🧠 Memory techniques",
+        "tips_bot_guide": "🎯 How to use the bot",
+        "tips_links": "🔗 Articles & books",
+        "setup_now": "🔧 Set up now",
+        "start_now": "🚀 Start right away",
+    }
+
+    b["setup"]["skip_done"] = (
+        "👍 Done! You can start studying now.\n"
+        "Reminder times can be changed later in «📊 My profile» → «⚙️ Settings»."
+    )
+    b["setup"]["morning_prompt"] = (
+        "🌅 What time should we send the morning reminder?\n"
+        "Enter time as HH:MM (e.g. 09:00).\n"
+        "Send /skip if you don't need it."
+    )
+    b["setup"]["evening_prompt"] = (
+        "🌙 What time for the evening reminder?\n"
+        "Enter time as HH:MM (e.g. 21:00).\n"
+        "Send /skip if you don't need it."
+    )
+    b["setup"]["invalid_time"] = (
+        "❌ Invalid format. Enter time as HH:MM, e.g. {example}.\n"
+        "Or /skip if you don't need the {slot} reminder."
+    )
+    b["setup"]["slot_morning"] = "morning"
+    b["setup"]["slot_evening"] = "evening"
+    b["setup"]["saved_header"] = "✅ Settings saved:"
+    b["setup"]["morning_on"] = "🌅 Morning: {time}"
+    b["setup"]["morning_off"] = "🌅 Morning: off"
+    b["setup"]["evening_on"] = "🌙 Evening: {time}"
+    b["setup"]["evening_off"] = "🌙 Evening: off"
+    b["setup"]["change_later"] = "Change anytime in «📊 My profile» → «⚙️ Settings»."
+
+    b["nav"]["study_section"] = "📖 Study section:"
+    b["nav"]["pick_subject"] = "📖 Choose a subject:"
+    b["nav"]["pick_mode"] = "{subject_label}\nChoose a study mode:"
+    b["nav"]["manage_cards"] = "Or manage your flashcards:"
+    b["nav"]["no_materials"] = "🚧 No study materials yet. Check back later!"
+    b["nav"]["no_modes"] = "🚧 No modes available yet for «{subject}»."
+    b["nav"]["news_body"] = (
+        "📢 Subscribe to our channel — announcements, study tips, "
+        "and bot updates."
+    )
+    b["nav"]["open_channel"] = "📢 Open channel"
+
+    b["timer"]["rating_prompt"] = "How was your session?"
+    b["timer"]["rating_skip"] = "⏭ Skip"
+    b["timer"]["already_running"] = "⏱️ Timer is already running!\nRemaining: {remaining:.0f} min\n"
+    b["timer"]["started"] = "⏱️ Timer started for {duration} minutes!\nYour pet is waiting for you 🐾"
+    b["timer"]["custom_ask"] = "🔢 How many minutes to study? (5–120)"
+    b["timer"]["custom_invalid"] = "❌ Enter a number from 5 to 120:"
+    b["timer"]["custom_range"] = "⚠️ Minimum 5, maximum 120 minutes. Try again:"
+    b["timer"]["corrupted"] = "Timer state is broken — please start again."
+    b["timer"]["too_short"] = "Session too short — no coins awarded."
+    b["timer"]["stopped"] = (
+        "⏹️ Timer stopped!\n⏱️ Actual session: {actual} min\n"
+        "🪙 Earned: {actual} coins"
+    )
+    b["timer"]["bonus"] = "\n✨ Achievement bonus: +{bonus} coins"
+    b["timer"]["total_coins"] = "\n📊 Total coins: {total_coins}"
+    b["timer"]["finished"] = (
+        "🎉 Timer complete!\n⏱️ Session: {duration} minutes\n"
+        "🪙 Earned: {duration} coins"
+    )
+    b["timer"]["already_done"] = "Timer already finished."
+    b["timer"]["no_active"] = "No active timer right now."
+    b["timer"]["back_menu"] = (
+        "🐾 You're back in the main menu.\n"
+        "The timer keeps running in the background — the session will finish automatically.\n\n"
+        "To stop early, send /stop."
+    )
+
+    b["quiz"]["pick_section"] = "✏️ Section: {section_name}\n\nType the EXACT definition of:\n«{term}»"
+    b["quiz"]["repeat_in_days"] = "\n\n🔥 This term will repeat in {days} days."
+    b["quiz"]["section_done"] = "🎉 All terms in this section reviewed! Great job!"
+    b["quiz"]["no_sections"] = "🚧 No situational quizzes for this subject yet."
+
+    b["flash"]["session_start"] = (
+        "🃏 Flashcards — {subject_label}\n"
+        "SM-2 picks intervals automatically. Be honest when you rate yourself."
+    )
+    b["flash"]["card"] = "🃏 Card #{num}\n\n<b>{term}</b>"
+    b["flash"]["show_answer"] = "💡 Show answer"
+    b["flash"]["no_cards"] = "🚧 No cards to study (source: {source_label}).\n\n{hint}"
+    b["flash"]["all_done_today"] = (
+        "🎉 All cards for this subject are done for today!\n"
+        "Come back later — SM-2 will show them when review is due."
+    )
+    b["flash"]["session_done"] = (
+        "🎉 Session complete!\n{subject_label}\n"
+        "Cards reviewed: {reviewed}\n🪙 Earned: {coins} coins"
+    )
+    b["flash"]["all_reviewed"] = "🎉 All cards reviewed. Come back later!"
+    b["flash"]["hint_own"] = (
+        "Source is set to «Own», but you have no custom cards yet.\n"
+        "Add cards via «📇 My flashcards» or change source in ⚙️ Settings."
+    )
+    b["flash"]["hint_official"] = (
+        "Source is «Official», but there are no official cards for this subject yet.\n"
+        "Switch to «Mix» or «Own» in ⚙️ Settings."
+    )
+    b["flash"]["hint_mix"] = (
+        "No flashcards for this subject yet.\n"
+        "Add your own via «📇 My flashcards» or wait for official content."
+    )
+
+    b["mcq"]["question"] = "❓ Question {idx}/{total}\n\n{question}"
+    b["mcq"]["correct"] = "✅ Correct! +1 🪙"
+    b["mcq"]["wrong"] = "❌ Wrong.\nCorrect answer: {answer}"
+    b["mcq"]["done"] = (
+        "🎉 Done! {subject_label}\n"
+        "Correct: {correct} of {total}\n🪙 Earned: {correct} coins"
+    )
+    b["mcq"]["stopped"] = (
+        "⏹ MCQ stopped.\n"
+        "Answered: {answered}/{total} (correct: {correct})\n"
+        "🪙 Earned: {correct} coins"
+    )
+    b["mcq"]["session_ended"] = "Session ended"
+    b["mcq"]["state_broken"] = "Broken state"
+
+    b["task"]["no_tasks"] = (
+        "🚧 No tasks for this subject yet.\n\n"
+        "Add your own via «⚙️ Settings» → «📋 My tasks» → «➕ Upload .txt»."
+    )
+    b["task"]["session_start"] = (
+        "📷 Tasks — {subject_label}\n"
+        "Tasks: {count}. Up to 3 attempts per task. "
+        "Rewards: +3 / +2 / +1 🪙; 0 🪙 if the solution was revealed."
+    )
+    b["task"]["item"] = "📋 Task {idx}/{total}"
+    b["task"]["enter_answer"] = "✏️ Enter your answer:"
+    b["task"]["wrong_retry"] = "❌ Wrong. Try again (attempts left: {remaining})."
+    b["task"]["hint_block"] = "💡 Hint:\n{hint}\n\nCorrect answer: {answer}\nCoins for this task: 0 🪙"
+    b["task"]["solution"] = "💡 Correct answer: {answer}\nCoins for this task: 0 🪙"
+    b["task"]["solution_image"] = "💡 Solution:\nCorrect answer: {answer}\nCoins for this task: 0 🪙"
+    b["task"]["solution_missing_image"] = (
+        "💡 Correct answer: {answer}\n"
+        "(Solution image not found)\n"
+        "Coins for this task: 0 🪙"
+    )
+
+    b["settings"]["title"] = "⚙️ Notification settings\n"
+    b["settings"]["label_morning"] = "Morning"
+    b["settings"]["label_evening"] = "Evening"
+    b["settings"]["label_streak"] = "Streak"
+    b["settings"]["label_achievements"] = "Achievements"
+    b["settings"]["enabled"] = "✅ On"
+    b["settings"]["disabled"] = "❌ Off"
+    b["settings"]["toggle_on"] = "On"
+    b["settings"]["toggle_off"] = "Off"
+    b["settings"]["change_time"] = "🕘 Change time"
+    b["settings"]["flashcards"] = "🃏 Flashcards: {source}"
+    b["settings"]["timezone"] = "🌍 Time zone: {tz}"
+    b["settings"]["leaderboard_visible"] = "👤 Leaderboards: ✅ Visible"
+    b["settings"]["leaderboard_hidden"] = "👤 Leaderboards: ❌ Hidden (others can't see your rank)"
+    b["settings"]["leaderboard_btn_visible"] = "👤 Leaderboards: Visible"
+    b["settings"]["leaderboard_btn_hidden"] = "👤 Leaderboards: Hidden"
+    b["settings"]["timezone_btn"] = "🌍 Time zone"
+    b["settings"]["my_cards"] = "📇 My flashcards"
+    b["settings"]["my_tasks"] = "📋 My tasks"
+    b["settings"]["back_profile"] = "⬅️ Back to profile"
+    b["settings"]["toggle_status"] = "{label}: {status}"
+    b["settings"]["source_changed"] = "🃏 Source: {label}"
+    b["settings"]["not_yours"] = "These aren't your settings"
+    b["settings"]["toggle_error"] = "Toggle failed"
+    b["settings"]["flash_mix"] = "Mix"
+    b["settings"]["flash_official"] = "Official"
+    b["settings"]["flash_own"] = "Own"
+
+    b["profile"]["title"] = (
+        "📊 Your profile:\n"
+        "🆔 ID: {user_id}\n"
+        "📚 Total sessions: {total_sessions}\n"
+        "💰 Total coins: {total_coins} 🪙\n"
+        "🔥 Streak: {current_streak} days\n"
+        "⏱️ Last session: {last_session}\n\n"
+        "🐾 Your pet: {pet_emotion}"
+    )
+    b["profile"]["achievements"] = "🏆 Achievements"
+    b["profile"]["settings"] = "⚙️ Settings"
+    b["profile"]["progress"] = "📊 Subject progress"
+    b["profile"]["pet"] = "🐾 Pet"
+    b["profile"]["friends"] = "👥 Friends"
+    b["profile"]["freeze_streak"] = "❄️ Freeze streak"
+    b["profile"]["back"] = "◀️ Profile"
+    b["profile"]["never"] = "never"
+
+    b["progress"]["title"] = (
+        "📊 Progress\n\n"
+        "Total: 🪙 {coins} coins · ⏱️ {minutes} min studied · "
+        "🔥 streak {streak} days\n"
+    )
+    b["progress"]["due_today"] = "  🔔 Due for review today: {count}"
+    b["progress"]["due_none"] = "  🔔 Due for review today: none"
+    b["progress"]["activity"] = "  🕐 Activity: {when}"
+    b["progress"]["visits"] = "  📈 Visits: {count}"
+    b["progress"]["coming_soon"] = "  🚧 Content coming soon\n"
+    b["progress"]["not_yours"] = "This isn't your progress"
+    b["progress"]["today_at"] = "today at {time}"
+    b["progress"]["yesterday"] = "yesterday"
+    b["progress"]["days_ago"] = "{days} days ago"
+
+    b["errors"]["faq_not_found"] = "Question not found"
+    b["errors"]["state_error"] = "State error — please try again."
+    b["errors"]["generic"] = "Something went wrong. Try again later."
+    b["errors"]["rate_limit_msg"] = "⏸ Too fast! Wait a moment and continue."
+    b["errors"]["rate_limit_cb"] = "⏸ Too fast — wait a moment."
+
+    b["common"]["cancelled"] = "Cancelled."
+    b["common"]["not_yours_session"] = "Not your session"
+    b["common"]["not_yours_cards"] = "Not your flashcards"
+    b["common"]["not_yours_tasks"] = "Not your tasks"
+    b["common"]["deleted"] = "Deleted"
+    b["common"]["card_not_found"] = "Card not found"
+    b["common"]["task_not_found"] = "Task not found"
+
+    b["subjects"] = {
+        "industrial-management": "🏭 Production management basics",
+        "math": "🧮 Mathematics",
+        "english": "🇬🇧 English",
+    }
+    b["study_modes"]["situational"] = "🎯 Situational quizzes"
+    b["study_modes"]["flashcards"] = "🃏 Flashcards"
+    b["study_modes"]["mcq"] = "❓ Multiple choice test"
+    b["study_modes"]["tasks"] = "📷 Picture tasks"
+    b["study_modes"]["tasks_own"] = "📋 My tasks"
+
+    b["quiz_sections"] = {
+        "i": "Section I",
+        "ii": "Section II",
+        "iii": "Section III",
+        "iv": "Section IV",
+    }
+
+    b["tips"]["menu"] = "📚 Choose a category:"
+    b["tips"]["tm"] = "Time management"
+    b["tips"]["mem"] = "Memory techniques"
+    b["tips"]["bot"] = "How to use the bot"
+    b["tips"]["links_title"] = "📚 Useful links — tap to open:"
+    b["tips"]["links_empty"] = "Links file is empty."
+    b["tips"]["not_loaded"] = "Tips not loaded yet."
+    b["tips"]["more"] = "🔄 Another tip"
+    b["tips"]["all"] = "📋 All tips"
+    b["tips"]["back_categories"] = "⬅️ Back to categories"
+    b["tips"]["random"] = "🔄 Random"
+    b["tips"]["try_today"] = "💡 <i>Try today:</i> {action}"
+    b["tips"]["coin_today"] = "\n\n+{coins} 🪙 for today's tip"
+    b["tips"]["achievement_curiosity"] = "\n🏆 Achievement «Curious» — +{reward} 🪙"
+    b["tips"]["read_count"] = "\n\n📊 Tips read: {count}/10"
+    b["tips"]["unknown_category"] = "Unknown category"
+    b["tips"]["empty_category"] = "No tips in this category"
+
+    b["faq"]["menu"] = "📖 Frequently asked questions\n\nChoose a topic:"
+    b["faq"]["back_list"] = "◀️ Back to questions"
+
+    faq_en = {
+        "mission": {
+            "btn": "1️⃣ Project mission",
+            "title": "1️⃣ What is the project's mission?",
+            "body": (
+                "Palph was built so studying stops feeling like a chore and starts feeling like something you want to do.\n\n"
+                "We combine gamification (coins, streaks, a pet, achievements, tips) with "
+                "evidence-based learning techniques (spaced repetition, "
+                "SM-2, active recall, Pomodoro). You get a system that:\n"
+                "• replaces dull cramming with small wins,\n"
+                "• gives instant feedback — the main antidote to procrastination,\n"
+                "• keeps motivation up through an emotional bond with your pet,\n"
+                "• turns studying into a habit that doesn't rely on willpower every single day.\n\n"
+                "The main goal: you learn more effectively and actually enjoy it."
+            ),
+        },
+        "efficiency": {
+            "btn": "2️⃣ Studying with the bot",
+            "title": "2️⃣ Why is studying with the bot more effective than alone?",
+            "body": (
+                "The bot combines several proven techniques in one loop: "
+                "Pomodoro (25-minute sessions = less burnout), "
+                "instant motivation (coins, achievements, pet emotions), "
+                "productivity tips with small rewards, "
+                "regular reminders, and quizzes with spaced repetition. "
+                "You get structure and feedback that are easy to lose when studying solo."
+            ),
+        },
+        "pet": {
+            "btn": "3️⃣ Why a pet",
+            "title": "3️⃣ Why is there a pet and how does it help you study?",
+            "body": (
+                "Your pet reflects your activity: happy when you study, sad if you skip a day. "
+                "It's an emotional anchor — you study not «for discipline» but «so your pet feels good». "
+                "Bonding with a virtual character is shown to improve habit consistency."
+            ),
+        },
+        "spend_coins": {
+            "btn": "4️⃣ Spending coins",
+            "title": "4️⃣ What can you spend coins on?",
+            "body": (
+                "Right now coins reward studying and help you unlock achievements. "
+                "Soon you'll be able to buy pet customization: colors (orange, blue, green…) and accessories "
+                "(hat, glasses, scarf, crown). More coming — follow the channel 📢."
+            ),
+        },
+        "earn_coins": {
+            "btn": "5️⃣ Earning coins",
+            "title": "5️⃣ How do you earn coins?",
+            "body": (
+                "• +1 coin per minute of study via the timer\n"
+                "• +15 bonus when your streak reaches 2+ days\n"
+                "• Bonus coins for achievements (see profile)\n"
+                "• +1 coin per correct MCQ answer\n"
+                "• +1 coin per flashcard reviewed\n"
+                "• Up to +3 coins per picture task (depends on attempt)\n"
+                "• +1 coin for the first tip of the day in «🎓 Productivity tips» "
+                "(time management, memory, or bot guide)\n"
+                "• «💡 Curious» achievement bonus — 10 tips read (+30 🪙)\n"
+                "• Morning reminder may include a «tip of the day» (once per calendar day)"
+            ),
+        },
+        "sm2": {
+            "btn": "6️⃣ SM-2 for flashcards",
+            "title": "6️⃣ What is SM-2 and why is it effective for flashcards?",
+            "body": (
+                "SM-2 (SuperMemo-2) is an algorithm that «remembers» how hard each card is for you. "
+                "Struggled to recall — the card comes back soon; easy — a week or more later. "
+                "You don't waste time on what you already know and see more of what slips away. "
+                "Used in Anki and based on Ebbinghaus forgetting curve research."
+            ),
+        },
+        "spaced_rep": {
+            "btn": "7️⃣ Spaced repetition",
+            "title": "7️⃣ What is spaced repetition?",
+            "body": (
+                "The idea: material sticks better if you review it with growing gaps — e.g. 1, 3, 7, 16 days. "
+                "Each successful review lengthens the interval; a mistake resets the counter. "
+                "Ebbinghaus demonstrated this in 1885; decades of research confirm it. "
+                "Reviewing over days and weeks beats cramming in one evening."
+            ),
+        },
+        "active_recall": {
+            "btn": "8️⃣ Active recall in the bot",
+            "title": "8️⃣ What is active recall and which modes use it?",
+            "body": (
+                "Active recall means pulling information from memory without peeking. "
+                "It works 2–3× better than re-reading. In the bot it's built into every study mode:\n"
+                "• Situational quizzes — type the definition from a scenario\n"
+                "• Flashcards — see the term, recall, then check\n"
+                "• Productivity tips — short time-management and memory techniques\n"
+                "• Multiple choice — pick the right answer out of four\n"
+                "• Picture tasks — solve and type the answer\n"
+                "Rule of thumb: «if you can explain it, you know it»."
+            ),
+        },
+        "support": {
+            "btn": "🛠 Contact support",
+            "title": "🛠 Support",
+            "body": (
+                "If you have a question, bug report, or idea — write it right here in this chat. "
+                "Your message will be forwarded to admins and you'll get a reply as soon as possible.\n\n"
+                "Direct admin contact: @zerocious"
+            ),
+        },
+    }
+    for k, v in faq_en.items():
+        b["faq"][k] = v
+
+    b["commands"] = {
+        "start": "Start the bot / main menu",
+        "stop": "Stop active timer",
+        "progress": "Subject progress",
+        "pet": "Pet and customization",
+        "leaderboard": "Weekly leaderboard",
+        "friends": "Friends and rankings",
+        "share_friend": "Friend invite link",
+    }
+
+    b["reminders"]["morning"] = (
+        "🌅 Good morning!\n"
+        "Your pet is waiting for today's first session 🐾\n"
+        "Even 5 minutes is already a win."
+    )
+    b["reminders"]["evening_sad"] = (
+        "🌙 Evening.\n"
+        "🐾😢 Your pet is sad — you haven't studied today.\n"
+        "Study at least 5 minutes before midnight to keep your streak 🔥"
+    )
+    b["reminders"]["evening_fallback"] = (
+        "🌙 Evening!\n"
+        "No study session today yet — "
+        "fit in at least 5 minutes before midnight to keep your streak 🔥"
+    )
+    b["reminders"]["streak_bonus"] = (
+        "🌙 Good evening! Your streak was updated:\n"
+        "🔥 {streak} days in a row\n"
+        "🪙 +{bonus} coins for consistency!"
+    )
+    b["reminders"]["freeze_used"] = (
+        "❄️ Streak freeze was used.\n"
+        "🔥 Streak saved: {streak} days."
+    )
+    b["reminders"]["tip_of_day_header"] = "\n\n———\n🌟 <b>Tip of the day</b>\n\n"
+
+    b["achievements_notify"]["single"] = (
+        "🎉 CONGRATS! You unlocked a new achievement:\n\n"
+        "{icon} {name}\n"
+        "{description}\n\n"
+        "🪙 Bonus: +{reward} coins\n"
+        "🐾 Your pet is proud of you!"
+    )
+    b["achievements_notify"]["multiple_header"] = "🎊 WOW! Several achievements in one session:\n\n"
+    b["achievements_notify"]["multiple_item"] = "{icon} {name} (+{reward} coins)"
+    b["achievements_notify"]["multiple_footer"] = (
+        "\n\n🪙 Total bonus: +{total_reward} coins\n"
+        "🔥 You're a true study champion!"
+    )
+    b["achievements_notify"]["default_name"] = "Achievement"
+
+    b["user_tasks"]["instruction"] = USER_TASK_INSTRUCTION_EN
+    b["user_tasks"]["import_cancelled"] = "Import cancelled."
+    b["user_tasks"]["send_file"] = "Send a .txt file with tasks or /cancel to abort."
+    b["user_tasks"]["need_txt"] = "Need a .txt file. See instructions above."
+    b["user_tasks"]["file_too_big"] = "File too large (max {max_kb} KB)."
+    b["user_tasks"]["read_error"] = "Could not read the file. Save it as UTF-8."
+    b["user_tasks"]["download_error"] = "Could not download the file. Try again."
+    b["user_tasks"]["empty_file"] = "File is empty or contains only comments."
+    b["user_tasks"]["limit_reached"] = "Delete old tasks or split across subjects."
+    b["user_tasks"]["parse_no_separator"] = "Line {line_no}: missing «||» — use «question || answer»."
+    b["user_tasks"]["parse_empty_question"] = "Line {line_no}: empty question."
+    b["user_tasks"]["parse_no_answer"] = "Line {line_no}: no correct answer."
+
+    b["friends"]["invite_invalid"] = "⏳ Invite link is invalid or expired."
+    b["friends"]["invite_accepted"] = "🎉 You were added as a friend of user <code>{creator_id}</code>!"
+    b["friends"]["invite_notify_creator"] = (
+        "🎉 User <code>{invitee_id}</code> joined you via invite link!"
+    )
+    b["friends"]["already_friends"] = "👥 You're already friends."
+    b["friends"]["own_link"] = "🙂 That's your own link — share it with others."
+    b["friends"]["add_cancelled"] = "Add friend cancelled."
+    b["friends"]["parse_fail"] = "❌ Couldn't parse input. Enter @username or numeric Telegram ID (or /cancel)."
+    b["friends"]["user_not_found"] = (
+        "❌ User <code>@{username}</code> not found.\n"
+        "They may not have opened the bot, hid their @handle, or there's a typo. "
+        "Ask them for their numeric Telegram ID and try again via /friends."
+    )
+    b["friends"]["self_target"] = "🙂 You can't add yourself."
+    b["friends"]["id_not_registered"] = "❌ No user with this ID is registered in the bot."
+    b["friends"]["pending_exists"] = "📩 Request already sent; waiting for a reply."
+    b["friends"]["auto_accepted"] = (
+        "🎉 They already had a pending request to you — "
+        "you're now friends automatically!"
+    )
+    b["friends"]["sent"] = "✅ Request sent. Waiting for confirmation."
+    b["friends"]["incoming_request"] = "👥 User <code>{user_id}</code> wants to add you as a friend."
+    b["friends"]["auto_accept_notify"] = (
+        "🎉 User <code>{user_id}</code> sent you a request — "
+        "you're now friends (you had a pending request too)."
+    )
+    b["friends"]["notify_failed"] = (
+        "\n\n⚠️ Couldn't deliver the notification — the user may have blocked the bot."
+    )
+    b["friends"]["no_pending"] = "📩 No incoming requests."
+    b["friends"]["pending_header"] = "📩 <b>Incoming requests:</b>"
+    b["friends"]["accept"] = "✅ Accept"
+    b["friends"]["reject"] = "❌ Decline"
+    b["friends"]["add_btn"] = "➕ Add"
+    b["friends"]["pending_btn"] = "📩 Requests ({count})"
+    b["friends"]["share_link"] = "🔗 Invite link"
+    b["friends"]["back"] = "◀️ Back to friends"
+    b["friends"]["cancel"] = "◀️ Cancel"
+    b["friends"]["empty_list"] = (
+        "You have no friends added yet.\n"
+        "Use <b>/friends</b> and «➕ Add» to invite someone by Telegram ID."
+    )
+    b["friends"]["add_prompt"] = b["friends"].get("add_prompt")  # set below
+    b["friends"]["add_prompt"] = (
+        "🆔 Enter the user's <b>@username</b> or <b>Telegram ID</b>.\n\n"
+        "Examples:\n"
+        "  • <code>@alice</code>\n"
+        "  • <code>alice</code> (without @)\n"
+        "  • <code>123456789</code>\n\n"
+        "💡 Username works only if they interacted with the bot at least once — "
+        "we save their @handle on /start. If search fails, ask for their numeric "
+        "Telegram ID via @userinfobot.\n\n"
+        "Send /cancel to abort."
+    )
+
+    b["pet"]["emotion_0"] = "sad 😢 (start studying today!)"
+    b["pet"]["emotion_low"] = "happy 😊 (keep it up!)"
+    b["pet"]["emotion_mid"] = "very happy 🤗 (nice work!)"
+    b["pet"]["emotion_high"] = "legendary 🌟 (you're a champion!)"
+    b["pet"]["caption"] = (
+        "🐾 <b>{name}</b>\n\n"
+        "Level: <b>{level}</b>\n"
+        "XP: {xp}\n"
+        "Color: {color}  ·  Accessory: {accessory}\n"
+        "Mood: {emotion}\n\n"
+        "💰 Balance: {coins} 🪙"
+    )
+    b["pet"]["image_unavailable"] = "\n\n<i>(pet image unavailable)</i>"
+    b["pet"]["colors"] = "🎨 Colors"
+    b["pet"]["accessories"] = "🎁 Accessories"
+    b["pet"]["rename"] = "✏️ Rename"
+    b["pet"]["back_profile"] = "◀️ Profile"
+    b["pet"]["back_pet"] = "◀️ Back to pet"
+    b["pet"]["picker_legend"] = (
+        "<b>{title}</b>\n\n"
+        "⭐ — equipped\n"
+        "✓ — owned (tap to equip)\n"
+        "💰 — available to buy\n"
+        "🔒 — locked until level shown\n\n"
+        "Level: <b>{level}</b>"
+    )
+    b["pet"]["level_up"] = (
+        "🎉 <b>Level up!</b>\n"
+        "🐾 Your pet grew: {old_level} → <b>{new_level}</b>"
+    )
+    b["pet"]["level_up_unlocked"] = (
+        "\n\n<b>New items unlocked:</b>\n{items}\n\n"
+        "Buy them in profile via the customization picker."
+    )
+    b["pet"]["level_up_none"] = "\n\nNo new items at this level — keep going!"
+    b["pet"]["default_name"] = "Pet"
+
+    b["leaderboard"]["title"] = "<b>📊 Weekly leaderboard · {week}</b>"
+    b["leaderboard"]["segment_newbie"] = "🆕 Newcomers"
+    b["leaderboard"]["segment_main"] = "🏆 Main"
+    b["leaderboard"]["segment_line"] = "Segment: {label}"
+    b["leaderboard"]["empty_week"] = "No points scored this week yet."
+    b["leaderboard"]["top_header"] = "<b>Top:</b>"
+    b["leaderboard"]["row"] = "{marker} {rank}. id={user_id}  {pts:.0f} pts  (×{mult:.2f})"
+    b["leaderboard"]["no_points"] = "You have no points this week yet."
+    b["leaderboard"]["your_rank"] = "Your rank: <b>{rank}</b>  {pts:.0f} pts{hidden}"
+    b["leaderboard"]["hidden_note"] = " · You are hidden"
+
+    b["freeze"]["title"] = "❄️ <b>Streak freeze</b>"
+    b["freeze"]["current"] = "🔥 Current streak: <b>{streak}</b> days"
+    b["freeze"]["balance"] = "💰 Balance: <b>{balance}</b> 🪙"
+    b["freeze"]["cost"] = "💸 Price: <b>{cost}</b> 🪙"
+    b["freeze"]["has_active"] = (
+        "✅ You already have an active freeze — "
+        "it will trigger on the next missed day."
+    )
+    b["freeze"]["cooldown"] = "⏳ Cooldown: next freeze in <b>{days}</b> days."
+    b["freeze"]["insufficient"] = "❌ Need <b>{missing}</b> more 🪙."
+    b["freeze"]["description"] = (
+        "Freeze saves your streak for ONE missed day. "
+        "Purchase stays active until used."
+    )
+    b["freeze"]["buy_btn"] = "✅ Buy for {cost} 🪙"
+    b["freeze"]["purchased"] = (
+        "❄️ Freeze purchased for <b>{cost}</b> 🪙.\n\n"
+        "🔥 Streak: <b>{streak}</b> days — saved on the next missed day."
+    )
+    b["freeze"]["not_enough_coins"] = "❌ Not enough coins."
+    b["freeze"]["cooldown_active"] = "⏳ A freeze was bought in the last 7 days."
+
+    return b
+
+
+def main():
+    LOCALES.mkdir(parents=True, exist_ok=True)
+    bundles = {"ru": ru_bundle(), "en": en_bundle()}
+    counts = {}
+    for loc, data in bundles.items():
+        path = LOCALES / f"{loc}.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        counts[loc] = sum(1 for _ in open(path, encoding="utf-8"))
+        print(f"{path}: {counts[loc]} lines")
+    return counts
+
+
+if __name__ == "__main__":
+    main()

@@ -11,8 +11,15 @@ import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
 
 from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
+from i18n import t, DEFAULT_LOCALE, SUPPORTED_LOCALES
 
 logger = logging.getLogger("studybuddy_bot")
+
+
+def _user_locale(locale: str | None) -> str:
+    if locale in SUPPORTED_LOCALES:
+        return locale
+    return DEFAULT_LOCALE
 
 
 # ------------------------------------------------------------
@@ -693,11 +700,8 @@ class ReminderService:
         for u in users:
             uid = u["user_id"]
             try:
-                text = (
-                    "🌅 Доброе утро!\n"
-                    "Твой питомец ждёт первую сессию сегодня 🐾\n"
-                    "Даже 5 минут — это уже победа."
-                )
+                locale = _user_locale(await self.user_repo.get_locale(uid))
+                text = t("reminders.morning", locale)
                 if self.morning_tip_builder:
                     try:
                         extra = await self.morning_tip_builder(uid, tz)
@@ -730,21 +734,6 @@ class ReminderService:
                     uid, type(e).__name__, e,
                 )
 
-    # Evening-reminder texts. Sad-pet variant is the default expected path
-    # (filter подразумевает has_studied_today=0 → derive_emotion даёт "sad").
-    # Fallback variant сохраняется как defensive: если эмоция вдруг
-    # не "sad" (например, edge case в filter), text остаётся осмысленным.
-    _EVENING_SAD_PET_TEXT = (
-        "🌙 Вечер.\n"
-        "🐾😢 Питомец загрустил — ты сегодня ещё не учился.\n"
-        "Поучись хотя бы 5 минут до полуночи, и стрик сохранится 🔥"
-    )
-    _EVENING_FALLBACK_TEXT = (
-        "🌙 Вечер!\n"
-        "Сегодня ещё не было ни одной учебной сессии — "
-        "успей хотя бы 5 минут до полуночи, чтобы сохранить стрик 🔥"
-    )
-
     async def _send_evening(self, tz: str, hhmm: str) -> None:
         """
         Evening reminders с sad-pet интеграцией (TODO #16, последний остаток).
@@ -769,6 +758,9 @@ class ReminderService:
 
         for u in users:
             uid = u["user_id"]
+            locale = _user_locale(await self.user_repo.get_locale(uid))
+            evening_sad = t("reminders.evening_sad", locale)
+            evening_fallback = t("reminders.evening_fallback", locale)
             # has_studied_today из SQL — int 0/1; конвертим в bool
             studied = bool(u.get("has_studied_today", 0))
             emotion = derive_emotion(
@@ -788,18 +780,18 @@ class ReminderService:
                         await self.bot.send_animation(
                             chat_id=uid,
                             animation=FSInputFile(str(gif_path)),
-                            caption=self._EVENING_SAD_PET_TEXT,
+                            caption=evening_sad,
                         )
                     except FileNotFoundError:
                         await self.bot.send_message(
-                            chat_id=uid, text=self._EVENING_SAD_PET_TEXT,
+                            chat_id=uid, text=evening_sad,
                         )
                 else:
                     # Non-sad emotion path → text-only fallback копи.
                     # Defensive: SQL filter гарантирует has_studied_today=0,
                     # так что эта ветка достижима только при странных edge cases.
                     await self.bot.send_message(
-                        chat_id=uid, text=self._EVENING_FALLBACK_TEXT,
+                        chat_id=uid, text=evening_fallback,
                     )
                 if self.event_repo:
                     await self.event_repo.log(
@@ -911,13 +903,15 @@ class StreakService:
                 # Уведомление (если передан bot)
                 if self.bot and bonus > 0:
                     try:
+                        locale = _user_locale(await self.user_repo.get_locale(user_id))
                         await self.bot.send_message(
                             chat_id=user_id,
-                            text=(
-                                f"🌙 Добрый вечер! Твой стрик обновлён:\n"
-                                f"🔥 {new_streak} дней подряд\n"
-                                f"🪙 +{bonus} монет за упорство!"
-                            )
+                            text=t(
+                                "reminders.streak_bonus",
+                                locale,
+                                streak=new_streak,
+                                bonus=bonus,
+                            ),
                         )
                     except Exception as e:
                         # Блокировка / прочие ошибки — пишем в лог, не падаем.
@@ -944,11 +938,15 @@ class StreakService:
                         # Notify пользователя что freeze отработал
                         if self.bot:
                             try:
+                                locale = _user_locale(
+                                    await self.user_repo.get_locale(user_id)
+                                )
                                 await self.bot.send_message(
                                     chat_id=user_id,
-                                    text=(
-                                        f"❄️ Заморозка стрика сработала.\n"
-                                        f"🔥 Стрик сохранён: {current_streak} дн."
+                                    text=t(
+                                        "reminders.freeze_used",
+                                        locale,
+                                        streak=current_streak,
                                     ),
                                 )
                             except Exception as e:
@@ -1232,8 +1230,9 @@ class LeaderboardService:
             return (
                 "<b>👥 Друзья</b>\n\n"
                 "У тебя пока нет добавленных друзей.\n"
-                "Используй <b>/friends</b> и кнопку «➕ Добавить», "
-                "чтобы пригласить кого-то по Telegram ID."
+                "Используй <b>/friends</b>: «➕ Добавить» (ID или @username) "
+                "или «🔗 Пригласить по ссылке» — отправь ссылку другу, "
+                "он откроет бота и сразу станет твоим другом."
             )
 
         # Включаем себя в список для ранжирования
