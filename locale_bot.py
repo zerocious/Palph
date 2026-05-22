@@ -111,6 +111,7 @@ def commands_for_locale(locale: str) -> list[BotCommand]:
         BotCommand(command="leaderboard", description=t("commands.leaderboard", loc)),
         BotCommand(command="friends", description=t("commands.friends", loc)),
         BotCommand(command="share_friend", description=t("commands.share_friend", loc)),
+        BotCommand(command="delete_account", description=t("commands.delete_account", loc)),
     ]
 
 

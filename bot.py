@@ -44,6 +44,14 @@ from services import (
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 from user_task_txt import parse_user_tasks_txt
+from file_upload_security import (
+    validate_subject_id,
+    validate_task_document_metadata,
+    decode_task_upload,
+    safe_subject_dir,
+    safe_task_image_filename,
+    resolve_path_under,
+)
 from i18n import t, kb_in, all_locale_texts, subject_label, study_mode_label, quiz_section_label, SUPPORTED_LOCALES
 from locale_bot import (
     user_locale,
@@ -933,6 +941,8 @@ class QuizTerm:
         }
 
 def load_quiz_section(section: str, subject_id: str = "industrial-management") -> list[QuizTerm]:
+    if validate_subject_id(subject_id) is None:
+        return []
     file_path = STUDY_MATERIALS_PATH / subject_id / "situational" / f"section-{section.lower()}.txt"
     if not file_path.exists():
         return []
@@ -955,6 +965,8 @@ def load_mcq(subject_id: str) -> list[dict]:
     Строки с # и пустые — игнорируются. Малформ-строки (< 5 частей) — пропускаются.
     Возвращает list of dicts: {"question", "correct", "wrongs": [w1, w2, w3]}.
     """
+    if validate_subject_id(subject_id) is None:
+        return []
     file_path = STUDY_MATERIALS_PATH / subject_id / "mcq.txt"
     if not file_path.exists():
         return []
@@ -987,7 +999,10 @@ def load_tasks(subject_id: str) -> list[dict]:
     Задачи без существующего task-NN.png или с пустым accepted — пропускаются
     с warning'ом в лог. Возвращает задачи отсортированные по id.
     """
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if subject_base is None:
+        return []
+    tasks_dir = subject_base / "tasks"
     if not tasks_dir.is_dir():
         return []
     tasks = []
@@ -1007,12 +1022,13 @@ def load_tasks(subject_id: str) -> list[dict]:
         if not isinstance(accepted, list) or not accepted:
             logger.warning(f"task.no_accepted task_id={task_id}")
             continue
-        solution_filename = data.get("solution_image", f"{task_id}-solution.png")
+        raw_solution = data.get("solution_image", f"{task_id}-solution.png")
+        solution_filename = safe_task_image_filename(str(raw_solution), task_id)
         tasks.append({
             "id": task_id,
             "problem": str(data.get("problem", "")),
             "accepted": [str(a) for a in accepted],
-            "solution_filename": str(solution_filename),
+            "solution_filename": solution_filename,
             "kind": "official",
         })
     return tasks
@@ -1042,6 +1058,8 @@ def _mcq_hash(question: str) -> str:
 
 
 def load_flashcards(subject_id: str) -> list[dict]:
+    if validate_subject_id(subject_id) is None:
+        return []
     """
     Читает study_materials/<subject>/flashcards.txt.
     Формат строки: 'термин || определение'.
@@ -2038,6 +2056,19 @@ def _subject_label_by_id(subject_id: str) -> str:
     return subject_id
 
 
+async def _reject_unknown_subject_callback(
+    callback: CallbackQuery, subject_id: str,
+) -> bool:
+    """Return True if subject_id is invalid (caller should return)."""
+    if validate_subject_id(subject_id) is not None:
+        return False
+    await callback.answer(
+        t("common.unknown_subject", await loc(callback.from_user.id)),
+        show_alert=True,
+    )
+    return True
+
+
 def _build_fc_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for sid, label in SUBJECTS:
@@ -2119,6 +2150,8 @@ async def handle_fc_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    if await _reject_unknown_subject_callback(callback, subject_id):
+        return
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     text = await _build_fc_list_text(user_id, subject_id)
     kb = _build_fc_list_keyboard(user_id, subject_id, cards)
@@ -2140,6 +2173,8 @@ async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    if await _reject_unknown_subject_callback(callback, subject_id):
+        return
     await callback.answer()
     await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id)
 
@@ -2155,6 +2190,8 @@ async def handle_fc_delete(callback: CallbackQuery):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
+        return
+    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     deleted = await user_flashcard_repo.delete(user_id, card_id)
     if deleted:
@@ -2208,6 +2245,10 @@ async def handle_fc_definition(message: Message, state: FSMContext):
     data = await state.get_data()
     subject_id = data.get("fc_subject_id")
     term = data.get("fc_term", "")
+    if validate_subject_id(subject_id or "") is None:
+        await state.clear()
+        await message.answer(t("common.unknown_subject", locale))
+        return
 
     try:
         card = await user_flashcard_repo.create(user_id, subject_id, term, definition)
@@ -2258,6 +2299,8 @@ async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     subject_label = _subject_label_by_id(subject_id)
     await callback.answer()
@@ -2339,6 +2382,8 @@ async def handle_ut_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
+    if await _reject_unknown_subject_callback(callback, subject_id):
+        return
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
     text = await _build_ut_list_text(user_id, subject_id)
     kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
@@ -2359,6 +2404,8 @@ async def handle_ut_import_start(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     await callback.answer()
     await state.set_state(UserTaskImportStates.waiting_for_file)
@@ -2389,12 +2436,23 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     doc = message.document
-    if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
-        await message.answer(t("user_tasks.need_txt", locale))
+    meta_err = validate_task_document_metadata(doc)
+    if meta_err:
+        await message.answer(t(meta_err, locale))
         return
     if doc.file_size and doc.file_size > USER_TASK_FILE_MAX_BYTES:
         await message.answer(
             t("user_tasks.file_too_big", locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
+        )
+        return
+
+    data = await state.get_data()
+    subject_id = data.get("ut_subject_id")
+    if validate_subject_id(subject_id or "") is None:
+        await state.clear()
+        await message.answer(
+            t("common.unknown_subject", locale),
+            reply_markup=get_main_keyboard(locale),
         )
         return
 
@@ -2403,10 +2461,16 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
     buffer = BytesIO()
     try:
         await bot.download(doc, destination=buffer)
-        raw = buffer.getvalue().decode("utf-8")
-    except UnicodeDecodeError:
-        await message.answer(t("user_tasks.read_error", locale))
-        return
+        raw_bytes = buffer.getvalue()
+        raw, decode_err = decode_task_upload(raw_bytes, USER_TASK_FILE_MAX_BYTES)
+        if decode_err:
+            if decode_err == "user_tasks.file_too_big":
+                await message.answer(
+                    t(decode_err, locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
+                )
+            else:
+                await message.answer(t(decode_err, locale))
+            return
     except Exception as e:
         logger.error("ut.import_download_failed user=%s reason=%s", user_id, e)
         await message.answer(t("user_tasks.download_error", locale))
@@ -2422,8 +2486,6 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
         await message.answer(t("user_tasks.empty_file", locale))
         return
 
-    data = await state.get_data()
-    subject_id = data.get("ut_subject_id")
     added, err = await user_task_repo.bulk_create(user_id, subject_id, parsed)
     if err == "limit_exceeded":
         await message.answer(
@@ -2468,6 +2530,8 @@ async def handle_ut_delete(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
+    if await _reject_unknown_subject_callback(callback, subject_id):
+        return
     deleted = await user_task_repo.delete(user_id, task_db_id)
     if deleted:
         await event_repo.log(
@@ -2495,6 +2559,8 @@ async def handle_ut_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     subject_label = _subject_label_by_id(subject_id)
     await callback.answer()
@@ -3175,6 +3241,141 @@ async def cmd_stop(message: Message, state: FSMContext):
         )
 
 
+# ------------------------------------------------------------
+# /delete_account — самостоятельная реализация GDPR Art. 17 / 152-ФЗ ст. 14
+# (право на стирание). Two-step confirm чтобы исключить случайное
+# удаление от мисс-тапа в /-пикере. Главный админ заблокирован: он
+# должен сначала сменить MAIN_ADMIN_ID в .env, иначе бот станет
+# неуправляемым после удаления.
+# ------------------------------------------------------------
+@router.message(Command("delete_account"))
+async def cmd_delete_account(message: Message):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+
+    if user_id == MAIN_ADMIN_ID:
+        await message.answer(
+            t("delete_account.main_admin_blocked", locale),
+            parse_mode="HTML",
+        )
+        return
+
+    if not await user_repo.user_exists(user_id):
+        await message.answer(t("delete_account.no_data", locale))
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=t("delete_account.confirm_btn", locale),
+        callback_data=f"delete_account_confirm:{user_id}",
+    )
+    kb.button(
+        text=t("delete_account.cancel_btn", locale),
+        callback_data=f"delete_account_cancel:{user_id}",
+    )
+    kb.adjust(1)
+    await message.answer(
+        t("delete_account.confirm_prompt", locale),
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("delete_account_cancel:"))
+async def handle_delete_account_cancel(callback: CallbackQuery):
+    try:
+        target_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    # Anti-spoof: чужой callback просто молча игнорим (никакого alert'а
+    # — мы не хотим, чтобы посторонний знал, что у user'а есть pending
+    # delete confirm).
+    if target_uid != callback.from_user.id:
+        await callback.answer()
+        return
+    locale = await loc(callback.from_user.id)
+    try:
+        await callback.message.edit_text(
+            t("delete_account.cancelled", locale), reply_markup=None,
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(t("delete_account.cancelled", locale))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_account_confirm:"))
+async def handle_delete_account_confirm(callback: CallbackQuery, state: FSMContext):
+    try:
+        target_uid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if target_uid != callback.from_user.id:
+        await callback.answer()
+        return
+
+    user_id = callback.from_user.id
+
+    # Capture locale BEFORE delete — после стирания get_locale вернёт ''
+    # и UI вынужденно упадёт на ru fallback.
+    locale = await loc(user_id)
+
+    # Двойная защита: если main-admin как-то всё-таки добрался до
+    # confirm-кнопки (нажал из старого сообщения после смены
+    # MAIN_ADMIN_ID — маловероятно, но), всё равно блокируем.
+    if user_id == MAIN_ADMIN_ID:
+        try:
+            await callback.message.edit_text(
+                t("delete_account.main_admin_blocked", locale),
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                t("delete_account.main_admin_blocked", locale),
+                parse_mode="HTML",
+            )
+        await callback.answer()
+        return
+
+    # Снимаем активный pomodoro-таймер: задача держит ссылку на FSM
+    # и на user_id и после удаления продолжила бы пытаться писать
+    # в стертую БД-строку.
+    timer_task = active_timers.pop(user_id, None)
+    if timer_task is not None and not timer_task.done():
+        timer_task.cancel()
+
+    # FSM-state в памяти — clear; persistent fsm_storage будет
+    # вычищена в delete_user_completely.
+    try:
+        await state.clear()
+    except Exception:
+        logger.debug("delete_account.state_clear_failed user_id=%s", user_id)
+
+    # admins-таблица не имеет FK на users → удалить руками. И в
+    # in-memory кеш ADMINS тоже.
+    ADMINS.discard(user_id)
+    try:
+        await admin_repo.remove(user_id)
+    except Exception as e:
+        logger.warning(
+            "delete_account.admin_remove_failed user_id=%s reason=%s",
+            user_id, type(e).__name__,
+        )
+
+    counts = await user_repo.delete_user_completely(user_id)
+    logger.info("account.deleted user_id=%s counts=%s", user_id, counts)
+
+    try:
+        await callback.message.edit_text(
+            t("delete_account.done", locale), reply_markup=None,
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(t("delete_account.done", locale))
+    await callback.answer()
+
+
 @router.message(TimerStates.active, kb_in("kb.back_main"))
 async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
     locale = await loc(message.from_user.id)
@@ -3540,12 +3741,17 @@ async def _send_next_task(chat_id: int, state: FSMContext):
             await _send_next_task(chat_id, state)
         return
 
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
-    image_path = tasks_dir / f"{task['id']}.png"
-    if not image_path.exists():
+    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if subject_base is None:
+        await state.update_data(task_index=idx + 1, task_attempts=0)
+        await _send_next_task(chat_id, state)
+        return
+    tasks_dir = subject_base / "tasks"
+    image_path = resolve_path_under(tasks_dir, f"{task['id']}.png")
+    if image_path is None or not image_path.exists():
         logger.warning(
             "task.image_missing_at_send task_id=%s subject=%s expected=%s",
-            task["id"], subject_id, image_path.name,
+            task["id"], subject_id, f"{task['id']}.png",
         )
         await state.update_data(task_index=idx + 1, task_attempts=0)
         await _send_next_task(chat_id, state)
@@ -3699,8 +3905,12 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await _send_next_task(message.chat.id, state)
         return
 
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
-    solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
+    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    solution_path = None
+    if subject_base is not None:
+        tasks_dir = subject_base / "tasks"
+        solution_name = task.get("solution_filename", f"{task['id']}-solution.png")
+        solution_path = resolve_path_under(tasks_dir, solution_name)
     # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
@@ -3716,7 +3926,7 @@ async def handle_task_answer(message: Message, state: FSMContext):
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
     )
-    if solution_path.exists():
+    if solution_path is not None and solution_path.exists():
         try:
             await bot.send_photo(
                 message.chat.id,

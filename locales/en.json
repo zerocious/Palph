@@ -226,6 +226,7 @@
     "broken_callback": "Broken callback",
     "admin_only": "Admins only",
     "unknown_table": "Unknown table",
+    "unknown_subject": "Unknown subject",
     "request_inactive": "Request is no longer active."
   },
   "subjects": {
@@ -338,7 +339,17 @@
     "pet": "Pet and customization",
     "leaderboard": "Weekly leaderboard",
     "friends": "Friends and rankings",
-    "share_friend": "Friend invite link"
+    "share_friend": "Friend invite link",
+    "delete_account": "🗑 Delete my account and all data"
+  },
+  "delete_account": {
+    "confirm_prompt": "⚠️ <b>Account deletion</b>\n\nThis will <b>permanently</b> erase all your data:\n• study sessions, streak, coins\n• achievements and per-subject progress\n• pet, inventory, level\n• your flashcards and tasks\n• friends and pending requests\n• event log and settings\n\nThis CANNOT be undone. Backups may retain your data for up to 30 more days — then they're deleted automatically.\n\nConfirm that you want to delete your account.",
+    "confirm_btn": "🗑 Yes, delete everything",
+    "cancel_btn": "❌ Cancel",
+    "cancelled": "✅ Deletion cancelled. Your data is intact.",
+    "done": "🗑 Account deleted.\n\nAll your data has been removed from the active database. Backups will be purged automatically within 30 days.\n\nIf you want to start over — send /start.",
+    "no_data": "You don't have an account in the Bot — nothing to delete. If you believe this is an error, email maksim.frantsov@yandex.ru.",
+    "main_admin_blocked": "❌ The main administrator can't delete themselves via this command — the bot would become unmanageable.\n\nIf you really need to delete the main account: change <code>MAIN_ADMIN_ID</code> in <code>.env</code> to a different user_id and restart the bot, then run this command."
   },
   "reminders": {
     "morning": "🌅 Good morning!\nYour pet is waiting for today's first session 🐾\nEven 5 minutes is already a win.",

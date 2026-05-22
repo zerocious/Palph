@@ -227,10 +227,19 @@ and will then be deleted automatically as part of normal rotation.
 
 ### How to exercise your rights
 
-Email **maksim.frantsov@yandex.ru** from any address, identifying your
-Telegram user ID (sent via `/start` to the Bot — the Bot will show it). We
-will respond within **30 calendar days** (GDPR Art. 12(3) and 152-ФЗ
-Art. 20). There is no charge for exercising your rights.
+**Account deletion (Art. 17 / 152-ФЗ Art. 14):** send `/delete_account` in the
+Bot. You will be asked to confirm; all data in the live database is erased
+immediately. Database backups may retain your data for up to 30 more days,
+then are deleted automatically (see §7).
+
+**All other rights** (access, rectification, portability, objection, etc.):
+email **maksim.frantsov@yandex.ru** from any address, identifying your
+Telegram user ID (shown when you send `/start` to the Bot). We will respond
+within **30 calendar days** (GDPR Art. 12(3) and 152-ФЗ Art. 20). There is
+no charge for exercising your rights.
+
+The main administrator account cannot be deleted via `/delete_account` —
+change `MAIN_ADMIN_ID` in `.env` first if you need to remove that account.
 
 ---
 

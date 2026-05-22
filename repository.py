@@ -370,6 +370,67 @@ class UserRepository:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    # ------------------------------------------------------------
+    # Полное удаление пользователя (GDPR Art. 17 / 152-ФЗ ст. 14)
+    # ------------------------------------------------------------
+    async def delete_user_completely(self, user_id: int) -> dict[str, int]:
+        """
+        Удаляет все данные пользователя из БД. Возвращает {table: rowcount}
+        для логирования.
+
+        Архитектура:
+          • Таблицы с `REFERENCES users(user_id) ON DELETE CASCADE`
+            удаляются автоматически SQLite-движком при DELETE из users
+            (PRAGMA foreign_keys=ON в db.get_db). Это:
+              notification_settings, study_sessions, user_achievements,
+              user_pet, user_pet_inventory, daily_score_counters,
+              weekly_scores, streak_freezes, weekly_badges,
+              friend_requests (from+to), friendships (a+b),
+              friend_invite_tokens, user_flashcards, user_tasks,
+              user_tips_stats, user_tips_seen.
+          • Таблицы БЕЗ FK на users — стираем вручную:
+              quiz_progress, flashcard_progress, mcq_progress,
+              task_progress, user_subject_stats, events.
+          • fsm_storage — key содержит user_id в третьем сегменте,
+            chat_id в втором; для приватных чатов они равны. Чистим по
+            LIKE-паттерну ":<uid>:<uid>:" — уникально для private chat.
+          • admins — НЕ трогаем здесь; caller сам решит, нужно ли
+            (главный админ не имеет права удалить себя через бот).
+
+        Всё под одним db.lock + одним commit'ом, чтобы операция была
+        атомарной — частично удалённый user'а быть не должно.
+        """
+        counts: dict[str, int] = {}
+        async with self.db.lock:
+            for table in (
+                "quiz_progress",
+                "flashcard_progress",
+                "mcq_progress",
+                "task_progress",
+                "user_subject_stats",
+                "events",
+            ):
+                cursor = await self.db.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
+                )
+                counts[table] = cursor.rowcount
+
+            # FSM-ключи приватного чата: "<bot_id>:<uid>:<uid>:<thread>"
+            cursor = await self.db.execute(
+                "DELETE FROM fsm_storage WHERE key LIKE ?",
+                (f"%:{user_id}:{user_id}:%",),
+            )
+            counts["fsm_storage"] = cursor.rowcount
+
+            # users — CASCADE удалит все таблицы с FK
+            cursor = await self.db.execute(
+                "DELETE FROM users WHERE user_id = ?", (user_id,)
+            )
+            counts["users"] = cursor.rowcount
+
+            await self.db.commit()
+        return counts
+
 
 class SessionRepository:
     """Работа с таблицей study_sessions (только сохранение факта сессии)."""
