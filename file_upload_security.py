@@ -1,0 +1,159 @@
+"""
+File upload and filesystem-read hardening for Telegram document imports
+and study-materials path resolution.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from locale_bot import SUBJECT_IDS
+
+if TYPE_CHECKING:
+    from aiogram.types import Document
+
+# --- User task .txt upload ---
+ALLOWED_TASK_MIME = frozenset({"text/plain", "application/octet-stream"})
+TASK_FILENAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,128}\.txt$", re.IGNORECASE)
+
+BINARY_MAGIC_PREFIXES = (
+    b"\x50\x4b\x03\x04",  # ZIP
+    b"\x7fELF",
+    b"\x89PNG\r\n\x1a\n",
+    b"\x89PNG",
+    b"GIF87a",
+    b"GIF89a",
+    b"%PDF-",
+    b"\x4d\x5a",
+)
+
+MAX_NUL_RATIO = 0.05
+
+# --- Task JSON image names (content-supply chain) ---
+TASK_IMAGE_RE = re.compile(r"^[\w.-]+\.png$", re.IGNORECASE)
+
+# --- Pet asset keys (DB → filesystem) ---
+PET_EMOTIONS = frozenset({"happy", "sad", "excited", "sleepy", "studying"})
+PET_COLORS = frozenset({"orange", "grey", "blue", "green", "pink"})
+PET_ACCESSORIES = frozenset({"none", "hat", "glasses", "scarf", "crown"})
+
+# --- ZIP (future inbound archives) ---
+ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+ZIP_MAX_COMPRESSION_RATIO = 20
+ZIP_MAX_MEMBER_COUNT = 500
+
+
+def validate_subject_id(subject_id: str) -> str | None:
+    """Return subject_id if allowlisted, else None."""
+    return subject_id if subject_id in SUBJECT_IDS else None
+
+
+def validate_task_document_metadata(doc: Document) -> str | None:
+    """
+    Pre-download metadata checks.
+    Returns i18n key (e.g. 'user_tasks.need_txt') or None if OK.
+    """
+    name = (doc.file_name or "").strip()
+    if not TASK_FILENAME_RE.match(name):
+        return "user_tasks.need_txt"
+    if doc.mime_type and doc.mime_type not in ALLOWED_TASK_MIME:
+        return "user_tasks.need_txt"
+    return None
+
+
+def scan_upload_bytes(raw: bytes) -> str | None:
+    """
+    Lightweight content scan (no external AV).
+    Returns i18n key or None if OK.
+    """
+    if not raw:
+        return "user_tasks.empty_file"
+    for magic in BINARY_MAGIC_PREFIXES:
+        if raw.startswith(magic):
+            return "user_tasks.need_txt"
+    nul_count = raw.count(b"\x00")
+    if nul_count / len(raw) > MAX_NUL_RATIO:
+        return "user_tasks.need_txt"
+    return None
+
+
+def decode_task_upload(raw: bytes, max_bytes: int) -> tuple[str | None, str | None]:
+    """
+    Post-download size cap, scan, UTF-8 decode.
+    Returns (text, error_i18n_key).
+    """
+    if len(raw) > max_bytes:
+        return None, "user_tasks.file_too_big"
+    scan_err = scan_upload_bytes(raw)
+    if scan_err:
+        return None, scan_err
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "user_tasks.read_error"
+
+
+def safe_subject_dir(materials_root: Path, subject_id: str) -> Path | None:
+    """Resolved study_materials/<subject_id> or None if invalid / escapes root."""
+    if validate_subject_id(subject_id) is None:
+        return None
+    root = materials_root.resolve()
+    base = (root / subject_id).resolve()
+    try:
+        base.relative_to(root)
+    except ValueError:
+        return None
+    return base if base.is_dir() else base  # may not exist yet for user-only subjects
+
+
+def safe_task_image_filename(name: str, task_id: str) -> str:
+    """Basename-only PNG under tasks/ directory."""
+    base = Path(str(name)).name
+    if not TASK_IMAGE_RE.fullmatch(base):
+        return f"{task_id}-solution.png"
+    return base
+
+
+def resolve_path_under(directory: Path, filename: str) -> Path | None:
+    """Resolve filename inside directory; None if traversal escapes."""
+    directory = directory.resolve()
+    candidate = (directory / filename).resolve()
+    try:
+        candidate.relative_to(directory)
+    except ValueError:
+        return None
+    return candidate
+
+
+def sanitize_pet_asset_keys(
+    emotion: str,
+    color: str,
+    accessory: str,
+) -> tuple[str, str, str]:
+    """Clamp pet render keys to known catalog values."""
+    if emotion not in PET_EMOTIONS:
+        return "happy", "orange", "none"
+    if color not in PET_COLORS:
+        color = "orange"
+    if accessory not in PET_ACCESSORIES:
+        accessory = "none"
+    return emotion, color, accessory
+
+
+def validate_zip_member(
+    uncompressed_size: int,
+    compress_size: int,
+    *,
+    max_uncompressed: int = ZIP_MAX_UNCOMPRESSED_BYTES,
+    max_ratio: int = ZIP_MAX_COMPRESSION_RATIO,
+) -> bool:
+    """Return False if member looks like a zip bomb (for future inbound ZIP)."""
+    if uncompressed_size < 0 or compress_size < 0:
+        return False
+    if uncompressed_size > max_uncompressed:
+        return False
+    if compress_size > 0 and uncompressed_size / compress_size > max_ratio:
+        return False
+    return True

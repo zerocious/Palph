@@ -1,9 +1,11 @@
 """i18n smoke and regression tests."""
 import ast
+import importlib
 import json
 from pathlib import Path
 
-from i18n import SUPPORTED_LOCALES, all_locale_texts, t
+from i18n import SUPPORTED_LOCALES, all_locale_texts, subject_label, t
+from locale_bot import SUBJECT_IDS
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCALES_DIR = ROOT / "locales"
@@ -95,3 +97,31 @@ def test_build_progress_view_no_loc_shadow():
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     assert "user_loc = locale or await loc(user_id)" in src
     assert "return t(\"start.need_register\", loc)" not in src
+
+
+def test_subject_button_labels_registered_for_all_locales():
+    """Every localized subject label must map back to its subject_id."""
+    bot = importlib.import_module("bot")
+    texts = bot._all_subject_button_texts()
+    assert len(texts) == len(SUBJECT_IDS) * len(SUPPORTED_LOCALES)
+    for sid in SUBJECT_IDS:
+        for loc in SUPPORTED_LOCALES:
+            label = subject_label(sid, loc)
+            assert label in texts
+            assert bot.subject_id_from_button(label) == sid
+
+
+def test_subject_picked_handler_not_gated_by_fsm_state():
+    """Regression: subject clicks must not require QuizStates.choosing_subject."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert "async def handle_subject_picked" in src
+    assert "QuizStates.choosing_subject, F.text.in_(_all_subject_button_texts())" not in src
+    assert "F.text.in_(_all_subject_button_texts())" in src
+
+
+def test_industrial_management_en_label():
+    en = subject_label("industrial-management", "en")
+    ru = subject_label("industrial-management", "ru")
+    assert "Production management" in en
+    assert "производственного" in ru
+    assert en != ru

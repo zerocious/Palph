@@ -29,7 +29,8 @@ FAQ_IDS = (
     "sm2",
     "spaced_rep",
     "active_recall",
-    "support",
+    "guarantee",
+    "why_free",
 )
 
 SUBJECT_IDS = ("industrial-management", "math", "english")

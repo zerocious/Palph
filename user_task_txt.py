@@ -64,6 +64,11 @@ USER_TASK_TXT_INSTRUCTION = (
 Для отмены — /cancel"""
 )
 
+MAX_PROBLEM_LEN = 2000
+MAX_ANSWER_LEN = 500
+MAX_HINT_LEN = 500
+MAX_ANSWERS_PER_TASK = 20
+
 
 def parse_user_tasks_txt(content: str) -> tuple[list[dict], list[str]]:
     """
@@ -87,14 +92,24 @@ def parse_user_tasks_txt(content: str) -> tuple[list[dict], list[str]]:
         if not problem:
             errors.append(f"Строка {line_no}: пустой вопрос.")
             continue
+        if len(problem) > MAX_PROBLEM_LEN:
+            errors.append(f"Строка {line_no}: вопрос слишком длинный.")
+            continue
         hint = ""
         answers_part = right.strip()
         if "##" in answers_part:
             answers_part, _, hint_raw = answers_part.partition("##")
             hint = hint_raw.strip()
+        if len(hint) > MAX_HINT_LEN:
+            errors.append(f"Строка {line_no}: подсказка слишком длинная.")
+            continue
         accepted = [a.strip() for a in answers_part.split("|") if a.strip()]
+        accepted = accepted[:MAX_ANSWERS_PER_TASK]
         if not accepted:
             errors.append(f"Строка {line_no}: нет правильного ответа.")
+            continue
+        if any(len(a) > MAX_ANSWER_LEN for a in accepted):
+            errors.append(f"Строка {line_no}: ответ слишком длинный.")
             continue
         tasks.append({
             "problem": problem,

@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import re
+import sys
 import random
 import hashlib
 import sqlite3
+import unicodedata
 from html import escape as html_escape
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -15,14 +17,21 @@ from pathlib import Path
 import pytz
 from dotenv import load_dotenv
 
+from task_answer_match import task_answer_matches
+
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramBadRequest,
+)
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
     FSInputFile, BufferedInputFile,
+    ErrorEvent,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from fsm_storage import SQLiteStorage
@@ -36,6 +45,7 @@ from repository import (
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
+    PlanRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -44,15 +54,16 @@ from services import (
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 from user_task_txt import parse_user_tasks_txt
-from file_upload_security import (
-    validate_subject_id,
-    validate_task_document_metadata,
-    decode_task_upload,
-    safe_subject_dir,
-    safe_task_image_filename,
-    resolve_path_under,
-)
 from i18n import t, kb_in, all_locale_texts, subject_label, study_mode_label, quiz_section_label, SUPPORTED_LOCALES
+from plan_handlers import (
+    PLAN_UI_ENABLED,
+    register_plan_handlers,
+    maybe_offer_first_plan_prompt,
+    build_plan_subject_keyboard,
+    on_plan_activity_complete,
+    plan_available,
+    return_to_plan_without_complete,
+)
 from locale_bot import (
     user_locale,
     faq_items,
@@ -125,6 +136,31 @@ def setup_logger():
 
 logger = setup_logger()
 
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """
+    done-callback для всех asyncio-задач, которые мы создаём вручную
+    (schedulers, per-user timers). Без этого callback'а исключение,
+    «улетевшее» из задачи, отобразится только как `Task exception was
+    never retrieved` в stderr при GC задачи — то есть с задержкой и
+    без traceback'а в bot.log. С callback'ом мы получаем
+    `logger.exception` сразу как только задача упала.
+
+    CancelledError — нормальный shutdown path; logger.exception для
+    него не пишем.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.exception(
+        "background_task.crashed name=%s exc=%s",
+        task.get_name(), type(exc).__name__,
+        exc_info=exc,
+    )
+
+
 # ------------------------------------------------------------
 # Загрузка достижений
 # ------------------------------------------------------------
@@ -146,6 +182,7 @@ mcq_repo: McqProgressRepository = None
 task_repo: TaskProgressRepository = None
 subject_stats_repo: SubjectStatsRepository = None
 event_repo: EventRepository = None
+plan_repo: PlanRepository = None
 tips_repo: TipsRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
@@ -159,6 +196,98 @@ dp: Dispatcher = None
 # Держим строгие ссылки, чтобы задачи не были собраны GC,
 # и чтобы их можно было отменить при остановке/перезапуске.
 active_timers: dict[int, asyncio.Task] = {}
+_timer_completion_locks: dict[int, asyncio.Lock] = {}
+
+
+def _timer_completion_lock(user_id: int) -> asyncio.Lock:
+    lock = _timer_completion_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _timer_completion_locks[user_id] = lock
+    return lock
+
+
+def _release_active_timer_slot(user_id: int, task: asyncio.Task) -> None:
+    """Снимает запись только если слот всё ещё принадлежит этой задаче."""
+    if active_timers.get(user_id) is task:
+        active_timers.pop(user_id, None)
+
+
+CUSTOM_TIMER_MIN_MINUTES = 5
+CUSTOM_TIMER_MAX_MINUTES = 120
+
+
+def _normalize_timer_duration(raw) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if not isinstance(raw, int):
+        try:
+            raw = int(raw)
+        except (TypeError, ValueError):
+            return None
+    if raw < 1 or raw > 120:
+        return None
+    return raw
+
+
+def _parse_custom_timer_duration(text: str | None) -> tuple[int | None, str | None]:
+    """
+    Parse user-entered custom timer duration (whole minutes only).
+    Returns (minutes, error_key) where error_key is None on success,
+    'invalid' for non-numeric/malformed input, or 'range' for out-of-bounds values.
+    """
+    if text is None:
+        return None, "invalid"
+    normalized = unicodedata.normalize("NFKC", text.strip())
+    if not normalized or not normalized.isdecimal():
+        return None, "invalid"
+    try:
+        duration = int(normalized)
+    except ValueError:
+        return None, "invalid"
+    if duration < CUSTOM_TIMER_MIN_MINUTES or duration > CUSTOM_TIMER_MAX_MINUTES:
+        return None, "range"
+    return duration, None
+
+
+async def _clear_custom_timer_duration_wait(state: FSMContext) -> None:
+    """Drop stale custom-duration FSM if user navigates away."""
+    if await state.get_state() == TimerStates.waiting_for_duration.state:
+        await state.clear()
+
+
+async def _claim_active_timer(state: FSMContext, user_id: int) -> dict | None:
+    """
+    Атомарно забирает активный таймер из FSM (clear state).
+    Второй concurrent caller (stop vs natural finish) получит None.
+    """
+    async with _timer_completion_lock(user_id):
+        if await state.get_state() != TimerStates.active.state:
+            return None
+        data = await state.get_data()
+        await state.clear()
+        return data
+
+
+def _ensure_timer_task_running(
+    chat_id: int, state: FSMContext, user_id: int, duration: int,
+) -> None:
+    """Перезапускает asyncio-задачу, если FSM active, а task потерян/упал."""
+    task = active_timers.get(user_id)
+    if task is None or task.done():
+        start_timer(chat_id, state, user_id, duration)
+
+
+async def _cancel_timer_task(user_id: int) -> None:
+    """Отменяет фоновую asyncio-задачу таймера без начисления монет."""
+    task = active_timers.pop(user_id, None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 
 # Rate limiter — защита от спама/abuse'а на уровне приложения.
 # Initialize in main(); attached to dispatcher как middleware.
@@ -511,6 +640,56 @@ async def loc(user_id: int) -> str:
     return await user_locale(user_repo, user_id)
 
 
+# ------------------------------------------------------------
+# Центральный обработчик неперехваченных исключений в handler'ах.
+# Регистрируется на root router → ловит то, что не поймали локальные
+# try/except в конкретных handler'ах. Цель: ① всегда писать traceback
+# в bot.log через logger.exception, ② показывать пользователю
+# дружелюбное локализованное сообщение вместо silent failure'а.
+# Возврат True помечает событие как обработанное, чтобы aiogram не
+# логировал его повторно своим дефолтным механизмом.
+# ------------------------------------------------------------
+@router.errors()
+async def global_error_handler(event: ErrorEvent) -> bool:
+    update = event.update
+    exc = event.exception
+
+    user_id: int | None = None
+    chat_id: int | None = None
+    if update.message is not None:
+        if update.message.from_user is not None:
+            user_id = update.message.from_user.id
+        chat_id = update.message.chat.id
+    elif update.callback_query is not None:
+        user_id = update.callback_query.from_user.id
+        if update.callback_query.message is not None:
+            chat_id = update.callback_query.message.chat.id
+
+    logger.exception(
+        "handler.unhandled user_id=%s chat_id=%s exc=%s",
+        user_id, chat_id, type(exc).__name__,
+        exc_info=exc,
+    )
+
+    # TelegramForbiddenError = пользователь заблокировал бота. Слать
+    # ему «что-то пошло не так» бессмысленно и вызовет ещё одну
+    # ошибку — просто помечаем как обработанное.
+    if isinstance(exc, TelegramForbiddenError):
+        return True
+
+    if chat_id is not None:
+        try:
+            locale = await loc(user_id) if user_id is not None else "ru"
+            await bot.send_message(chat_id, t("common.unexpected_error", locale))
+        except Exception as notify_exc:
+            logger.warning(
+                "handler.unhandled.notify_failed chat_id=%s reason=%s",
+                chat_id, type(notify_exc).__name__,
+            )
+
+    return True
+
+
 def _all_subject_button_texts() -> list[str]:
     return [subject_label(sid, l) for sid in SUBJECT_IDS for l in SUPPORTED_LOCALES]
 
@@ -564,12 +743,12 @@ def get_main_keyboard(locale: str) -> ReplyKeyboardMarkup:
 
 def get_study_keyboard(locale: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.button(text=t("kb.standard_timer", locale))
-    builder.button(text=t("kb.custom_timer", locale))
     builder.button(text=t("kb.quizzes", locale))
     builder.button(text=t("kb.tips", locale))
+    builder.button(text=t("kb.standard_timer", locale))
+    builder.button(text=t("kb.custom_timer", locale))
     builder.button(text=t("kb.back_main", locale))
-    builder.adjust(3)
+    builder.adjust(2, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 def get_tips_keyboard(locale: str) -> ReplyKeyboardMarkup:
@@ -941,8 +1120,6 @@ class QuizTerm:
         }
 
 def load_quiz_section(section: str, subject_id: str = "industrial-management") -> list[QuizTerm]:
-    if validate_subject_id(subject_id) is None:
-        return []
     file_path = STUDY_MATERIALS_PATH / subject_id / "situational" / f"section-{section.lower()}.txt"
     if not file_path.exists():
         return []
@@ -965,8 +1142,6 @@ def load_mcq(subject_id: str) -> list[dict]:
     Строки с # и пустые — игнорируются. Малформ-строки (< 5 частей) — пропускаются.
     Возвращает list of dicts: {"question", "correct", "wrongs": [w1, w2, w3]}.
     """
-    if validate_subject_id(subject_id) is None:
-        return []
     file_path = STUDY_MATERIALS_PATH / subject_id / "mcq.txt"
     if not file_path.exists():
         return []
@@ -978,31 +1153,52 @@ def load_mcq(subject_id: str) -> list[dict]:
                 continue
             parts = [p.strip() for p in line.split("||")]
             if len(parts) >= 5:
-                questions.append({
+                entry = {
                     "question": parts[0],
                     "correct":  parts[1],
                     "wrongs":   parts[2:5],
-                })
+                }
+                if len(parts) >= 6 and parts[5].strip():
+                    entry["topics"] = [t.strip() for t in parts[5].replace("|", ",").split(",") if t.strip()]
+                questions.append(entry)
     return questions
 
 
-def load_tasks(subject_id: str) -> list[dict]:
+def load_task_groups(subject_id: str) -> dict[str, dict]:
+    """Читает study_materials/<subject>/groups.json — метаданные групп задач."""
+    path = STUDY_MATERIALS_PATH / subject_id / "groups.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning("task.groups_load_failed subject=%s reason=%s", subject_id, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(k): v for k, v in data.items()
+        if isinstance(v, dict) and v.get("title")
+    }
+
+
+def load_tasks(subject_id: str, group_id: str | None = None) -> list[dict]:
     """
     Читает study_materials/<subject>/tasks/task-*.json и возвращает список задач.
     Каждая задача — dict с полями:
       - 'id': str (из имени файла, напр. 'task-01')
       - 'problem': str (текстовая подпись к картинке, может быть пустой)
-      - 'accepted': list[str] (принимаемые ответы — без нормализации,
-        нормализация делается в _normalize_task_answer перед сравнением)
+      - 'accepted': list[str] (принимаемые ответы)
       - 'solution_filename': str (имя файла solution-картинки в той же папке;
         дефолт — '{id}-solution.png')
-    Задачи без существующего task-NN.png или с пустым accepted — пропускаются
-    с warning'ом в лог. Возвращает задачи отсортированные по id.
+      - 'text_only': bool — PNG не обязателен
+      - 'solution_text': str — текстовое решение
+      - 'group': str — id группы (exam-task-1)
+      - 'subtitle': str — подпись в UI (Пример 2, Вариант 1 · №1)
+    Задачи без PNG пропускаются, если не text_only и problem пустой.
     """
-    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
-    if subject_base is None:
-        return []
-    tasks_dir = subject_base / "tasks"
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
     if not tasks_dir.is_dir():
         return []
     tasks = []
@@ -1014,31 +1210,48 @@ def load_tasks(subject_id: str) -> list[dict]:
             logger.warning(f"task.load_failed file={json_file.name} reason={e}")
             continue
         task_id = json_file.stem  # 'task-01'
+        task_group = str(data.get("group") or "")
+        if group_id is not None and task_group != group_id:
+            continue
         image_path = tasks_dir / f"{task_id}.png"
-        if not image_path.exists():
+        text_only = bool(data.get("text_only"))
+        problem = str(data.get("problem", ""))
+        if not text_only and not image_path.exists():
             logger.warning(f"task.missing_image task_id={task_id} expected={image_path.name}")
             continue
         accepted = data.get("accepted", [])
         if not isinstance(accepted, list) or not accepted:
             logger.warning(f"task.no_accepted task_id={task_id}")
             continue
-        raw_solution = data.get("solution_image", f"{task_id}-solution.png")
-        solution_filename = safe_task_image_filename(str(raw_solution), task_id)
+        solution_filename = data.get("solution_image", f"{task_id}-solution.png")
+        raw_topics = data.get("topics") or []
+        if isinstance(raw_topics, str):
+            raw_topics = [raw_topics]
         tasks.append({
             "id": task_id,
-            "problem": str(data.get("problem", "")),
+            "problem": problem,
             "accepted": [str(a) for a in accepted],
-            "solution_filename": solution_filename,
+            "solution_filename": str(solution_filename),
+            "solution_text": str(data.get("solution_text") or ""),
+            "text_only": text_only,
+            "group": task_group,
+            "subtitle": str(data.get("subtitle") or ""),
+            "topics": [str(t) for t in raw_topics],
             "kind": "official",
         })
     return tasks
 
 
-async def load_tasks_for_study(user_id: int, subject_id: str) -> list[dict]:
-    """Официальные задачи с картинкой + пользовательские из БД."""
-    return load_tasks(subject_id) + await user_task_repo.list_by_subject(
-        user_id, subject_id
-    )
+async def load_tasks_for_study(
+    user_id: int,
+    subject_id: str,
+    group_id: str | None = None,
+) -> list[dict]:
+    """Официальные задачи + пользовательские из БД (user tasks только без group_id)."""
+    official = load_tasks(subject_id, group_id=group_id)
+    if group_id is not None:
+        return official
+    return official + await user_task_repo.list_by_subject(user_id, subject_id)
 
 
 def _normalize_task_answer(text: str) -> str:
@@ -1058,8 +1271,6 @@ def _mcq_hash(question: str) -> str:
 
 
 def load_flashcards(subject_id: str) -> list[dict]:
-    if validate_subject_id(subject_id) is None:
-        return []
     """
     Читает study_materials/<subject>/flashcards.txt.
     Формат строки: 'термин || определение'.
@@ -1076,13 +1287,16 @@ def load_flashcards(subject_id: str) -> list[dict]:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.split("||")]
-            if len(parts) == 2:
-                term, definition = parts
-                cards.append({
+            if len(parts) >= 2:
+                term, definition = parts[0], parts[1]
+                entry = {
                     "term": term,
                     "definition": definition,
                     "hash": _flashcard_hash(term),
-                })
+                }
+                if len(parts) >= 3 and parts[2].strip():
+                    entry["topics"] = [t.strip() for t in parts[2].replace("|", ",").split(",") if t.strip()]
+                cards.append(entry)
     return cards
 
 
@@ -1252,6 +1466,7 @@ async def cmd_start(message: Message, state: FSMContext):
             reply_markup=language_picker_keyboard(),
         )
     else:
+        await _clear_custom_timer_duration_wait(state)
         locale = await loc(user_id)
         user = await user_repo.get_user(user_id)
         await apply_user_bot_commands(user_id)
@@ -1487,7 +1702,8 @@ def _faq_lookup(item_id: str, locale: str) -> dict | None:
 
 
 @router.message(kb_in("kb.faq"))
-async def handle_faq(message: Message):
+async def handle_faq(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     locale = await loc(message.from_user.id)
     await message.answer(
         t("faq.menu", locale),
@@ -1543,7 +1759,8 @@ async def handle_lang_picker_from_settings(callback: CallbackQuery):
 
 
 @router.message(kb_in("kb.news"))
-async def handle_news(message: Message):
+async def handle_news(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     locale = await loc(message.from_user.id)
     kb = InlineKeyboardBuilder()
     kb.button(text=t("nav.open_channel", locale), url=CHANNEL_URL)
@@ -1551,7 +1768,8 @@ async def handle_news(message: Message):
 
 
 @router.message(kb_in("kb.profile"))
-async def cmd_profile(message: Message):
+async def cmd_profile(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     user_id = message.from_user.id
     locale = await loc(user_id)
     user = await user_repo.get_user(user_id)
@@ -2056,19 +2274,6 @@ def _subject_label_by_id(subject_id: str) -> str:
     return subject_id
 
 
-async def _reject_unknown_subject_callback(
-    callback: CallbackQuery, subject_id: str,
-) -> bool:
-    """Return True if subject_id is invalid (caller should return)."""
-    if validate_subject_id(subject_id) is not None:
-        return False
-    await callback.answer(
-        t("common.unknown_subject", await loc(callback.from_user.id)),
-        show_alert=True,
-    )
-    return True
-
-
 def _build_fc_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for sid, label in SUBJECTS:
@@ -2150,8 +2355,6 @@ async def handle_fc_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
-    if await _reject_unknown_subject_callback(callback, subject_id):
-        return
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     text = await _build_fc_list_text(user_id, subject_id)
     kb = _build_fc_list_keyboard(user_id, subject_id, cards)
@@ -2173,8 +2376,6 @@ async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
-    if await _reject_unknown_subject_callback(callback, subject_id):
-        return
     await callback.answer()
     await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id)
 
@@ -2190,8 +2391,6 @@ async def handle_fc_delete(callback: CallbackQuery):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
-        return
-    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     deleted = await user_flashcard_repo.delete(user_id, card_id)
     if deleted:
@@ -2245,10 +2444,6 @@ async def handle_fc_definition(message: Message, state: FSMContext):
     data = await state.get_data()
     subject_id = data.get("fc_subject_id")
     term = data.get("fc_term", "")
-    if validate_subject_id(subject_id or "") is None:
-        await state.clear()
-        await message.answer(t("common.unknown_subject", locale))
-        return
 
     try:
         card = await user_flashcard_repo.create(user_id, subject_id, term, definition)
@@ -2299,8 +2494,6 @@ async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
-        return
-    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     subject_label = _subject_label_by_id(subject_id)
     await callback.answer()
@@ -2382,8 +2575,6 @@ async def handle_ut_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
-    if await _reject_unknown_subject_callback(callback, subject_id):
-        return
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
     text = await _build_ut_list_text(user_id, subject_id)
     kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
@@ -2404,8 +2595,6 @@ async def handle_ut_import_start(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
-        return
-    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     await callback.answer()
     await state.set_state(UserTaskImportStates.waiting_for_file)
@@ -2436,23 +2625,12 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     doc = message.document
-    meta_err = validate_task_document_metadata(doc)
-    if meta_err:
-        await message.answer(t(meta_err, locale))
+    if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
+        await message.answer(t("user_tasks.need_txt", locale))
         return
     if doc.file_size and doc.file_size > USER_TASK_FILE_MAX_BYTES:
         await message.answer(
             t("user_tasks.file_too_big", locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
-        )
-        return
-
-    data = await state.get_data()
-    subject_id = data.get("ut_subject_id")
-    if validate_subject_id(subject_id or "") is None:
-        await state.clear()
-        await message.answer(
-            t("common.unknown_subject", locale),
-            reply_markup=get_main_keyboard(locale),
         )
         return
 
@@ -2461,16 +2639,10 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
     buffer = BytesIO()
     try:
         await bot.download(doc, destination=buffer)
-        raw_bytes = buffer.getvalue()
-        raw, decode_err = decode_task_upload(raw_bytes, USER_TASK_FILE_MAX_BYTES)
-        if decode_err:
-            if decode_err == "user_tasks.file_too_big":
-                await message.answer(
-                    t(decode_err, locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
-                )
-            else:
-                await message.answer(t(decode_err, locale))
-            return
+        raw = buffer.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        await message.answer(t("user_tasks.read_error", locale))
+        return
     except Exception as e:
         logger.error("ut.import_download_failed user=%s reason=%s", user_id, e)
         await message.answer(t("user_tasks.download_error", locale))
@@ -2486,6 +2658,8 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
         await message.answer(t("user_tasks.empty_file", locale))
         return
 
+    data = await state.get_data()
+    subject_id = data.get("ut_subject_id")
     added, err = await user_task_repo.bulk_create(user_id, subject_id, parsed)
     if err == "limit_exceeded":
         await message.answer(
@@ -2530,8 +2704,6 @@ async def handle_ut_delete(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
-    if await _reject_unknown_subject_callback(callback, subject_id):
-        return
     deleted = await user_task_repo.delete(user_id, task_db_id)
     if deleted:
         await event_repo.log(
@@ -2559,8 +2731,6 @@ async def handle_ut_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
-        return
-    if await _reject_unknown_subject_callback(callback, subject_id):
         return
     subject_label = _subject_label_by_id(subject_id)
     await callback.answer()
@@ -2976,6 +3146,7 @@ async def show_achievements(callback: CallbackQuery):
 # Таймеры
 # ------------------------------------------------------------
 async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration: int):
+    this_task = asyncio.current_task()
     try:
         # Спим до момента (start_time + duration). Для свежего таймера
         # start_time только что записан в state.data → remaining = duration*60.
@@ -2983,43 +3154,63 @@ async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration
         # start_time остался от прошлого запуска → remaining = сколько осталось.
         data = await state.get_data()
         start_time = data.get("start_time")
+        stored_duration = _normalize_timer_duration(data.get("duration", duration))
+        if stored_duration is not None:
+            duration = stored_duration
         if not isinstance(start_time, datetime):
-            start_time = datetime.now()
+            logger.warning("timer.invalid_start_time user_id=%s", user_id)
+            await _claim_active_timer(state, user_id)
+            return
         deadline = start_time + timedelta(minutes=duration)
         remaining_sec = max(0, (deadline - datetime.now()).total_seconds())
         await asyncio.sleep(remaining_sec)
-        current_state = await state.get_state()
-        if current_state == TimerStates.active.state:
-            earned, bonus, session_id = await study_service.complete_session(user_id, duration)
-            logger.info(
-                "session.complete user_id=%s duration=%s coins=%s bonus=%s session_id=%s achievements=%s source=natural",
-                user_id, duration, duration, bonus, session_id, len(earned),
-            )
-            await event_repo.log(user_id, "session_completed", {
-                "duration": duration, "coins": duration, "bonus_coins": bonus,
-                "session_id": session_id, "achievements_earned": len(earned),
-                "source": "natural",
-            })
-            for ach_id in earned:
-                await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
-            user = await user_repo.get_user(user_id)
-            locale = await loc(user_id)
-            response = t("timer.finished", locale, duration=duration)
-            if bonus > 0:
-                response += t("timer.bonus", locale, bonus=bonus)
-            response += t("timer.total_coins", locale, total_coins=user["total_coins"])
-            try:
-                await bot.send_message(chat_id, response, reply_markup=get_main_keyboard(locale))
-            except Exception as e:
-                logger.error(f"Ошибка отправки завершения таймера {user_id}: {e}")
-            if earned:
-                await send_achievement_notification(user_id, earned)
+        claimed = await _claim_active_timer(state, user_id)
+        if claimed is None:
+            return
+        duration = _normalize_timer_duration(claimed.get("duration", duration)) or duration
+        earned, bonus, session_id = await study_service.complete_session(user_id, duration)
+        logger.info(
+            "session.complete user_id=%s duration=%s coins=%s bonus=%s session_id=%s achievements=%s source=natural",
+            user_id, duration, duration, bonus, session_id, len(earned),
+        )
+        await event_repo.log(user_id, "session_completed", {
+            "duration": duration, "coins": duration, "bonus_coins": bonus,
+            "session_id": session_id, "achievements_earned": len(earned),
+            "source": "natural",
+        })
+        for ach_id in earned:
+            await event_repo.log(user_id, "achievement_unlocked", {"achievement_id": ach_id})
+        user = await user_repo.get_user(user_id)
+        locale = await loc(user_id)
+        response = t("timer.finished", locale, duration=duration)
+        if bonus > 0:
+            response += t("timer.bonus", locale, bonus=bonus)
+        response += t("timer.total_coins", locale, total_coins=user["total_coins"])
+        try:
+            await bot.send_message(chat_id, response, reply_markup=get_main_keyboard(locale))
+        except TelegramForbiddenError:
+            logger.info("timer.notify_failed user_id=%s reason=blocked", user_id)
+        except Exception as e:
+            logger.error(f"Ошибка отправки завершения таймера {user_id}: {e}")
+        if earned:
+            await send_achievement_notification(user_id, earned)
+        if session_id:
             await send_rating_prompt(chat_id, session_id, user_id)
-            await state.clear()
     except asyncio.CancelledError:
+        # Нормальный shutdown / переход в новый таймер — наружу не пробрасываем,
+        # _log_task_exception тоже игнорирует cancelled().
         pass
+    except Exception:
+        # Без этой ветки исключение в complete_session / send_message / event_repo
+        # тихо убило бы задачу, и пользователь потерял бы сессию без следов.
+        # add_done_callback тоже сработает, но дублируем здесь, чтобы тайминг
+        # был ясен из bot.log (видно, на каком шаге упало).
+        logger.exception(
+            "timer.task_crashed user_id=%s duration=%s", user_id, duration,
+        )
     finally:
-        active_timers.pop(user_id, None)
+        if this_task is not None:
+            _release_active_timer_slot(user_id, this_task)
 
 
 def start_timer(chat_id: int, state: FSMContext, user_id: int, duration: int) -> None:
@@ -3027,7 +3218,11 @@ def start_timer(chat_id: int, state: FSMContext, user_id: int, duration: int) ->
     old = active_timers.get(user_id)
     if old and not old.done():
         old.cancel()
-    task = asyncio.create_task(run_timer_task(chat_id, state, user_id, duration))
+    task = asyncio.create_task(
+        run_timer_task(chat_id, state, user_id, duration),
+        name=f"timer-{user_id}",
+    )
+    task.add_done_callback(_log_task_exception)
     active_timers[user_id] = task
 
 async def send_achievement_notification(user_id: int, achievement_ids: list):
@@ -3083,6 +3278,8 @@ async def handle_standard_timer(message: Message, state: FSMContext):
         await apply_user_bot_commands(user_id)
     locale = await loc(user_id)
     current_state = await state.get_state()
+    if current_state == TimerStates.waiting_for_duration.state:
+        await state.clear()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
@@ -3093,8 +3290,10 @@ async def handle_standard_timer(message: Message, state: FSMContext):
             )
             await state.clear()
             return
+        duration_running = _normalize_timer_duration(data.get("duration", 25)) or 25
+        _ensure_timer_task_running(message.chat.id, state, user_id, duration_running)
         elapsed = (datetime.now() - start_time).total_seconds() / 60
-        remaining = max(0, data["duration"] - elapsed)
+        remaining = max(0, duration_running - elapsed)
         await message.answer(
             t("timer.already_running", locale, remaining=remaining),
             reply_markup=get_timer_active_keyboard(locale),
@@ -3115,6 +3314,8 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     current_state = await state.get_state()
+    if current_state == TimerStates.waiting_for_duration.state:
+        await state.clear()
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
@@ -3125,8 +3326,10 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
             )
             await state.clear()
             return
+        duration_running = _normalize_timer_duration(data.get("duration", 25)) or 25
+        _ensure_timer_task_running(message.chat.id, state, user_id, duration_running)
         elapsed = (datetime.now() - start_time).total_seconds() / 60
-        remaining = max(0, data["duration"] - elapsed)
+        remaining = max(0, duration_running - elapsed)
         await message.answer(
             t("timer.already_running", locale, remaining=remaining),
             reply_markup=get_timer_active_keyboard(locale),
@@ -3134,32 +3337,6 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
         return
     await message.answer(t("timer.custom_ask", locale))
     await state.set_state(TimerStates.waiting_for_duration)
-
-@router.message(TimerStates.waiting_for_duration)
-async def process_duration(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    locale = await loc(user_id)
-    text = ''.join(filter(str.isdigit, message.text))
-    if not text:
-        await message.answer(t("timer.custom_invalid", locale))
-        return
-    duration = int(text)
-    if duration < 5 or duration > 120:
-        await message.answer(t("timer.custom_range", locale))
-        return
-    if not await user_repo.user_exists(user_id):
-        await user_repo.create_user(
-            user_id, username=message.from_user.username
-        )
-        await apply_user_bot_commands(user_id)
-    await state.set_state(TimerStates.active)
-    await state.update_data(duration=duration, start_time=datetime.now())
-    await message.answer(
-        t("timer.started", locale, duration=duration),
-        reply_markup=get_timer_active_keyboard(locale),
-    )
-    await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "custom"})
-    start_timer(message.chat.id, state, user_id, duration)
 
 async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     """
@@ -3174,16 +3351,19 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     task = active_timers.pop(user_id, None)
     if task and not task.done():
         task.cancel()
-    current_state = await state.get_state()
-    if current_state != TimerStates.active.state:
-        return False  # не таймерный flow — не трогаем чужие данные
-    data = await state.get_data()
-    start_time = data.get("start_time")
-    if not start_time:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    claimed = await _claim_active_timer(state, user_id)
+    if claimed is None:
+        return False
+    start_time = claimed.get("start_time")
+    if not isinstance(start_time, datetime):
         await state.clear()
         return False
-    duration = data["duration"]
-    elapsed = (datetime.now() - start_time).total_seconds() / 60
+    duration = _normalize_timer_duration(claimed.get("duration", 25)) or 25
+    elapsed = max(0, (datetime.now() - start_time).total_seconds() / 60)
     actual = min(int(elapsed), duration)
     locale = await loc(user_id)
     if actual < 1:
@@ -3191,7 +3371,6 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
             t("timer.too_short", locale),
             reply_markup=get_main_keyboard(locale),
         )
-        await state.clear()
         return True
     earned, bonus, session_id = await study_service.complete_session(user_id, actual)
     logger.info(
@@ -3213,8 +3392,8 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     await message.answer(response, reply_markup=get_main_keyboard(locale))
     if earned:
         await send_achievement_notification(user_id, earned)
-    await send_rating_prompt(message.chat.id, session_id, message.from_user.id)
-    await state.clear()
+    if session_id:
+        await send_rating_prompt(message.chat.id, session_id, message.from_user.id)
     return True
 
 
@@ -3234,6 +3413,13 @@ async def cmd_stop(message: Message, state: FSMContext):
     """Останавливает активный таймер из любого места (например, из главного меню)."""
     user_id = message.from_user.id
     locale = await loc(user_id)
+    if await state.get_state() == TimerStates.waiting_for_duration.state:
+        await state.clear()
+        await message.answer(
+            t("timer.no_active", locale),
+            reply_markup=get_study_keyboard(locale),
+        )
+        return
     if not await stop_active_timer(message, state):
         await message.answer(
             t("timer.no_active", locale),
@@ -3385,12 +3571,13 @@ async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
     )
 
 # ------------------------------------------------------------
-# Квизы — общий flow: ❓ Квизы → subject picker → mode picker → режим
+# Предметы — общий flow: 📖 Предметы → subject picker → mode picker → режим
 # ------------------------------------------------------------
 @router.message(kb_in("kb.quizzes"))
 async def handle_quiz_menu(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
+    await _clear_custom_timer_duration_wait(state)
     subjects = await available_subjects(user_id, locale)
     if not subjects:
         await message.answer(
@@ -3398,6 +3585,11 @@ async def handle_quiz_menu(message: Message, state: FSMContext):
             reply_markup=get_study_keyboard(locale),
         )
         return
+    if await state.get_state() == TimerStates.active.state or user_id in active_timers:
+        await _cancel_timer_task(user_id)
+        if await state.get_state() == TimerStates.active.state:
+            await state.clear()
+    await state.update_data(subject_id=None, subject_label=None, mode_id=None, mode_label=None)
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
         t("nav.pick_subject", locale),
@@ -3413,8 +3605,10 @@ async def handle_subject_back_to_study(message: Message, state: FSMContext):
     await message.answer(t("nav.study_section", locale), reply_markup=get_study_keyboard(locale))
 
 
-@router.message(QuizStates.choosing_subject, F.text.in_(_all_subject_button_texts()))
+@router.message(F.text.in_(_all_subject_button_texts()))
 async def handle_subject_picked(message: Message, state: FSMContext):
+    # Subject reply buttons must work even when FSM state was cleared (bot restart,
+    # navigation without state sync) while Telegram still shows the subject keyboard.
     subject_id = subject_id_from_button(message.text)
     if not subject_id:
         return
@@ -3430,22 +3624,32 @@ async def handle_subject_picked(message: Message, state: FSMContext):
         return
     await state.update_data(subject_id=subject_id, subject_label=subject_lbl)
     await event_repo.log(user_id, "subject_picked", {"subject_id": subject_id})
-    await state.set_state(QuizStates.choosing_mode)
-    await message.answer(
-        t("nav.pick_mode", locale, subject_label=subject_lbl),
-        reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
-    )
-    kb = InlineKeyboardBuilder()
-    kb.button(
-        text=t("fc.add_btn", locale),
-        callback_data=f"fc_add:{user_id}:{subject_id}",
-    )
-    kb.button(
-        text=t("fc.list_btn", locale),
-        callback_data=f"fc_list:{user_id}:{subject_id}",
-    )
-    kb.adjust(2)
-    await message.answer(t("nav.manage_cards", locale), reply_markup=kb.as_markup())
+
+    if subject_id == "math":
+        mode_id = "tasks"
+        mode_lbl = study_mode_label(mode_id, locale)
+        await state.update_data(mode_id=mode_id, mode_label=mode_lbl)
+        await event_repo.log(user_id, "mode_picked", {
+            "mode_id": mode_id, "subject_id": subject_id,
+        })
+        groups = load_task_groups(subject_id)
+        if groups:
+            await _show_task_group_picker(message, state, subject_id, subject_lbl, groups, locale)
+        else:
+            await start_task_session(message, state, subject_id, subject_label=subject_lbl)
+    else:
+        await state.set_state(QuizStates.choosing_mode)
+        await message.answer(
+            t("nav.pick_mode", locale, subject_label=subject_lbl),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
+        )
+
+    if PLAN_UI_ENABLED:
+        ok, _ = await plan_available(subject_id)
+        if ok:
+            plan_kb = await build_plan_subject_keyboard(user_id, subject_id, locale)
+            await message.answer(t("plan.subject_menu", locale), reply_markup=plan_kb)
+            await maybe_offer_first_plan_prompt(message, state, user_id, subject_id, locale)
 
 
 @router.message(QuizStates.choosing_mode, kb_in("kb.back_subjects"))
@@ -3498,7 +3702,11 @@ async def handle_mode_picked(message: Message, state: FSMContext):
     elif mode_id == "mcq":
         await start_mcq_session(message, state, subject_id, subject_label=subject_lbl)
     elif mode_id == "tasks":
-        await start_task_session(message, state, subject_id, subject_label=subject_lbl)
+        groups = load_task_groups(subject_id)
+        if groups:
+            await _show_task_group_picker(message, state, subject_id, subject_lbl, groups, locale)
+        else:
+            await start_task_session(message, state, subject_id, subject_label=subject_lbl)
     elif mode_id == "flashcards":
         await start_flashcard_session(message, state, subject_id, subject_label=subject_lbl)
     else:
@@ -3664,6 +3872,21 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
+    data = await state.get_data()
+    if PLAN_UI_ENABLED and data.get("plan_single"):
+        locale = await loc(user_id)
+        if is_correct:
+            await on_plan_activity_complete(user_id, state, success=True)
+        else:
+            await return_to_plan_without_complete(
+                callback.message.chat.id,
+                user_id,
+                state,
+                locale,
+                message=t("plan.item_wrong", locale),
+            )
+        return
+
     # Переходим к следующему вопросу
     await state.update_data(mcq_index=data.get("mcq_index", 0) + 1)
     await asyncio.sleep(1.0)  # короткая пауза, чтобы фидбек был заметен
@@ -3678,21 +3901,86 @@ TASK_REWARDS_BY_ATTEMPT = [3, 2, 1]
 MAX_TASK_ATTEMPTS = 3
 
 
-async def start_task_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
+async def _show_task_group_picker(
+    message: Message,
+    state: FSMContext,
+    subject_id: str,
+    subject_label: str,
+    groups: dict[str, dict],
+    locale: str,
+) -> None:
+    """Inline-меню групп задач перед стартом сессии."""
+    kb = InlineKeyboardBuilder()
+    for group_id, meta in groups.items():
+        title = meta.get("title") or group_id
+        count = len(load_tasks(subject_id, group_id=group_id))
+        if count == 0:
+            continue
+        kb.button(
+            text=f"{title} ({count})",
+            callback_data=f"taskgrp:{message.from_user.id}:{subject_id}:{group_id}",
+        )
+    kb.adjust(1)
+    await state.set_state(QuizStates.choosing_mode)
+    await message.answer(
+        t("task.pick_group", locale, subject=subject_label),
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("taskgrp:"))
+async def handle_task_group_picked(callback: CallbackQuery, state: FSMContext):
+    try:
+        _, user_id_str, subject_id, group_id = callback.data.split(":", 3)
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    groups = load_task_groups(subject_id)
+    group_meta = groups.get(group_id) or {}
+    locale = await loc(user_id)
+    subject_lbl = subject_label(subject_id, locale)
+    await callback.answer()
+    await state.update_data(
+        subject_id=subject_id,
+        subject_label=subject_lbl,
+        mode_id="tasks",
+        task_group_id=group_id,
+        task_group_title=group_meta.get("title") or group_id,
+    )
+    await start_task_session(
+        callback.message,
+        state,
+        subject_id,
+        subject_label=subject_lbl,
+        group_id=group_id,
+        group_title=group_meta.get("title") or group_id,
+    )
+
+
+async def start_task_session(
+    message: Message,
+    state: FSMContext,
+    subject_id: str,
+    subject_label: str,
+    group_id: str | None = None,
+    group_title: str | None = None,
+):
     user_id = message.from_user.id
-    tasks = await load_tasks_for_study(user_id, subject_id)
+    locale = await loc(user_id)
+    tasks = await load_tasks_for_study(user_id, subject_id, group_id=group_id)
     if not tasks:
         await message.answer(
-            "🚧 Для этого предмета пока нет задач.\n\n"
-            "Добавь свои через «⚙️ Настройки» → «📋 Мои задачи» → «➕ Загрузить .txt».",
-            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, await loc(user_id)),
+            t("task.no_tasks", locale),
+            reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
         )
         await state.set_state(QuizStates.choosing_mode)
         return
     await subject_stats_repo.bump_visit(message.from_user.id, subject_id)
     random.shuffle(tasks)
-    # FSM data — только JSON-serializable: храним serializable view задачи,
-    # пути к картинкам реконструируются по subject_id + task_id при отправке
     await state.update_data(
         task_questions=tasks,
         task_index=0,
@@ -3702,13 +3990,13 @@ async def start_task_session(message: Message, state: FSMContext, subject_id: st
         task_user_id=message.from_user.id,
         task_subject_id=subject_id,
         task_subject_label=subject_label,
+        task_group_id=group_id,
+        task_group_title=group_title or "",
     )
     await state.set_state(QuizStates.answering_task)
     await message.answer(
-        f"📷 Задачи — {subject_label}\n"
-        f"Задач: {len(tasks)}. До 3 попыток на задачу. "
-        f"Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение.",
-        reply_markup=get_task_active_keyboard(await loc(user_id)),
+        t("task.session_start", locale, subject_label=subject_label, count=len(tasks)),
+        reply_markup=get_task_active_keyboard(locale),
     )
     await _send_next_task(message.chat.id, state)
 
@@ -3724,12 +4012,21 @@ async def _send_next_task(chat_id: int, state: FSMContext):
     task = tasks[idx]
     await state.update_data(task_attempts=0)
 
-    lines = [f"📋 Задача {idx + 1}/{len(tasks)}"]
+    group_title = data.get("task_group_title") or ""
+    subtitle = task.get("subtitle") or ""
+    header_parts = []
+    if group_title:
+        header_parts.append(group_title)
+    if subtitle:
+        header_parts.append(subtitle)
+    header_parts.append(f"{idx + 1}/{len(tasks)}")
+    header = " · ".join(header_parts)
+    lines = [t("task.item_header", await loc(data.get("task_user_id", chat_id)), header=header)]
     if task.get("problem"):
         lines.append("")
         lines.append(task["problem"])
     lines.append("")
-    lines.append("✏️ Введи ответ:")
+    lines.append(t("task.enter_answer", await loc(data.get("task_user_id", chat_id))))
     text = "\n".join(lines)
 
     if task.get("kind") == "user":
@@ -3741,17 +4038,24 @@ async def _send_next_task(chat_id: int, state: FSMContext):
             await _send_next_task(chat_id, state)
         return
 
-    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
-    if subject_base is None:
-        await state.update_data(task_index=idx + 1, task_attempts=0)
-        await _send_next_task(chat_id, state)
+    if task.get("text_only") or (
+        task.get("kind") == "official"
+        and not (STUDY_MATERIALS_PATH / subject_id / "tasks" / f"{task['id']}.png").exists()
+    ):
+        try:
+            await bot.send_message(chat_id, text)
+        except Exception as e:
+            logger.error("task.send_text_failed task_id=%s reason=%s", task["id"], e)
+            await state.update_data(task_index=idx + 1, task_attempts=0)
+            await _send_next_task(chat_id, state)
         return
-    tasks_dir = subject_base / "tasks"
-    image_path = resolve_path_under(tasks_dir, f"{task['id']}.png")
-    if image_path is None or not image_path.exists():
+
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    image_path = tasks_dir / f"{task['id']}.png"
+    if not image_path.exists():
         logger.warning(
             "task.image_missing_at_send task_id=%s subject=%s expected=%s",
-            task["id"], subject_id, f"{task['id']}.png",
+            task["id"], subject_id, image_path.name,
         )
         await state.update_data(task_index=idx + 1, task_attempts=0)
         await _send_next_task(chat_id, state)
@@ -3767,6 +4071,11 @@ async def _send_next_task(chat_id: int, state: FSMContext):
 
 async def _finish_task_session(chat_id: int, state: FSMContext):
     data = await state.get_data()
+    if PLAN_UI_ENABLED and data.get("plan_single"):
+        user_id = data.get("task_user_id", chat_id)
+        locale = await loc(user_id)
+        await return_to_plan_without_complete(chat_id, user_id, state, locale)
+        return
     correct = data.get("task_correct_count", 0)
     coins = data.get("task_coins_earned", 0)
     total = len(data.get("task_questions", []))
@@ -3820,12 +4129,11 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await _finish_task_session(message.chat.id, state)
         return
     task = tasks[idx]
-    user_norm = _normalize_task_answer(text)
-    accepted_norm = {_normalize_task_answer(a) for a in task.get("accepted", [])}
-    attempts = data.get("task_attempts", 0)
     user_id = message.from_user.id
+    locale = await loc(user_id)
+    attempts = data.get("task_attempts", 0)
 
-    if user_norm in accepted_norm:
+    if task_answer_matches(text, task.get("accepted", [])):
         coins_for_this = TASK_REWARDS_BY_ATTEMPT[min(attempts, MAX_TASK_ATTEMPTS - 1)]
         await user_repo.add_coins(user_id, coins_for_this)
         # Per-task tracking: задача решена с (attempts+1)-й попытки
@@ -3854,6 +4162,9 @@ async def handle_task_answer(message: Message, state: FSMContext):
         )
         await message.answer(f"✅ Верно! +{coins_for_this} 🪙")
         await asyncio.sleep(1.0)
+        if PLAN_UI_ENABLED and data.get("plan_single"):
+            await on_plan_activity_complete(user_id, state, success=True)
+            return
         await _send_next_task(message.chat.id, state)
         return
 
@@ -3866,7 +4177,7 @@ async def handle_task_answer(message: Message, state: FSMContext):
             user_id, task["id"], new_attempts, remaining,
         )
         await message.answer(
-            f"❌ Неверно. Попробуй ещё (осталось попыток: {remaining})."
+            t("task.wrong_retry", locale, remaining=remaining),
         )
         return
 
@@ -3905,12 +4216,8 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await _send_next_task(message.chat.id, state)
         return
 
-    subject_base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
-    solution_path = None
-    if subject_base is not None:
-        tasks_dir = subject_base / "tasks"
-        solution_name = task.get("solution_filename", f"{task['id']}-solution.png")
-        solution_path = resolve_path_under(tasks_dir, solution_name)
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
     # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
@@ -3926,7 +4233,12 @@ async def handle_task_answer(message: Message, state: FSMContext):
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
     )
-    if solution_path is not None and solution_path.exists():
+    solution_body = (task.get("solution_text") or "").strip()
+    if solution_body:
+        await message.answer(
+            t("task.solution_text_block", locale, solution=solution_body, answer=correct_answer),
+        )
+    elif solution_path.exists():
         try:
             await bot.send_photo(
                 message.chat.id,
@@ -3944,9 +4256,7 @@ async def handle_task_answer(message: Message, state: FSMContext):
             )
     else:
         await message.answer(
-            f"💡 Правильный ответ: {correct_answer}\n"
-            f"(Изображение решения не найдено)\n"
-            f"Монеты за эту задачу: 0 🪙"
+            t("task.solution_missing_image", locale, answer=correct_answer),
         )
     await state.update_data(task_index=idx + 1, task_attempts=0)
     await asyncio.sleep(1.0)
@@ -4218,6 +4528,10 @@ async def handle_flashcard_rate(callback: CallbackQuery, state: FSMContext):
         flash_coins_earned=data.get("flash_coins_earned", 0) + FLASH_COINS_PER_CARD,
     )
 
+    if PLAN_UI_ENABLED and data.get("plan_single"):
+        await on_plan_activity_complete(user_id, state, success=True)
+        return
+
     # Следующая карта
     candidate_hashes = data.get("flash_candidate_hashes", [])
     await asyncio.sleep(0.8)
@@ -4321,6 +4635,19 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
     })
     await message.answer(feedback)
     await asyncio.sleep(1.5)
+
+    if PLAN_UI_ENABLED and data.get("plan_single"):
+        if is_correct:
+            await on_plan_activity_complete(user_id, state, success=True)
+        else:
+            await return_to_plan_without_complete(
+                message.chat.id,
+                user_id,
+                state,
+                locale,
+                message=t("plan.item_wrong", locale),
+            )
+        return
 
     terms = load_quiz_section(data["section"])
     next_term = await get_next_quiz_term(user_id, terms)
@@ -4547,7 +4874,8 @@ async def _edit_or_send_tip(
 
 
 @router.message(kb_in("kb.tips"))
-async def handle_tips_menu(message: Message):
+async def handle_tips_menu(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     locale = await loc(message.from_user.id)
     await message.answer(t("tips.menu", locale), reply_markup=get_tips_keyboard(locale))
 
@@ -4702,6 +5030,40 @@ async def cmd_broadcast(message: Message, command: CommandObject):
                 failed += 1
                 failed_ids.append(uid)
                 logger.info("broadcast.send_failed uid=%s reason=blocked", uid)
+            except TelegramRetryAfter as e:
+                # Telegram flood-control: honour the explicit back-off, then
+                # retry this user ONCE. Без этой ветки сотни валидных
+                # получателей оказались бы в failed_ids просто потому, что
+                # мы попали в 30-msg/s окно.
+                logger.warning(
+                    "broadcast.retry_after uid=%s seconds=%s", uid, e.retry_after,
+                )
+                await asyncio.sleep(e.retry_after + 0.5)
+                try:
+                    await bot.send_message(uid, text)
+                    delivered += 1
+                except TelegramForbiddenError:
+                    failed += 1
+                    failed_ids.append(uid)
+                    logger.info(
+                        "broadcast.send_failed uid=%s reason=blocked_after_retry", uid,
+                    )
+                except Exception as e2:
+                    failed += 1
+                    failed_ids.append(uid)
+                    logger.warning(
+                        "broadcast.send_failed uid=%s reason=%s_after_retry detail=%s",
+                        uid, type(e2).__name__, e2,
+                    )
+            except TelegramBadRequest as e:
+                # Permanent: chat not found / message too long / parse error —
+                # retry не поможет, помечаем как failed без back-off'а.
+                failed += 1
+                failed_ids.append(uid)
+                logger.warning(
+                    "broadcast.send_failed uid=%s reason=bad_request detail=%s",
+                    uid, e,
+                )
             except Exception as e:
                 failed += 1
                 failed_ids.append(uid)
@@ -6918,16 +7280,56 @@ async def cmd_help(message: Message):
 
 
 @router.message(kb_in("kb.study", "kb.back_study"))
-async def handle_back_to_study(message: Message):
+async def handle_back_to_study(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     user_id = message.from_user.id
     locale = await loc(user_id)
     await message.answer(t("nav.study_section", locale), reply_markup=get_study_keyboard(locale))
 
 @router.message(kb_in("kb.back_main"))
-async def handle_back_to_main(message: Message):
+async def handle_back_to_main(message: Message, state: FSMContext):
+    await _clear_custom_timer_duration_wait(state)
     user_id = message.from_user.id
     locale = await loc(user_id)
     await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
+
+
+@router.message(TimerStates.waiting_for_duration, Command("cancel"))
+async def cancel_custom_timer_duration(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    await state.clear()
+    await message.answer(
+        t("common.cancelled", locale),
+        reply_markup=get_study_keyboard(locale),
+    )
+
+
+@router.message(TimerStates.waiting_for_duration)
+async def process_duration(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    duration, error_key = _parse_custom_timer_duration(message.text)
+    if error_key == "invalid":
+        await message.answer(t("timer.custom_invalid", locale))
+        return
+    if error_key == "range":
+        await message.answer(t("timer.custom_range", locale))
+        return
+    if not await user_repo.user_exists(user_id):
+        await user_repo.create_user(
+            user_id, username=message.from_user.username
+        )
+        await apply_user_bot_commands(user_id)
+    await state.set_state(TimerStates.active)
+    await state.update_data(duration=duration, start_time=datetime.now())
+    await message.answer(
+        t("timer.started", locale, duration=duration),
+        reply_markup=get_timer_active_keyboard(locale),
+    )
+    await event_repo.log(user_id, "session_started", {"duration": duration, "kind": "custom"})
+    start_timer(message.chat.id, state, user_id, duration)
+
 
 @router.message()
 async def handle_any_message(message: Message):
@@ -6985,8 +7387,21 @@ async def reconcile_stale_timers():
         run_timer_task сам прочитает start_time и поспит ровно столько,
         сколько осталось до deadline. FSM-запись НЕ удаляется.
       • broken/malformed → чистим.
+    Также сбрасываем незавершённый ввод custom duration (waiting_for_duration).
     """
     from fsm_storage import _loads  # локальный импорт чтобы не загромождать вершину
+
+    async with db.execute(
+        "SELECT key FROM fsm_storage WHERE state = ?",
+        (TimerStates.waiting_for_duration.state,),
+    ) as cursor:
+        waiting_rows = await cursor.fetchall()
+    for row in waiting_rows:
+        await db.execute("DELETE FROM fsm_storage WHERE key = ?", (row["key"],))
+    if waiting_rows:
+        await db.commit()
+        logger.info("reconcile.cleared_waiting duration_wizards=%s", len(waiting_rows))
+
     async with db.execute(
         "SELECT key, data FROM fsm_storage WHERE state = ?",
         (TimerStates.active.state,),
@@ -7002,9 +7417,13 @@ async def reconcile_stale_timers():
         try:
             data = _loads(row["data"])
             start_time = data.get("start_time")
-            duration = data.get("duration", 25)
-            if not isinstance(start_time, datetime):
-                logger.warning("fsm.broken_state key=%s reason=no_start_time", key)
+            duration = _normalize_timer_duration(data.get("duration", 25))
+            if not isinstance(start_time, datetime) or duration is None:
+                logger.warning(
+                    "fsm.broken_state key=%s reason=%s",
+                    key,
+                    "no_start_time" if not isinstance(start_time, datetime) else "bad_duration",
+                )
                 broken += 1
                 await db.execute("DELETE FROM fsm_storage WHERE key = ?", (key,))
                 await db.commit()
@@ -7022,7 +7441,7 @@ async def reconcile_stale_timers():
             user_id = int(parts[2])
             thread_id = int(parts[3]) if len(parts) > 3 else 0
 
-            elapsed = (datetime.now() - start_time).total_seconds() / 60
+            elapsed = max(0, (datetime.now() - start_time).total_seconds() / 60)
             if elapsed >= duration:
                 # Таймер должен был завершиться, пока бот был офлайн — начисляем.
                 # Запрос на оценку здесь НЕ отправляем: пользователь не был активен.
@@ -7104,7 +7523,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, plan_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -7117,6 +7536,7 @@ async def main():
     task_repo = TaskProgressRepository(db)
     subject_stats_repo = SubjectStatsRepository(db)
     event_repo = EventRepository(db)
+    plan_repo = PlanRepository(db)
     tips_repo = TipsRepository(db)
     pet_repo = PetRepository(db)
     leaderboard_repo = LeaderboardRepository(db)
@@ -7146,6 +7566,14 @@ async def main():
     dp.callback_query.middleware(username_sync)
     dp.message.middleware(rl_middleware)
     dp.callback_query.middleware(rl_middleware)
+    if PLAN_UI_ENABLED:
+        register_plan_handlers(
+            router,
+            plan_repo=plan_repo,
+            loc_fn=loc,
+            bot_instance=bot,
+            bot_module=sys.modules[__name__],
+        )
     dp.include_router(router)
     streak_service = StreakService(user_repo, bot, leaderboard_repo=leaderboard_repo)
     reminder_service = ReminderService(
@@ -7196,12 +7624,20 @@ async def main():
             )
 
     # Держим строгие ссылки на задачи, иначе их может собрать GC.
-    background_tasks = [
-        asyncio.create_task(streak_scheduler(streak_service, user_repo, backup_service)),
-        asyncio.create_task(reminder_scheduler(reminder_service, user_repo)),
+    # name + add_done_callback нужны, чтобы исключение, пробившее внутренний
+    # while-True try/except в schedulers'е (или поднявшееся ДО входа в цикл),
+    # сразу засветилось в bot.log через _log_task_exception, а не молча
+    # повисло до GC задачи.
+    background_tasks = []
+    for coro, task_name in (
+        (streak_scheduler(streak_service, user_repo, backup_service), "streak_scheduler"),
+        (reminder_scheduler(reminder_service, user_repo), "reminder_scheduler"),
         # Weekly leaderboard rollover (UTC Tuesday 00:00 anchor). См. LEADERBOARD.md §Rewards.
-        asyncio.create_task(leaderboard_scheduler(leaderboard_service)),
-    ]
+        (leaderboard_scheduler(leaderboard_service), "leaderboard_scheduler"),
+    ):
+        bg = asyncio.create_task(coro, name=task_name)
+        bg.add_done_callback(_log_task_exception)
+        background_tasks.append(bg)
     logger.info(
         "app.start admins=%s main_admin_id=%s server_tz=%s log_level=%s",
         len(ADMINS), MAIN_ADMIN_ID, SERVER_TIMEZONE,

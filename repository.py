@@ -840,6 +840,13 @@ class FlashcardRepository:
                 return h
         return None
 
+    async def list_progress(self, user_id: int) -> list[dict]:
+        async with self.db.execute(
+            "SELECT card_hash, next_review FROM flashcard_progress WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
 
 class McqProgressRepository:
     """Per-question прогресс MCQ. Используется в экране прогресса."""
@@ -876,6 +883,14 @@ class McqProgressRepository:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+    async def list_progress(self, user_id: int) -> list[dict]:
+        async with self.db.execute(
+            "SELECT question_hash, correct_count, total_count FROM mcq_progress "
+            "WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
 
 
 class TaskProgressRepository:
@@ -919,6 +934,13 @@ class TaskProgressRepository:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+    async def list_progress(self, user_id: int) -> list[dict]:
+        async with self.db.execute(
+            "SELECT task_id, succeeded FROM task_progress WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
 
 
 class SubjectStatsRepository:
@@ -2195,3 +2217,156 @@ class FriendRepository:
                 from_uid, invitee_uid, ua, ub,
             )
             return "accepted"
+
+
+class PlanRepository:
+    """Sprint exam plan: skill map, active plan JSON, onboarding meta."""
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def get_skill_map(self, user_id: int, subject_id: str) -> dict[str, int]:
+        async with self.db.execute(
+            "SELECT topic, skill FROM user_skill_map "
+            "WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row["topic"]: int(row["skill"]) for row in rows}
+
+    async def upsert_skill(
+        self, user_id: int, subject_id: str, topic: str, skill: int,
+    ) -> None:
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self.db.execute(
+            "INSERT INTO user_skill_map (user_id, subject_id, topic, skill, last_updated) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, subject_id, topic) DO UPDATE SET "
+            "skill = excluded.skill, last_updated = excluded.last_updated",
+            (user_id, subject_id, topic, skill, now),
+        )
+        await self.db.commit()
+
+    async def bulk_upsert_skills(
+        self, user_id: int, subject_id: str, skills: dict[str, int],
+    ) -> None:
+        for topic, skill in skills.items():
+            await self.upsert_skill(user_id, subject_id, topic, skill)
+
+    async def get_active_plan(
+        self, user_id: int, subject_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        async with self.db.execute(
+            "SELECT plan_json, day_minutes, logical_day, created_at "
+            "FROM user_active_plan WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "plan_json": json.loads(row["plan_json"]),
+                "day_minutes": int(row["day_minutes"]),
+                "logical_day": int(row["logical_day"]),
+                "created_at": row["created_at"],
+            }
+
+    async def save_plan(
+        self,
+        user_id: int,
+        subject_id: str,
+        plan: dict,
+        day_minutes: int,
+        logical_day: int = 1,
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO user_active_plan "
+            "(user_id, subject_id, plan_json, day_minutes, logical_day, created_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now')) "
+            "ON CONFLICT(user_id, subject_id) DO UPDATE SET "
+            "plan_json = excluded.plan_json, "
+            "day_minutes = excluded.day_minutes, "
+            "logical_day = excluded.logical_day, "
+            "created_at = excluded.created_at",
+            (user_id, subject_id, json.dumps(plan, ensure_ascii=False), day_minutes, logical_day),
+        )
+        await self.db.commit()
+
+    async def update_plan_json(
+        self, user_id: int, subject_id: str, plan: dict,
+    ) -> None:
+        await self.db.execute(
+            "UPDATE user_active_plan SET plan_json = ? "
+            "WHERE user_id = ? AND subject_id = ?",
+            (json.dumps(plan, ensure_ascii=False), user_id, subject_id),
+        )
+        await self.db.commit()
+
+    async def set_logical_day(
+        self, user_id: int, subject_id: str, logical_day: int,
+    ) -> None:
+        await self.db.execute(
+            "UPDATE user_active_plan SET logical_day = ? "
+            "WHERE user_id = ? AND subject_id = ?",
+            (logical_day, user_id, subject_id),
+        )
+        await self.db.commit()
+
+    async def delete_plan(self, user_id: int, subject_id: str) -> None:
+        await self.db.execute(
+            "DELETE FROM user_active_plan WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        )
+        await self.db.commit()
+
+    async def get_meta(
+        self, user_id: int, subject_id: str,
+    ) -> Dict[str, Any]:
+        async with self.db.execute(
+            "SELECT diagnostic_done, first_prompt_shown, skip_plan_prompt "
+            "FROM user_plan_meta WHERE user_id = ? AND subject_id = ?",
+            (user_id, subject_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return {
+                    "diagnostic_done": 0,
+                    "first_prompt_shown": 0,
+                    "skip_plan_prompt": 0,
+                }
+            return dict(row)
+
+    async def upsert_meta(
+        self,
+        user_id: int,
+        subject_id: str,
+        *,
+        diagnostic_done: int | None = None,
+        first_prompt_shown: int | None = None,
+        skip_plan_prompt: int | None = None,
+    ) -> None:
+        current = await self.get_meta(user_id, subject_id)
+        if diagnostic_done is not None:
+            current["diagnostic_done"] = diagnostic_done
+        if first_prompt_shown is not None:
+            current["first_prompt_shown"] = first_prompt_shown
+        if skip_plan_prompt is not None:
+            current["skip_plan_prompt"] = skip_plan_prompt
+        await self.db.execute(
+            "INSERT INTO user_plan_meta "
+            "(user_id, subject_id, diagnostic_done, first_prompt_shown, skip_plan_prompt) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, subject_id) DO UPDATE SET "
+            "diagnostic_done = excluded.diagnostic_done, "
+            "first_prompt_shown = excluded.first_prompt_shown, "
+            "skip_plan_prompt = excluded.skip_plan_prompt",
+            (
+                user_id,
+                subject_id,
+                current["diagnostic_done"],
+                current["first_prompt_shown"],
+                current["skip_plan_prompt"],
+            ),
+        )
+        await self.db.commit()

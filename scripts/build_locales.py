@@ -107,7 +107,7 @@ def ru_bundle():
             "news": "📢 Новости",
             "standard_timer": "⏱️ Стандартный таймер (25 мин)",
             "custom_timer": "⏱️ Кастомный таймер",
-            "quizzes": "❓ Квизы",
+            "quizzes": "📖 Предметы",
             "tips": "🎓 Советы для продуктивности",
             "back_main": "🏠 Назад в меню",
             "stop_timer": "⏹️ Остановить",
@@ -188,7 +188,7 @@ def ru_bundle():
             "open_channel": "📢 Открыть канал",
         },
         "study": {
-            "section_quiz": "❓ Квизы",
+            "section_quiz": "📖 Предметы",
         },
         "timer": {
             "rating_prompt": "Как прошла сессия?",
@@ -284,11 +284,18 @@ def ru_bundle():
                 "Задач: {count}. До 3 попыток на задачу. "
                 "Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение."
             ),
+            "pick_group": "📋 Задачи — {subject}\nВыбери блок:",
             "item": "📋 Задача {idx}/{total}",
+            "item_header": "📋 {header}",
             "enter_answer": "✏️ Введи ответ:",
             "wrong_retry": "❌ Неверно. Попробуй ещё (осталось попыток: {remaining}).",
             "hint_block": "💡 Подсказка:\n{hint}\n\nПравильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
             "solution": "💡 Правильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
+            "solution_text_block": (
+                "💡 Решение:\n{solution}\n\n"
+                "Правильный ответ: {answer}\n"
+                "Монеты за эту задачу: 0 🪙"
+            ),
             "solution_image": "💡 Решение:\nПравильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
             "solution_missing_image": (
                 "💡 Правильный ответ: {answer}\n"
@@ -378,7 +385,7 @@ def ru_bundle():
         },
         "subjects": {
             "industrial-management": "🏭 Основы производственного менеджмента",
-            "math": "🧮 Математика",
+            "math": "📐 Вышмат",
             "english": "🇬🇧 Английский",
         },
         "study_modes": {
@@ -447,11 +454,19 @@ def ru_bundle():
                 "btn": "3️⃣ Зачем питомец",
                 "title": "3️⃣ Зачем нужен питомец и как он помогает учиться?",
                 "body": (
-                    "Питомец отражает твою активность: радуется, когда ты учишься, и "
-                    "грустит, если пропускаешь день. Это эмоциональный якорь — учиться "
-                    "не «ради дисциплины», а «чтобы твоему питомцу было хорошо». "
-                    "Связь с виртуальным персонажем доказанно повышает регулярность "
-                    "привычки."
+                    "Питомец — твой компаньон в учёбе, а не просто декорация в профиле. "
+                    "Он сопровождает тебя в каждой сессии: отражает активность, радуется, "
+                    "когда ты возвращаешься к занятиям, и помогает замечать, если выпал из "
+                    "ритма — без давления и нравоучений.\n\n"
+                    "Так учёба перестаёт ощущаться одинокой «обязанностью». Появляется "
+                    "спутник, который растёт вместе с тобой: уровень, XP, кастомизация и "
+                    "настроение дают дополнительный повод снова открыть бота и сделать хотя "
+                    "бы короткую сессию. Эмоциональная обратная связь между занятиями "
+                    "поддерживает мотивацию — особенно когда сложно держаться только на "
+                    "дисциплине.\n\n"
+                    "Привязка к виртуальному персонажу в играх и обучающих приложениях "
+                    "доказанно повышает регулярность: проще продолжать, когда рядом есть "
+                    "«свой» компаньон, а не только список задач."
                 ),
             },
             "spend_coins": {
@@ -518,6 +533,37 @@ def ru_bundle():
                     "• Тесты с выбором ответа — выбираешь правильный из 4 вариантов\n"
                     "• Задачи с картинкой — решаешь и вводишь ответ\n"
                     "Принцип: «если можешь объяснить — значит знаешь»."
+                ),
+            },
+            "guarantee": {
+                "btn": "9️⃣ Гарантия эффективности",
+                "title": "9️⃣ Гарантируете ли вы результат?",
+                "body": (
+                    "Эффективность очень вероятна, но 100% гарантии нет — и это нормально.\n\n"
+                    "Все методики бота (интервальное повторение, SM-2, active recall, "
+                    "Pomodoro, геймификация) опираются на десятилетия исследований: от "
+                    "Эббингауза (1885) до современных мета-анализов. У пользователей, "
+                    "которые регулярно учатся через бот, результаты заметно лучше, чем "
+                    "при пассивном перечитывании.\n\n"
+                    "Но реальный эффект зависит от:\n"
+                    "• тебя — регулярности занятий и честности самооценки в флэш-картах\n"
+                    "• контента — качества и структуры материала\n"
+                    "• обстоятельств — стресс, сон и самочувствие сильно влияют на память\n"
+                    "• стартовой точки — у всех разный уровень и темп\n\n"
+                    "Если коротко: при регулярных занятиях ты с очень высокой вероятностью "
+                    "улучшишь свои результаты. Но «гарантированно стать гением за месяц» — "
+                    "не обещаем, это было бы нечестно."
+                ),
+            },
+            "why_free": {
+                "btn": "🔟 Почему бесплатно?",
+                "title": "🔟 Почему бесплатно?",
+                "body": (
+                    "Бот бесплатный, потому что у проекта две главные цели: собрать "
+                    "сильное портфолио разработчика и помочь как можно большему числу "
+                    "студентов подготовиться к сессии.\n\n"
+                    "Монетизация сейчас не в приоритете — важнее, чтобы инструмент был "
+                    "доступен всем, кто готовится к экзаменам."
                 ),
             },
             "support": {
@@ -768,7 +814,7 @@ def en_bundle():
         "news": "📢 News",
         "standard_timer": "⏱️ Standard timer (25 min)",
         "custom_timer": "⏱️ Custom timer",
-        "quizzes": "❓ Quizzes",
+        "quizzes": "📖 Subjects",
         "tips": "🎓 Productivity tips",
         "back_main": "🏠 Back to menu",
         "stop_timer": "⏹️ Stop",
@@ -909,11 +955,18 @@ def en_bundle():
         "Tasks: {count}. Up to 3 attempts per task. "
         "Rewards: +3 / +2 / +1 🪙; 0 🪙 if the solution was revealed."
     )
+    b["task"]["pick_group"] = "📋 Tasks — {subject}\nPick a block:"
     b["task"]["item"] = "📋 Task {idx}/{total}"
+    b["task"]["item_header"] = "📋 {header}"
     b["task"]["enter_answer"] = "✏️ Enter your answer:"
     b["task"]["wrong_retry"] = "❌ Wrong. Try again (attempts left: {remaining})."
     b["task"]["hint_block"] = "💡 Hint:\n{hint}\n\nCorrect answer: {answer}\nCoins for this task: 0 🪙"
     b["task"]["solution"] = "💡 Correct answer: {answer}\nCoins for this task: 0 🪙"
+    b["task"]["solution_text_block"] = (
+        "💡 Solution:\n{solution}\n\n"
+        "Correct answer: {answer}\n"
+        "Coins for this task: 0 🪙"
+    )
     b["task"]["solution_image"] = "💡 Solution:\nCorrect answer: {answer}\nCoins for this task: 0 🪙"
     b["task"]["solution_missing_image"] = (
         "💡 Correct answer: {answer}\n"
@@ -1067,9 +1120,18 @@ def en_bundle():
             "btn": "3️⃣ Why a pet",
             "title": "3️⃣ Why is there a pet and how does it help you study?",
             "body": (
-                "Your pet reflects your activity: happy when you study, sad if you skip a day. "
-                "It's an emotional anchor — you study not «for discipline» but «so your pet feels good». "
-                "Bonding with a virtual character is shown to improve habit consistency."
+                "Your pet is a study companion, not just profile decoration. It stays with "
+                "you through every session: reflects your activity, responds when you come "
+                "back to study, and gently shows when you've dropped out of rhythm — "
+                "without lecturing or guilt.\n\n"
+                "That makes learning feel less like a lonely obligation. You have a partner "
+                "that grows with you: level, XP, customization, and mood give you another "
+                "reason to open the bot and do even a short session. Emotional feedback "
+                "between study blocks helps you stay motivated — especially when willpower "
+                "alone isn't enough.\n\n"
+                "Bonding with a virtual companion is well supported in games and learning "
+                "apps: it's easier to keep going when someone is «with you», not just a "
+                "to-do list."
             ),
         },
         "spend_coins": {
@@ -1129,6 +1191,35 @@ def en_bundle():
                 "• Multiple choice — pick the right answer out of four\n"
                 "• Picture tasks — solve and type the answer\n"
                 "Rule of thumb: «if you can explain it, you know it»."
+            ),
+        },
+        "guarantee": {
+            "btn": "9️⃣ Effectiveness guarantee",
+            "title": "9️⃣ Do you guarantee results?",
+            "body": (
+                "Strong results are very likely, but there's no 100% guarantee — and that's normal.\n\n"
+                "Every technique in the bot (spaced repetition, SM-2, active recall, Pomodoro, "
+                "gamification) is backed by decades of research: from Ebbinghaus (1885) to modern "
+                "meta-analyses. Users who study regularly through the bot do noticeably better "
+                "than with passive re-reading.\n\n"
+                "But real outcomes depend on:\n"
+                "• you — how often you study and how honestly you rate flashcards\n"
+                "• content — quality and structure of the material\n"
+                "• circumstances — stress, sleep, and wellbeing strongly affect memory\n"
+                "• starting point — everyone has a different level and pace\n\n"
+                "In short: with regular practice you're very likely to improve. We don't promise "
+                "«guaranteed genius in a month» — that wouldn't be honest."
+            ),
+        },
+        "why_free": {
+            "btn": "🔟 Why is it free?",
+            "title": "🔟 Why is it free?",
+            "body": (
+                "The bot is free because the project has two main goals: build a strong "
+                "developer portfolio and help as many students as possible prepare for "
+                "their exam session.\n\n"
+                "Monetization isn't a priority right now — what matters more is that the "
+                "tool stays available to everyone getting ready for exams."
             ),
         },
         "support": {

@@ -50,6 +50,8 @@
 
 **Решение**: **defer** (post-v0.8). #14 (photo tasks) shipped; ждём engagement по математике в `events`. Если низкий — вернуться к идее.
 
+**Update 2026-05-23**: baseline math content — 15 text-only Bernoulli tasks in `study_materials/math/` (группа `exam-task-1`, diagnostic).
+
 ---
 
 ## Username-search для /friends ✅ shipped 2026-05-19
@@ -166,7 +168,7 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
   1. Слабые темы (skill=0) → необходимый минимум для прохождения предмета;
   2. Повторение освоенного через SRS (overdue карточки/термины);
   3. Mix режимов чтобы избежать монотонии.
-- **Время в день** — пользовательский параметр (15/30/45/60+ мин) при создании плана; объём items в день подбирается через грубые оценки (карточка ~2мин, MCQ ~1мин, задача ~5мин).
+- **Время в день** — пользовательский параметр (15/30/45/60+ мин) при создании плана; объём items в день подбирается через грубые оценки (карточка ~1мин, MCQ ~2мин, задача ~15-20 мин).
 - **Checkpoint-тест через 14 дней**: новые вопросы из того же банка → пересчёт skill_map → новый план на дни 15-28.
 - **«🔁 Сменить план»** кнопка (см. ниже про placement): пользователь может **в любой момент** триггернуть re-test и пересоздание плана — это разрешает гэп discrete adaptation. Если пользователь чувствует что план перестал отражать реальность (быстро прокачался / непонятно), может прервать цикл.
 
@@ -210,6 +212,8 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 4. Хотя бы 30 дней живых данных в `events` table — чтобы понимать паттерны use'а.
 
 После этих 4 prerequisites — Sprint можно ship'нуть за **~1-2 рабочих дня** кода.
+
+**Update 2026-05-24**: backend scaffold — plan_service.py, plan_handlers.py, PlanRepository, math diagnostic + 15 tasks; Telegram UI **off** (PLAN_UI_ENABLED=False) until OPM topic pass + manual QA.
 
 ---
 

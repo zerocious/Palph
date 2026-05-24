@@ -1,4 +1,5 @@
 # services.py
+import asyncio
 import logging
 import os
 import threading
@@ -8,12 +9,38 @@ from pathlib import Path
 from time import monotonic
 
 import aiosqlite
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramBadRequest,
+)
 
 from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
 from i18n import t, DEFAULT_LOCALE, SUPPORTED_LOCALES
+from file_upload_security import sanitize_pet_asset_keys
 
 logger = logging.getLogger("studybuddy_bot")
+
+
+async def _send_with_retry_after(send_callable, *, label: str, uid: int):
+    """
+    Запускает send_callable() (0-арг callable, возвращающий awaitable)
+    и при TelegramRetryAfter уважает запрошенный back-off и делает
+    ОДИН retry. 0-arg-callable shape нужен, потому что awaitables
+    одноразовые.
+
+    Остальные исключения (TelegramForbiddenError / TelegramBadRequest /
+    network errors) — пробрасываем наружу, caller разбирает по месту.
+    """
+    try:
+        return await send_callable()
+    except TelegramRetryAfter as e:
+        logger.warning(
+            "telegram.retry_after label=%s uid=%s seconds=%s",
+            label, uid, e.retry_after,
+        )
+        await asyncio.sleep(e.retry_after + 0.5)
+        return await send_callable()
 
 
 def _user_locale(locale: str | None) -> str:
@@ -388,6 +415,12 @@ def render_pet(
     raise FileNotFoundError если даже fallback'и отсутствуют (assets
     директория не была сгенерирована).
     """
+    emotion, color, accessory = sanitize_pet_asset_keys(
+        emotion,
+        user_pet.get("color", "orange") if user_pet else "orange",
+        user_pet.get("accessory", "none") if user_pet else "none",
+    )
+
     if animated:
         path = _ASSETS_PET_DIR / f"{emotion}.gif"
         if path.exists():
@@ -400,13 +433,6 @@ def render_pet(
             f"No animated assets for emotion={emotion!r}. "
             f"Run `python scripts/build_pet_assets.py` to generate them."
         )
-
-    if user_pet is None:
-        color = "orange"
-        accessory = "none"
-    else:
-        color = user_pet.get("color", "orange")
-        accessory = user_pet.get("accessory", "none")
 
     primary = _ASSETS_PET_DIR / f"{emotion}_{color}_{accessory}.png"
     if primary.exists():
@@ -712,10 +738,12 @@ class ReminderService:
                             "reminder.morning.tip_of_day_failed uid=%s reason=%s",
                             uid, e,
                         )
-                await self.bot.send_message(
-                    chat_id=uid,
-                    text=text,
-                    parse_mode="HTML" if self.morning_tip_builder else None,
+                parse_mode = "HTML" if self.morning_tip_builder else None
+                await _send_with_retry_after(
+                    lambda: self.bot.send_message(
+                        chat_id=uid, text=text, parse_mode=parse_mode,
+                    ),
+                    label="morning", uid=uid,
                 )
                 if self.event_repo:
                     await self.event_repo.log(
@@ -727,6 +755,12 @@ class ReminderService:
                 # Пользователь заблокировал бота — ожидаемо, INFO.
                 logger.info(
                     "reminder.send_failed kind=morning uid=%s reason=blocked", uid
+                )
+            except TelegramBadRequest as e:
+                # Permanent: chat not found / message too long / parse error.
+                logger.warning(
+                    "reminder.send_failed kind=morning uid=%s reason=bad_request detail=%s",
+                    uid, e,
                 )
             except Exception as e:
                 logger.warning(
@@ -777,21 +811,30 @@ class ReminderService:
                     try:
                         from aiogram.types import FSInputFile
                         gif_path = render_pet(None, "sad", animated=True)
-                        await self.bot.send_animation(
-                            chat_id=uid,
-                            animation=FSInputFile(str(gif_path)),
-                            caption=evening_sad,
+                        await _send_with_retry_after(
+                            lambda: self.bot.send_animation(
+                                chat_id=uid,
+                                animation=FSInputFile(str(gif_path)),
+                                caption=evening_sad,
+                            ),
+                            label="evening_sad_gif", uid=uid,
                         )
                     except FileNotFoundError:
-                        await self.bot.send_message(
-                            chat_id=uid, text=evening_sad,
+                        await _send_with_retry_after(
+                            lambda: self.bot.send_message(
+                                chat_id=uid, text=evening_sad,
+                            ),
+                            label="evening_sad_text", uid=uid,
                         )
                 else:
                     # Non-sad emotion path → text-only fallback копи.
                     # Defensive: SQL filter гарантирует has_studied_today=0,
                     # так что эта ветка достижима только при странных edge cases.
-                    await self.bot.send_message(
-                        chat_id=uid, text=evening_fallback,
+                    await _send_with_retry_after(
+                        lambda: self.bot.send_message(
+                            chat_id=uid, text=evening_fallback,
+                        ),
+                        label="evening_fallback", uid=uid,
                     )
                 if self.event_repo:
                     await self.event_repo.log(
@@ -807,6 +850,11 @@ class ReminderService:
             except TelegramForbiddenError:
                 logger.info(
                     "reminder.send_failed kind=evening uid=%s reason=blocked", uid
+                )
+            except TelegramBadRequest as e:
+                logger.warning(
+                    "reminder.send_failed kind=evening uid=%s reason=bad_request detail=%s",
+                    uid, e,
                 )
             except Exception as e:
                 logger.warning(

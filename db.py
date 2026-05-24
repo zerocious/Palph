@@ -356,6 +356,37 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_user_tips_seen_user_time
             ON user_tips_seen(user_id, seen_at);
+
+        -- Sprint exam plan (v0.9): binary skill per topic per subject.
+        CREATE TABLE IF NOT EXISTS user_skill_map (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            subject_id TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            skill INTEGER NOT NULL DEFAULT 0,
+            last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, subject_id, topic)
+        );
+
+        -- Pre-computed 14-day sprint plan (JSON) + daily time budget.
+        CREATE TABLE IF NOT EXISTS user_active_plan (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            subject_id TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            day_minutes INTEGER NOT NULL DEFAULT 60,
+            logical_day INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, subject_id)
+        );
+
+        -- UX flags for plan onboarding per subject.
+        CREATE TABLE IF NOT EXISTS user_plan_meta (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            subject_id TEXT NOT NULL,
+            diagnostic_done INTEGER NOT NULL DEFAULT 0,
+            first_prompt_shown INTEGER NOT NULL DEFAULT 0,
+            skip_plan_prompt INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, subject_id)
+        );
     """)
     await db.commit()
 

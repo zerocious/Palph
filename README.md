@@ -125,8 +125,9 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
     Источник при повторении: ⚙️ → **🃏 Флэш-карты** — Микс /
     Официальные / Свои (`flashcard_source` в `notification_settings`)
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
-  - 📷 **Задачи с картинкой** — `task-NN.png` + JSON с принимаемыми
-    ответами, 3 попытки → solution image; награды +3 / +2 / +1 / 0 🪙
+  - 📷 **Задачи (фото или текст)** — `task-NN.png` + JSON или `text_only` + `problem`/
+    `solution_text` (см. [study_materials/README.md](study_materials/README.md)); `task_answer_match.py`;
+    3 попытки → solution; награды +3 / +2 / +1 / 0 🪙
 - **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
   в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
   retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
@@ -143,8 +144,9 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **📊 Экран прогресса** (в профиле кнопка `📊 Прогресс по предметам`):
   10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
   «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
-  предметы (math/english пока без контента) показываются с пометкой
-  «🚧 Контент в разработке». Mastery считается из 4 режимов: ситуационные
+  предметы без контента (например english) показываются с пометкой
+  «🚧 Контент в разработке». **Математика**: 15 text-only задач (Бернулли).
+  Mastery считается из 4 режимов: ситуационные
   termы с `streak ≥ 3`, флэш-карты (официальные + свои) с
   `repetitions ≥ 3`, MCQ-вопросы отвеченные хотя бы раз верно,
   решённые задачи.
@@ -187,11 +189,11 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user. Там же: источник
   флэш-карт (Микс/Официальные/Свои) и **📇 Мои карточки** (CRUD по предметам)
-- **❓ FAQ** — интерактивное меню с 9 вопросами + кнопка техподдержки.
+- **❓ FAQ** — интерактивное меню с 10 вопросами + кнопка техподдержки.
   Каждый вопрос как отдельная inline-кнопка → message edit показывает
   ответ + `[◀️ К списку]`. Вопросы: миссия проекта, эффективность,
   питомец, монеты (earn/spend), SM-2, интервальное повторение, active
-  recall, гарантия результатов.
+  recall, гарантия результатов, почему бот бесплатный.
 - **🛠 Техподдержка**: пользователь пишет в чат → forward всем админам;
   ответ через `/reply <user_id> <текст>` (или через FAQ → «Связаться с
   техподдержкой»).
@@ -222,6 +224,10 @@ db.py               # aiosqlite connection, init_db (схема + индексы
 repository.py       # User/Session/Admin/Flashcard/UserFlashcard/Tips/
                     # Mcq/Task/SubjectStats/Pet/Leaderboard/Friend/Event
                     # repositories (CRUD only)
+plan_service.py     # Sprint plan generator (catalog, diagnostic, 14-day plan)
+plan_handlers.py    # Sprint plan handlers (PLAN_UI_ENABLED=False by default)
+task_answer_match.py # Text task answer normalization
+file_upload_security.py # User task upload path validation
 services.py         # Achievement, Study, Streak, Reminder, Backup,
                     # Analytics, Leaderboard services; sm2_update();
                     # derive_emotion, freeze_cost, parse_friend_query
@@ -238,7 +244,9 @@ study_materials/    # Учебные материалы — data-driven дере
     flashcards.txt                          (термин ‖ определение)
     mcq.txt                          (вопрос ‖ верный ‖ w1 ‖ w2 ‖ w3)
     tasks/task-NN.{png,json,-solution.png}  (картинка-условие + JSON метаданных)
-  math/, english/                           (то же без situational/, ждут контента)
+  math/                                     (15 text-only задач, groups.json, diagnostic)
+  accounting/                               (source/ для PDF; предмет не в SUBJECTS)
+  english/                                  (ждёт контента)
 ```
 
 **Таблицы в БД** (создаются в `db.init_db`):
