@@ -125,6 +125,7 @@ def ru_bundle():
         },
         "lang": {
             "picker_title": "🌍 Выбери язык интерфейса",
+            "picker_title_bilingual": "🌍 Выбери язык / Choose language",
             "ru": "🇷🇺 Русский",
             "en": "🇬🇧 English",
             "saved": "✅ Язык изменён на {locale}",
@@ -829,6 +830,7 @@ def en_bundle():
 
     b["lang"] = {
         "picker_title": "🌍 Choose interface language",
+        "picker_title_bilingual": "🌍 Choose language / Выбери язык",
         "ru": "🇷🇺 Russian",
         "en": "🇬🇧 English",
         "saved": "✅ Language changed to {locale}",

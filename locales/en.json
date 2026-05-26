@@ -24,6 +24,7 @@
   },
   "lang": {
     "picker_title": "🌍 Choose interface language",
+    "picker_title_bilingual": "🌍 Choose language / Выбери язык",
     "ru": "🇷🇺 Russian",
     "en": "🇬🇧 English",
     "saved": "✅ Language changed to {locale}"
