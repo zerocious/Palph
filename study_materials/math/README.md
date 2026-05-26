@@ -1,5 +1,7 @@
 # Math — высшая математика (схема Бернулли)
 
+**Doc sync:** 2026-05-25 · 15 text-only tasks shipped in Palph v0.8.
+
 ## Contents
 
 | File / folder | Description |

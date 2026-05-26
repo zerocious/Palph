@@ -101,17 +101,17 @@ To cancel — /cancel"""
 def ru_bundle():
     return {
         "kb": {
-            "study": "📚 Учеба",
+            "study": "📚 Учебные инструменты",
             "faq": "❓ FAQ",
             "profile": "📊 Мой профиль",
             "news": "📢 Новости",
             "standard_timer": "⏱️ Стандартный таймер (25 мин)",
             "custom_timer": "⏱️ Кастомный таймер",
-            "quizzes": "📖 Предметы",
+            "quizzes": "📖 Подготовка",
             "tips": "🎓 Советы для продуктивности",
             "back_main": "🏠 Назад в меню",
             "stop_timer": "⏹️ Остановить",
-            "back_study": "⬅️ Назад к учебе",
+            "back_study": "⬅️ К инструментам",
             "back_subjects": "⬅️ Назад к предметам",
             "back_modes": "⬅️ Назад к режимам",
             "finish_quiz": "🛑 Завершить квиз",
@@ -175,17 +175,20 @@ def ru_bundle():
             "change_later": "Поменять можно в «📊 Мой профиль» → «⚙️ Настройки».",
         },
         "nav": {
-            "study_section": "📖 Раздел учёбы:",
+            "study_section": "📚 Учебные инструменты: таймер Pomodoro и советы по продуктивности.",
             "pick_subject": "📖 Выбери предмет:",
             "pick_mode": "{subject_label}\nВыбери режим учёбы:",
             "manage_cards": "Или управляй своими карточками:",
             "no_materials": "🚧 Пока нет учебных материалов. Загляни позже!",
             "no_modes": "🚧 «{subject}» — пока нет доступных режимов.",
             "news_body": (
-                "📢 Подпишись на наш канал — там анонсы, советы по учебе "
-                "и обновления бота."
+                "Подпишись на наш канал, чтобы первым узнавать о:\n"
+                "• 🆕 Новых функциях и улучшениях\n"
+                "• 🏆 Советах по продуктивности\n"
+                "• 💡 Лайфхаках для учёбы\n"
+                "• 🎁 Эксклюзивных бонусах и конкурсах"
             ),
-            "open_channel": "📢 Открыть канал",
+            "open_channel": "Перейти в канал",
         },
         "study": {
             "section_quiz": "📖 Предметы",
@@ -347,6 +350,7 @@ def ru_bundle():
             "progress": "📊 Прогресс по предметам",
             "pet": "🐾 Питомец",
             "friends": "👥 Друзья",
+            "leaderboard": "🏆 Рейтинг недели",
             "freeze_streak": "❄️ Заморозить стрик",
             "back": "◀️ Профиль",
             "never": "никогда",
@@ -387,6 +391,32 @@ def ru_bundle():
             "industrial-management": "🏭 Основы производственного менеджмента",
             "math": "📐 Вышмат",
             "english": "🇬🇧 Английский",
+            "accounting": "📊 Бухучёт",
+        },
+        "fc": {
+            "add_btn": "➕ Добавить карточку",
+            "list_btn": "📇 Мои карточки",
+            "manage_title": "📇 Мои карточки\n\nВыбери предмет:",
+            "list_title": "📇 Мои карточки — {subject}",
+            "list_empty": "Пока пусто. Нажми «➕ Добавить», чтобы создать первую.",
+            "list_total": "Всего: {count}",
+            "manage_add_btn": "➕ Добавить",
+            "back_subjects": "⬅️ К предметам",
+            "wizard_title": "📇 Новая карточка — {subject}",
+            "term_prompt": "Шаг 1/2: введи термин (вопрос), до {max} символов.",
+            "term_empty": "Термин не может быть пустым. Попробуй ещё раз.",
+            "term_too_long": "Слишком длинный термин (макс. {max} символов).",
+            "definition_prompt": "Шаг 2/2: введи определение (ответ), до {max} символов.",
+            "definition_empty": "Определение не может быть пустым. Попробуй ещё раз.",
+            "definition_too_long": "Слишком длинное определение (макс. {max} символов).",
+            "limit_reached": "Достигнут лимит {max} карточек на этот предмет. Удали старые, чтобы добавить новые.",
+            "duplicate_term": "Карточка с термином «{term}» уже есть в этом предмете. Введи другой термин:",
+            "save_failed": "Не удалось сохранить карточку. Попробуй позже.",
+            "saved": "✅ Карточка сохранена!\n\n<b>{term}</b>\n<i>{definition}</i>",
+            "add_more": "➕ Добавить ещё",
+            "start_study": "🃏 Начать учёбу",
+            "deleted_ok": "Удалено",
+            "deleted_fail": "Карточка не найдена",
         },
         "study_modes": {
             "situational": "🎯 Ситуационные квизы",
@@ -631,6 +661,16 @@ def ru_bundle():
         },
         "user_tasks": {
             "instruction": USER_TASK_INSTRUCTION_RU,
+            "manage_title": "📋 Мои задачи\n\nВыбери предмет:",
+            "list_title": "📋 Мои задачи — {subject}",
+            "list_empty": "Пока пусто. Нажми «➕ Загрузить .txt», чтобы импортировать задачи.",
+            "list_total": "Всего: {count}",
+            "import_btn": "➕ Загрузить .txt",
+            "start_solving_btn": "📋 Начать решать",
+            "back_subjects": "⬅️ К предметам",
+            "list_btn": "📋 Список задач",
+            "import_added": "✅ Добавлено задач: {count}",
+            "import_skipped": "⚠️ Пропущено строк: {count}",
             "import_cancelled": "Импорт отменён.",
             "send_file": "Отправь файл .txt с задачами или /cancel для отмены.",
             "need_txt": "Нужен файл с расширением .txt. См. инструкцию выше.",
@@ -642,6 +682,8 @@ def ru_bundle():
             "parse_no_separator": "Строка {line_no}: нет «||» — нужен формат «вопрос || ответ».",
             "parse_empty_question": "Строка {line_no}: пустой вопрос.",
             "parse_no_answer": "Строка {line_no}: нет правильного ответа.",
+            "parse_no_valid": "❌ В файле нет корректных задач.\n\n{errors}",
+            "limit_exceeded": "❌ Лимит {max} задач на предмет. Удали старые или разбей на несколько предметов.",
         },
         "friends": {
             "invite_invalid": "⏳ Ссылка-приглашение недействительна или истекла.",
@@ -748,7 +790,7 @@ def ru_bundle():
             "segment_line": "Сегмент: {label}",
             "empty_week": "Пока никто не набрал очков в этой неделе.",
             "top_header": "<b>Топ:</b>",
-            "row": "{marker} {rank}. id={user_id}  {pts:.0f} pts  (×{mult:.2f})",
+            "row": "{marker} {rank}. {user_label}  {pts:.0f} pts  (×{mult:.2f})",
             "no_points": "Вы пока без очков на этой неделе.",
             "your_rank": "Ваш ранг: <b>{rank}</b>  {pts:.0f} pts{hidden}",
             "hidden_note": " · Вы скрыты",
@@ -808,17 +850,17 @@ def en_bundle():
     b["start"]["need_register"] = "Please send /start first to register"
 
     b["kb"] = {
-        "study": "📚 Study",
+        "study": "📚 Study tools",
         "faq": "❓ FAQ",
         "profile": "📊 My profile",
         "news": "📢 News",
         "standard_timer": "⏱️ Standard timer (25 min)",
         "custom_timer": "⏱️ Custom timer",
-        "quizzes": "📖 Subjects",
+        "quizzes": "📖 Prep",
         "tips": "🎓 Productivity tips",
         "back_main": "🏠 Back to menu",
         "stop_timer": "⏹️ Stop",
-        "back_study": "⬅️ Back to study",
+        "back_study": "⬅️ Back to tools",
         "back_subjects": "⬅️ Back to subjects",
         "back_modes": "⬅️ Back to modes",
         "finish_quiz": "🛑 End quiz",
@@ -858,17 +900,22 @@ def en_bundle():
     b["setup"]["evening_off"] = "🌙 Evening: off"
     b["setup"]["change_later"] = "Change anytime in «📊 My profile» → «⚙️ Settings»."
 
-    b["nav"]["study_section"] = "📖 Study section:"
+    b["nav"]["study_section"] = "📚 Study tools: Pomodoro timer and productivity tips."
     b["nav"]["pick_subject"] = "📖 Choose a subject:"
     b["nav"]["pick_mode"] = "{subject_label}\nChoose a study mode:"
     b["nav"]["manage_cards"] = "Or manage your flashcards:"
     b["nav"]["no_materials"] = "🚧 No study materials yet. Check back later!"
     b["nav"]["no_modes"] = "🚧 No modes available yet for «{subject}»."
     b["nav"]["news_body"] = (
-        "📢 Subscribe to our channel — announcements, study tips, "
-        "and bot updates."
+        "Subscribe to our channel to be the first to know about:\n"
+        "• 🆕 New features and improvements\n"
+        "• 🏆 Productivity tips\n"
+        "• 💡 Study hacks\n"
+        "• 🎁 Exclusive bonuses and giveaways"
     )
-    b["nav"]["open_channel"] = "📢 Open channel"
+    b["nav"]["open_channel"] = "Go to channel"
+
+    b["study"]["section_quiz"] = "📖 Subjects"
 
     b["timer"]["rating_prompt"] = "How was your session?"
     b["timer"]["rating_skip"] = "⏭ Skip"
@@ -1016,6 +1063,7 @@ def en_bundle():
     b["profile"]["progress"] = "📊 Subject progress"
     b["profile"]["pet"] = "🐾 Pet"
     b["profile"]["friends"] = "👥 Friends"
+    b["profile"]["leaderboard"] = "🏆 Weekly ranking"
     b["profile"]["freeze_streak"] = "❄️ Freeze streak"
     b["profile"]["back"] = "◀️ Profile"
     b["profile"]["never"] = "never"
@@ -1053,6 +1101,32 @@ def en_bundle():
         "industrial-management": "🏭 Production management basics",
         "math": "🧮 Mathematics",
         "english": "🇬🇧 English",
+        "accounting": "📊 Accounting",
+    }
+    b["fc"] = {
+        "add_btn": "➕ Add card",
+        "list_btn": "📇 My flashcards",
+        "manage_title": "📇 My flashcards\n\nChoose a subject:",
+        "list_title": "📇 My flashcards — {subject}",
+        "list_empty": "Nothing here yet. Tap «➕ Add» to create the first one.",
+        "list_total": "Total: {count}",
+        "manage_add_btn": "➕ Add",
+        "back_subjects": "⬅️ Back to subjects",
+        "wizard_title": "📇 New card — {subject}",
+        "term_prompt": "Step 1/2: enter the term (question), up to {max} characters.",
+        "term_empty": "Term cannot be empty. Try again.",
+        "term_too_long": "Term too long (max {max} characters).",
+        "definition_prompt": "Step 2/2: enter the definition (answer), up to {max} characters.",
+        "definition_empty": "Definition cannot be empty. Try again.",
+        "definition_too_long": "Definition too long (max {max} characters).",
+        "limit_reached": "Limit of {max} cards per subject reached. Delete old cards to add new ones.",
+        "duplicate_term": "A card with term «{term}» already exists for this subject. Enter another term:",
+        "save_failed": "Could not save the card. Try again later.",
+        "saved": "✅ Card saved!\n\n<b>{term}</b>\n<i>{definition}</i>",
+        "add_more": "➕ Add another",
+        "start_study": "🃏 Start studying",
+        "deleted_ok": "Deleted",
+        "deleted_fail": "Card not found",
     }
     b["study_modes"]["situational"] = "🎯 Situational quizzes"
     b["study_modes"]["flashcards"] = "🃏 Flashcards"
@@ -1287,6 +1361,16 @@ def en_bundle():
     b["achievements_notify"]["default_name"] = "Achievement"
 
     b["user_tasks"]["instruction"] = USER_TASK_INSTRUCTION_EN
+    b["user_tasks"]["manage_title"] = "📋 My tasks\n\nChoose a subject:"
+    b["user_tasks"]["list_title"] = "📋 My tasks — {subject}"
+    b["user_tasks"]["list_empty"] = "Nothing here yet. Tap «➕ Upload .txt» to import tasks."
+    b["user_tasks"]["list_total"] = "Total: {count}"
+    b["user_tasks"]["import_btn"] = "➕ Upload .txt"
+    b["user_tasks"]["start_solving_btn"] = "📋 Start solving"
+    b["user_tasks"]["back_subjects"] = "⬅️ Back to subjects"
+    b["user_tasks"]["list_btn"] = "📋 Task list"
+    b["user_tasks"]["import_added"] = "✅ Tasks added: {count}"
+    b["user_tasks"]["import_skipped"] = "⚠️ Skipped lines: {count}"
     b["user_tasks"]["import_cancelled"] = "Import cancelled."
     b["user_tasks"]["send_file"] = "Send a .txt file with tasks or /cancel to abort."
     b["user_tasks"]["need_txt"] = "Need a .txt file. See instructions above."
@@ -1298,6 +1382,10 @@ def en_bundle():
     b["user_tasks"]["parse_no_separator"] = "Line {line_no}: missing «||» — use «question || answer»."
     b["user_tasks"]["parse_empty_question"] = "Line {line_no}: empty question."
     b["user_tasks"]["parse_no_answer"] = "Line {line_no}: no correct answer."
+    b["user_tasks"]["parse_no_valid"] = "❌ No valid tasks in the file.\n\n{errors}"
+    b["user_tasks"]["limit_exceeded"] = (
+        "❌ Limit of {max} tasks per subject. Delete old ones or split across subjects."
+    )
 
     b["friends"]["invite_invalid"] = "⏳ Invite link is invalid or expired."
     b["friends"]["invite_accepted"] = "🎉 You were added as a friend of user <code>{creator_id}</code>!"
@@ -1398,7 +1486,7 @@ def en_bundle():
     b["leaderboard"]["segment_line"] = "Segment: {label}"
     b["leaderboard"]["empty_week"] = "No points scored this week yet."
     b["leaderboard"]["top_header"] = "<b>Top:</b>"
-    b["leaderboard"]["row"] = "{marker} {rank}. id={user_id}  {pts:.0f} pts  (×{mult:.2f})"
+    b["leaderboard"]["row"] = "{marker} {rank}. {user_label}  {pts:.0f} pts  (×{mult:.2f})"
     b["leaderboard"]["no_points"] = "You have no points this week yet."
     b["leaderboard"]["your_rank"] = "Your rank: <b>{rank}</b>  {pts:.0f} pts{hidden}"
     b["leaderboard"]["hidden_note"] = " · You are hidden"

@@ -473,3 +473,32 @@ async def test_reconcile_invalid_duration_is_broken(db, monkeypatch):
     async with db.execute("SELECT COUNT(*) AS n FROM fsm_storage WHERE key = ?", (key,)) as c:
         row = await c.fetchone()
     assert row["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quiz_menu_stops_active_timer(study_stack, fsm_state, monkeypatch):
+    """Opening quizzes while timer is active should stop timer (award coins) instead of silent cancel."""
+    user_repo, _, _ = study_stack
+    uid = 42
+    await user_repo.create_user(uid)
+
+    start_time = datetime.now() - timedelta(minutes=10)
+    await fsm_state.set_state(bot.TimerStates.active)
+    await fsm_state.update_data(duration=25, start_time=start_time)
+
+    stop_timer = AsyncMock(return_value=True)
+    monkeypatch.setattr(bot, "loc", AsyncMock(return_value="ru"))
+    monkeypatch.setattr(bot, "available_subjects", AsyncMock(return_value=[("math", "Math")]))
+    monkeypatch.setattr(bot, "get_subject_keyboard", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(bot, "stop_active_timer", stop_timer)
+    monkeypatch.setattr(bot, "_cancel_timer_task", AsyncMock())
+    monkeypatch.setattr(bot, "t", lambda key, locale, **kw: key)
+
+    message = MagicMock()
+    message.from_user.id = uid
+    message.answer = AsyncMock()
+
+    await bot.handle_quiz_menu(message, fsm_state)
+
+    stop_timer.assert_awaited_once_with(message, fsm_state)
+    assert await fsm_state.get_state() == bot.QuizStates.choosing_subject.state

@@ -5,6 +5,8 @@
 **См. также:** [user-flows.md](../user-flows.md) §9 (клики до совета),
 [TODO.md](../TODO.md) #18 (known issue пагинации), [README.md](../README.md).
 
+**Doc sync:** 2026-05-25 (Palph v0.8, pytest suite **732** tests).
+
 ## Файлы
 
 | Файл | Категория |

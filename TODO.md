@@ -1,6 +1,6 @@
 Сырые идеи без оценки → [BACKLOG.md](BACKLOG.md). Сюда (TODO.md) попадают только размеченные задачи.
 
-**Текущий фокус (2026-05-22):** v0.8 закрыт. Следующее — контент ОПМ (#1),
+**Текущий фокус (2026-05-25):** v0.8 закрыт. Следующее — контент ОПМ (#1),
 сбор 30+ дней `events` для PA-ноутбуков, UX-сокращение навигации
 (см. [user-flows.md](user-flows.md)), затем sprint-план к экзамену
 ([BACKLOG.md](BACKLOG.md)).
@@ -27,10 +27,10 @@ Example:
 
 ## UX — сокращение кликов (2026-05-22)
 
-21) [UX] Оптимизация стандартных user flows  
-Ценность: до первого вопроса в квизах сейчас 4–5 reply-кликов; returning user тратит время на повторный выбор предмета/режима  
-Критерий готовности: см. приоритеты в [user-flows.md](user-flows.md) §14 — минимум «▶️ Продолжить» (last subject+mode) и/или «❓ Квизы» в главном меню; MCQ returning ≤3 клика  
-Приоритет: Could (после контента #1)
+21) [UX] Оптимизация стандартных user flows — **частично shipped 2026-05-25**  
+Ценность: меньше кликов до учёбы и видимость рейтинга/друзей  
+Готовность: ✅ «❓ Квизы» в главном меню (−1 клик); ✅ рейтинг в профиле; ✅ условные inline карточек. Остаётся: «▶️ Продолжить» (last subject+mode), MCQ returning ≤3 клика  
+Приоритет: Could — остаток после контента #1
 
 ---
 
@@ -86,7 +86,7 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
 handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На feature-ветке
-**533 теста** покрывают всю систему. Открытой leaderboard-работы нет.
+**732 теста** в suite покрывают систему. Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
 - `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);
@@ -168,27 +168,33 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 - `events` + колонки `subject_id`, `mode`, `tip_id`
 - События: учёба, tips, flashcards, friend/pet/LB/settings/reminder
 
-Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`. **~95 pytest** в analytics-модулях + **533 total**.
+Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`. **~95 pytest** в analytics-модулях + **732 total** в suite.
+
+### ✅ PA launch kit (2026-05-25)
+
+- [analysis/README.md](analysis/README.md) — hub, workflow по 3 неделям
+- [analysis/product_framework.md](analysis/product_framework.md) — цели, гипотезы, метрики, events
+- [analysis/analytics_logbook.md](analysis/analytics_logbook.md) — дневник решений
+- `scripts/pa_verify_export.py` — prelaunch verification + baseline
+- `scripts/pa_weekly_snapshot.py` — weekly export + markdown summary
+- Notebooks 01–04 + week1/week2/week3 templates + case study
 
 ### 🟡 Будущие расширения
 
-- `analysis/` notebooks (01–04) + weekly snapshot script — см. BACKLOG
 - `visit_id` для path analysis в одном заходе
 - `metrics_daily` pre-aggregate при росте базы
 
 ### 🎯 Главный портфолио-asset (внешняя аналитика)
 
-После сбора 30+ дней реальных данных:
+После сбора 30+ дней реальных данных — заполнить case study и ноутбуки:
 
-- Папка `analysis/` в репозитории с Jupyter notebooks
-- 4 notebook'а:
-  - `01_cohort_retention.ipynb` — matplotlib heatmap retention table + key findings
-  - `02_activation_funnel.ipynb` — waterfall chart + drop-off insights
-  - `03_feature_adoption.ipynb` — adoption per mode + корреляция с retention
-  - `04_session_patterns.ipynb` — heatmap часов × дней недели + рекомендации по timing
-- `analysis/README.md` с executive summary + recommendations
+- `01_cohort_retention.ipynb` — retention heatmap
+- `02_activation_funnel.ipynb` — funnel + time-to-value
+- `03_feature_adoption.ipynb` — adoption + D7 correlation
+- `04_session_patterns.ipynb` — heatmap + timing recommendations
+- [analysis/week3/case_study_template.md](analysis/week3/case_study_template.md)
 
-Сейчас в `analysis/`: `leaderboard_backtest.ipynb`. User flows для PA path-анализа:
+Сейчас в `analysis/`: launch kit + `leaderboard_backtest.ipynb`. User flows:
 [user-flows.md](user-flows.md).
 
 Это будет выглядеть в резюме как реальная PA-работа, не как «вот мой Telegram-бот».

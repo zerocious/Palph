@@ -18,7 +18,14 @@ import pytest_asyncio
 from aiogram.exceptions import TelegramForbiddenError
 
 import services as services_mod
-from services import ReminderService
+from services import PET_SINGLE_IMAGE_MODE, ReminderService
+
+
+def _sad_pet_media_mock(bot):
+    """Returns the mock used for evening sad-pet delivery in current mode."""
+    if PET_SINGLE_IMAGE_MODE:
+        return bot.send_photo
+    return bot.send_animation
 
 
 @pytest_asyncio.fixture
@@ -26,6 +33,7 @@ async def reminder_service(user_repo):
     bot = AsyncMock()
     bot.send_message = AsyncMock()
     bot.send_animation = AsyncMock()
+    bot.send_photo = AsyncMock()
     svc = ReminderService(user_repo, bot=bot)
     svc._test_bot = bot
     return svc
@@ -56,11 +64,12 @@ class TestSadPetAnimation:
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
 
-        reminder_service._test_bot.send_animation.assert_called_once()
+        media_mock = _sad_pet_media_mock(reminder_service._test_bot)
+        media_mock.assert_called_once()
         # send_message НЕ должен вызываться на sad path
         reminder_service._test_bot.send_message.assert_not_called()
         # Caption содержит sad-pet emoji
-        call = reminder_service._test_bot.send_animation.call_args
+        call = media_mock.call_args
         caption = call.kwargs.get("caption", "")
         assert "🐾😢" in caption
 
@@ -76,8 +85,9 @@ class TestSadPetAnimation:
             ],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
-        assert reminder_service._test_bot.send_animation.call_count == 3
-        for call in reminder_service._test_bot.send_animation.call_args_list:
+        media_mock = _sad_pet_media_mock(reminder_service._test_bot)
+        assert media_mock.call_count == 3
+        for call in media_mock.call_args_list:
             caption = call.kwargs.get("caption", "")
             assert "🐾😢" in caption
 
@@ -88,6 +98,7 @@ class TestReminderEvents:
 
         bot = AsyncMock()
         bot.send_animation = AsyncMock()
+        bot.send_photo = AsyncMock()
         event_repo = EventRepository(db)
         svc = ReminderService(user_repo, bot=bot, event_repo=event_repo)
 
@@ -128,8 +139,9 @@ class TestAssetMissingFallback:
             [{"user_id": 1, "has_studied_today": 0}],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
-        # Animation НЕ вызван (raise до него)
+        # Media send НЕ вызван (raise до него)
         reminder_service._test_bot.send_animation.assert_not_called()
+        reminder_service._test_bot.send_photo.assert_not_called()
         # Зато send_message — да, с sad-pet текстом
         reminder_service._test_bot.send_message.assert_called_once()
         text = reminder_service._test_bot.send_message.call_args.kwargs.get("text", "")
@@ -150,8 +162,9 @@ class TestFallbackCopy:
             [{"user_id": 100, "has_studied_today": 1}],
         )
         await reminder_service.tick("Europe/Moscow", "21:00")
-        # Sad-path animation НЕ вызван
+        # Sad-path media НЕ вызван
         reminder_service._test_bot.send_animation.assert_not_called()
+        reminder_service._test_bot.send_photo.assert_not_called()
         # send_message вызван с generic копией
         reminder_service._test_bot.send_message.assert_called_once()
         sent_text = reminder_service._test_bot.send_message.call_args.kwargs.get(
@@ -165,6 +178,7 @@ class TestEdgeCases:
         await _mock_due_users(reminder_service, [])
         await reminder_service.tick("Europe/Moscow", "21:00")
         reminder_service._test_bot.send_animation.assert_not_called()
+        reminder_service._test_bot.send_photo.assert_not_called()
         reminder_service._test_bot.send_message.assert_not_called()
 
     async def test_blocked_user_handled_gracefully(self, reminder_service):
@@ -179,17 +193,19 @@ class TestEdgeCases:
                 {"user_id": 2, "has_studied_today": 0},
             ],
         )
-        async def _anim_side_effect(*args, **kwargs):
+        async def _media_side_effect(*args, **kwargs):
             uid = kwargs.get("chat_id") or args[0]
             if uid == 1:
                 raise TelegramForbiddenError(
                     method=None, message="Forbidden: bot was blocked"
                 )
-        reminder_service._test_bot.send_animation.side_effect = _anim_side_effect
+        reminder_service._test_bot.send_animation.side_effect = _media_side_effect
+        reminder_service._test_bot.send_photo.side_effect = _media_side_effect
         # Не должно бросить наружу
         await reminder_service.tick("Europe/Moscow", "21:00")
         # User 2 всё равно получил попытку отправки
-        assert reminder_service._test_bot.send_animation.call_count == 2
+        media_mock = _sad_pet_media_mock(reminder_service._test_bot)
+        assert media_mock.call_count == 2
 
     async def test_unknown_timezone_defensive_fallback(self, reminder_service):
         """Несуществующий TZ → pytz бросит, но мы fall back на naive datetime."""
@@ -200,4 +216,4 @@ class TestEdgeCases:
         # 'Not/A/Real/TZ' не валиден, но reminder не должен упасть
         await reminder_service.tick("Not/A/Real/TZ", "21:00")
         # Sad-path всё равно срабатывает (по умолчанию)
-        reminder_service._test_bot.send_animation.assert_called_once()
+        _sad_pet_media_mock(reminder_service._test_bot).assert_called_once()

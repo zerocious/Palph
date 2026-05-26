@@ -1,6 +1,6 @@
 # Error-Handling Review — Palph (Telegram bot, aiogram 3)
 
-**Date:** 2026-05-22
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-05-25 (Palph v0.8, pytest suite **732** tests)
 **Reviewer:** Claude (Opus 4.7)
 **Branch / HEAD:** `main` @ `aa7071c`
 **Scope:** `bot.py`, `services.py`, `repository.py`, `tasks.py`, `db.py`, `fsm_storage.py`, `i18n.py`, `locale_bot.py`
@@ -620,7 +620,7 @@ await _telegram_call_with_retry(
 **Severity: 3/10 — Unable to verify need**
 
 I don't see evidence this bot has scaled to a size where a circuit breaker
-adds value (no caching of failed `chat_id`s, no batch sender). At ~533 tests
+adds value (no caching of failed `chat_id`s, no batch sender). At ~732 tests
 and presumably <1000 users (per the README description of "<100 пользователей"
 heuristic in [bot.py:170](bot.py:170)), the simpler retry from 4.1 is enough.
 Flagged only because the audit brief asked.

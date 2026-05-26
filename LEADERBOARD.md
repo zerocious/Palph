@@ -150,8 +150,9 @@ Single toggle in the settings menu: **"👤 Скрыть из лидерборд
 
 ## Transparency
 
-Formula published in `/help` → FAQ section and in the news channel. Users
-can plan a week against it.
+Formula published in `/help` → FAQ section, in-bot **📢 Новости** (призыв
+подписаться на [`t.me/palph_study`](https://t.me/palph_study)), and the Telegram
+channel itself. Users can plan a week against it.
 
 ---
 

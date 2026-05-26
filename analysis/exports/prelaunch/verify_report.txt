@@ -1,0 +1,26 @@
+============================================================
+Palph PA Export Verification Report
+============================================================
+
+PASSED:
+  [OK] DB connected: studybuddy.db
+  [OK] users=3, events=63
+  [OK] compute_cohort_retention() OK
+  [OK] compute_funnel() OK
+  [OK] compute_engagement() OK
+  [OK] compute_feature_usage() OK
+  [OK] compute_activation_metrics() OK
+  [OK] compute_product_metrics() OK
+  [OK] compute_segments() OK
+  [OK] compute_content_stats() OK
+  [OK] compute_event_timeline() OK (7 events)
+  [OK] compute_heatmap() OK
+  [OK] Distinct event_names: 16
+  [OK] Export ZIP valid: 21 files, 6450 bytes
+  [OK] metadata schema_version=v0.8
+
+WARNINGS:
+  [WARN] Events not yet seen (run test-user flow): leaderboard_viewed, mcq_answered, quiz_answered
+
+ALL CHECKS PASSED
+Generated: 2026-05-25T12:23:51Z

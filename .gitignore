@@ -49,3 +49,7 @@ data/
 
 # --- Database backups (locally) ---
 backups/
+
+# --- PA analytics exports (user data) ---
+analysis/exports/**/*.zip
+analysis/exports/**/*.csv

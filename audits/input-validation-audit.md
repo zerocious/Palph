@@ -1,7 +1,7 @@
 # Input Validation Security Audit
 
-**Project:** Telegram Study Buddy bot (`tg bot 0.6 (settings not working)`)  
-**Date:** 2026-05-22  
+**Project:** Palph Telegram bot (`tg bot 0.6 (settings not working)`)  
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-05-25 (product v0.8, 732 pytest)  
 **Scope:** Python sources — `bot.py`, `db.py`, `repository.py`, `services.py`, `i18n.py`, `locale_bot.py`, `user_task_txt.py`, `fsm_storage.py`, `tasks.py`, `parse_logs.py`, `scripts/*.py`, `tests/*.py`  
 **Method:** Static review, pattern grep (`execute`, f-strings in SQL, `subprocess`, `open`, `Path`, `eval`, etc.), handler mapping, targeted pytest (`47 passed` on validation-related tests)
 

@@ -33,7 +33,7 @@ FAQ_IDS = (
     "why_free",
 )
 
-SUBJECT_IDS = ("industrial-management", "math", "english")
+SUBJECT_IDS = ("industrial-management", "math", "accounting", "english")
 STUDY_MODE_IDS = ("situational", "flashcards", "mcq", "tasks")
 QUIZ_SECTION_KEYS = ("i", "ii", "iii", "iv")
 

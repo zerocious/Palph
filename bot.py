@@ -20,9 +20,9 @@ from dotenv import load_dotenv
 from task_answer_match import task_answer_matches
 
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import (
     TelegramForbiddenError,
-    TelegramRetryAfter,
     TelegramBadRequest,
 )
 from aiogram.filters import Command, CommandObject
@@ -51,9 +51,17 @@ from services import (
     AchievementService, StudyService, StreakService, ReminderService,
     BackupService, AnalyticsService, LeaderboardService, UserRateLimiter, sm2_update,
     freeze_cost, parse_friend_query, derive_emotion, render_pet,
+    _send_with_retry_after, send_with_telegram_bulkhead,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 from user_task_txt import parse_user_tasks_txt
+from file_upload_security import (
+    decode_task_upload,
+    resolve_path_under,
+    safe_task_image_filename,
+    validate_subject_id,
+    validate_task_document_metadata,
+)
 from i18n import t, kb_in, all_locale_texts, subject_label, study_mode_label, quiz_section_label, SUPPORTED_LOCALES
 from plan_handlers import (
     PLAN_UI_ENABLED,
@@ -85,6 +93,8 @@ from locale_bot import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID", "0"))
+# Numeric seconds — aiogram BaseSession.timeout and polling add polling_timeout to it.
+TELEGRAM_TIMEOUT = 30
 SERVER_TIMEZONE = os.getenv("SERVER_TIMEZONE", "Europe/Moscow")
 CHANNEL_URL = "https://t.me/palph_study"
 
@@ -344,8 +354,9 @@ class RateLimitMiddleware(BaseMiddleware):
     CallbackQuery, и т.д. Так что один middleware для обоих.
     """
 
-    def __init__(self, limiter: UserRateLimiter):
+    def __init__(self, limiter: UserRateLimiter, locale_fn=None):
         self.limiter = limiter
+        self.locale_fn = locale_fn
         super().__init__()
 
     async def __call__(self, handler, event, data):
@@ -361,18 +372,31 @@ class RateLimitMiddleware(BaseMiddleware):
         status = self.limiter.check(user.id)
         if status == "block":
             logger.info("ratelimit.blocked user_id=%s", user.id)
+            try:
+                locale = await self.locale_fn(user.id) if self.locale_fn else "ru"
+                if isinstance(event, Message):
+                    await event.answer(t("errors.rate_limit_msg", locale))
+                elif isinstance(event, CallbackQuery):
+                    await event.answer(
+                        t("errors.rate_limit_cb", locale),
+                        show_alert=False,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "ratelimit.block_send_failed user_id=%s reason=%s",
+                    user.id, type(e).__name__,
+                )
             return None  # silently drop, handler не вызывается
 
         if status == "warn":
             logger.info("ratelimit.warned user_id=%s", user.id)
             try:
+                locale = await self.locale_fn(user.id) if self.locale_fn else "ru"
                 if isinstance(event, Message):
-                    await event.answer(
-                        "⏸ Слишком быстро! Подожди немного и продолжи."
-                    )
+                    await event.answer(t("errors.rate_limit_msg", locale))
                 elif isinstance(event, CallbackQuery):
                     await event.answer(
-                        "⏸ Слишком быстро — подожди немного.",
+                        t("errors.rate_limit_cb", locale),
                         show_alert=False,
                     )
             except Exception as e:
@@ -733,22 +757,25 @@ async def apply_user_bot_commands(user_id: int) -> None:
 
 
 def get_main_keyboard(locale: str) -> ReplyKeyboardMarkup:
-    builder = ReplyKeyboardBuilder()
-    builder.button(text=t("kb.study", locale))
-    builder.button(text=t("kb.faq", locale))
-    builder.button(text=t("kb.profile", locale))
-    builder.button(text=t("kb.news", locale))
-    builder.adjust(2, 2)
-    return builder.as_markup(resize_keyboard=True)
-
-def get_study_keyboard(locale: str) -> ReplyKeyboardMarkup:
+    """Главное меню: Подготовка (отдельная строка), учебные инструменты, профиль, FAQ, новости."""
     builder = ReplyKeyboardBuilder()
     builder.button(text=t("kb.quizzes", locale))
+    builder.button(text=t("kb.study", locale))
+    builder.button(text=t("kb.profile", locale))
+    builder.button(text=t("kb.faq", locale))
+    builder.button(text=t("kb.news", locale))
+    builder.adjust(1, 1, 2, 1)
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_study_keyboard(locale: str) -> ReplyKeyboardMarkup:
+    """Подменю «Учебные инструменты»: Pomodoro и советы (подготовка — отдельная кнопка в главном меню)."""
+    builder = ReplyKeyboardBuilder()
     builder.button(text=t("kb.tips", locale))
     builder.button(text=t("kb.standard_timer", locale))
     builder.button(text=t("kb.custom_timer", locale))
     builder.button(text=t("kb.back_main", locale))
-    builder.adjust(2, 2, 1)
+    builder.adjust(2, 1, 1)
     return builder.as_markup(resize_keyboard=True)
 
 def get_tips_keyboard(locale: str) -> ReplyKeyboardMarkup:
@@ -781,7 +808,7 @@ async def get_subject_keyboard(user_id: int, locale: str) -> ReplyKeyboardMarkup
     builder = ReplyKeyboardBuilder()
     for sid, _ in await available_subjects(user_id, locale):
         builder.button(text=subject_label(sid, locale))
-    builder.button(text=t("kb.back_study", locale))
+    builder.button(text=t("kb.back_main", locale))
     builder.adjust(1)
     return builder.as_markup(resize_keyboard=True)
 
@@ -1017,8 +1044,12 @@ TIPS_SEEN_COOLDOWN_DAYS = 7
 SUBJECTS: list[tuple[str, str]] = [
     ("industrial-management", "🏭 Основы производственного менеджмента"),
     ("math",                  "🧮 Математика"),
+    ("accounting",              "📊 Бухучёт"),
     ("english",               "🇬🇧 Английский"),
 ]
+
+# Предметы без блока прогресса в профиле — только заглушка «в разработке».
+PROFILE_COMING_SOON_SUBJECTS = ("english", "industrial-management")
 
 # Каталог режимов учёбы. id определяет где лежит контент:
 #   situational → subject/situational/section-*.txt (multi-section)
@@ -1043,8 +1074,7 @@ def _file_based_mode_ids(subject_id: str) -> list[str]:
             ):
                 result.append(mode_id)
         elif mode_id == "tasks":
-            tasks_dir = subject_path / "tasks"
-            if tasks_dir.is_dir() and any(tasks_dir.glob("task-*.json")):
+            if load_tasks(subject_id):
                 result.append(mode_id)
         else:
             file_path = subject_path / f"{mode_id}.txt"
@@ -1252,12 +1282,6 @@ async def load_tasks_for_study(
     if group_id is not None:
         return official
     return official + await user_task_repo.list_by_subject(user_id, subject_id)
-
-
-def _normalize_task_answer(text: str) -> str:
-    """Нормализует ответ для сравнения: lowercase, убрать пунктуацию, сжать пробелы."""
-    no_punct = re.sub(r"[^\w\s]", " ", text.lower())
-    return re.sub(r"\s+", " ", no_punct).strip()
 
 
 def _flashcard_hash(term: str) -> str:
@@ -1776,27 +1800,9 @@ async def cmd_profile(message: Message, state: FSMContext):
     if not user:
         await message.answer(t("start.need_register", locale))
         return
-    inline_kb = InlineKeyboardBuilder()
-    inline_kb.button(text=t("profile.achievements", locale), callback_data=f"show_achievements:{user_id}:1")
-    inline_kb.button(text=t("profile.settings", locale), callback_data=f"settings_menu:{user_id}")
-    inline_kb.button(text=t("profile.progress", locale), callback_data=f"show_progress:{user_id}")
-    inline_kb.button(text=t("profile.pet", locale), callback_data=f"pet_menu:{user_id}")
-    inline_kb.button(text=t("profile.friends", locale), callback_data=f"friends_back:{user_id}")
-    inline_kb.button(text=t("profile.freeze_streak", locale), callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1, 1)
-    last_session = user.get("last_session") or t("profile.never", locale)
     await message.answer(
-        t(
-            "profile.title",
-            locale,
-            user_id=user_id,
-            total_sessions=user["total_sessions"],
-            total_coins=user["total_coins"],
-            current_streak=user["current_streak"],
-            last_session=last_session,
-            pet_emotion=get_pet_emotion(user["current_streak"], locale),
-        ),
-        reply_markup=inline_kb.as_markup(),
+        _profile_title_text(user, user_id, locale),
+        reply_markup=_build_profile_inline_keyboard(user_id, locale),
     )
 
 # ------------------------------------------------------------
@@ -1909,6 +1915,13 @@ async def _build_subject_progress_block(
         📈 Заходов ...
     Если контента нет — заглушка с «🚧 Скоро».
     """
+    if subject_id in PROFILE_COMING_SOON_SUBJECTS:
+        return (
+            f"{subject_label}\n"
+            f"{PROGRESS_BAR_EMPTY * PROGRESS_BAR_LENGTH}  0%\n"
+            f"{t('progress.coming_soon', locale)}"
+        )
+
     # Загружаем все items предмета. Используем существующие load_*-функции.
     section_terms: list[str] = []  # term_hash из всех непустых разделов situational
     for _label, key in available_quiz_sections(subject_id, locale):
@@ -2264,48 +2277,122 @@ async def cycle_flashcard_source_setting(callback: CallbackQuery):
         await ns.get_display_text(),
         await ns.get_keyboard(),
     )
-    await callback.answer(f"🃏 Источник: {new_label}")
+    locale = await loc(target_user_id)
+    await callback.answer(t("settings.source_changed", locale, label=new_label))
 
 
-def _subject_label_by_id(subject_id: str) -> str:
-    for sid, label in SUBJECTS:
-        if sid == subject_id:
-            return label
-    return subject_id
+def _subject_label_by_id(subject_id: str, locale: str = "ru") -> str:
+    return subject_label(subject_id, locale)
 
 
-def _build_fc_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
+def _build_fc_subject_picker_keyboard(user_id: int, prefix: str, locale: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for sid, label in SUBJECTS:
-        kb.button(text=label, callback_data=f"{prefix}:{user_id}:{sid}")
+    for sid in SUBJECT_IDS:
+        kb.button(text=subject_label(sid, locale), callback_data=f"{prefix}:{user_id}:{sid}")
     kb.adjust(1)
     return kb.as_markup()
 
 
-async def _build_fc_list_text(user_id: int, subject_id: str) -> str:
+async def _build_fc_list_text(user_id: int, subject_id: str, locale: str) -> str:
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
-    subject_label = _subject_label_by_id(subject_id)
+    subject_label = _subject_label_by_id(subject_id, locale)
     if not cards:
         return (
-            f"📇 Мои карточки — {subject_label}\n\n"
-            f"Пока пусто. Нажми «➕ Добавить», чтобы создать первую."
+            f"{t('fc.list_title', locale, subject=subject_label)}\n\n"
+            f"{t('fc.list_empty', locale)}"
         )
-    lines = [f"📇 Мои карточки — {subject_label}", f"Всего: {len(cards)}", ""]
+    lines = [
+        t("fc.list_title", locale, subject=subject_label),
+        t("fc.list_total", locale, count=len(cards)),
+        "",
+    ]
     for i, card in enumerate(cards, 1):
         lines.append(f"{i}. {card['term']}")
     return "\n".join(lines)
 
 
-def _build_fc_list_keyboard(user_id: int, subject_id: str, cards: list[dict]) -> InlineKeyboardMarkup:
+def _build_subject_fc_shortcuts_keyboard(
+    user_id: int, subject_id: str, locale: str,
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Добавить", callback_data=f"fc_add:{user_id}:{subject_id}")
+    kb.button(text=t("fc.add_btn", locale), callback_data=f"fc_add:{user_id}:{subject_id}")
+    kb.button(text=t("fc.list_btn", locale), callback_data=f"fc_list:{user_id}:{subject_id}")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def _maybe_send_subject_fc_shortcuts(
+    message: Message, user_id: int, subject_id: str, locale: str,
+) -> None:
+    """Короткие inline для своих карточек — только если они уже есть по предмету."""
+    if await user_flashcard_repo.count_by_subject(user_id, subject_id) <= 0:
+        return
+    await message.answer(
+        t("nav.manage_cards", locale),
+        reply_markup=_build_subject_fc_shortcuts_keyboard(user_id, subject_id, locale),
+    )
+
+
+async def _maybe_send_flash_mode_fc_shortcuts(
+    message: Message, user_id: int, subject_id: str, locale: str,
+) -> None:
+    """При входе в флэш-карты без своих карточек — один раз предложить добавить."""
+    if await user_flashcard_repo.count_by_subject(user_id, subject_id) > 0:
+        return
+    await message.answer(
+        t("nav.manage_cards", locale),
+        reply_markup=_build_subject_fc_shortcuts_keyboard(user_id, subject_id, locale),
+    )
+
+
+def _profile_title_text(user: dict, user_id: int, locale: str) -> str:
+    last_session = user.get("last_session") or t("profile.never", locale)
+    return t(
+        "profile.title",
+        locale,
+        user_id=user_id,
+        total_sessions=user["total_sessions"],
+        total_coins=user["total_coins"],
+        current_streak=user["current_streak"],
+        last_session=last_session,
+        pet_emotion=get_pet_emotion(user["current_streak"], locale),
+    )
+
+
+def _build_profile_inline_keyboard(user_id: int, locale: str) -> InlineKeyboardMarkup:
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(
+        text=t("profile.achievements", locale),
+        callback_data=f"show_achievements:{user_id}:1",
+    )
+    inline_kb.button(text=t("profile.settings", locale), callback_data=f"settings_menu:{user_id}")
+    inline_kb.button(text=t("profile.progress", locale), callback_data=f"show_progress:{user_id}")
+    inline_kb.button(
+        text=t("profile.leaderboard", locale),
+        callback_data=f"leaderboard_show:{user_id}",
+    )
+    inline_kb.button(text=t("profile.pet", locale), callback_data=f"pet_menu:{user_id}")
+    inline_kb.button(text=t("profile.friends", locale), callback_data=f"friends_back:{user_id}")
+    inline_kb.button(
+        text=t("profile.freeze_streak", locale),
+        callback_data=f"freeze_menu:{user_id}",
+    )
+    inline_kb.adjust(2, 2, 1, 2)
+    return inline_kb.as_markup()
+
+
+def _build_fc_list_keyboard(
+    user_id: int, subject_id: str, cards: list[dict], locale: str,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=t("fc.manage_add_btn", locale), callback_data=f"fc_add:{user_id}:{subject_id}")
     for card in cards:
         term_preview = card["term"][:30] + ("…" if len(card["term"]) > 30 else "")
         kb.button(
             text=f"🗑 {term_preview}",
             callback_data=f"fc_del:{user_id}:{subject_id}:{card['id']}",
         )
-    kb.button(text="⬅️ К предметам", callback_data=f"fc_manage:{user_id}")
+    kb.button(text=t("fc.back_subjects", locale), callback_data=f"fc_manage:{user_id}")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -2315,13 +2402,14 @@ async def _start_flashcard_create_wizard(
     state: FSMContext,
     user_id: int,
     subject_id: str,
+    locale: str,
 ) -> None:
-    subject_label = _subject_label_by_id(subject_id)
+    subject_label = _subject_label_by_id(subject_id, locale)
     await state.set_state(FlashcardCreateStates.waiting_for_term)
     await state.update_data(fc_subject_id=subject_id, fc_subject_label=subject_label)
     await message.answer(
-        f"📇 Новая карточка — {subject_label}\n\n"
-        f"Шаг 1/2: введи термин (вопрос), до {USER_FLASHCARD_TERM_MAX} символов.",
+        f"{t('fc.wizard_title', locale, subject=subject_label)}\n\n"
+        f"{t('fc.term_prompt', locale, max=USER_FLASHCARD_TERM_MAX)}",
     )
 
 
@@ -2335,8 +2423,9 @@ async def handle_fc_manage(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
-    text = "📇 Мои карточки\n\nВыбери предмет:"
-    kb = _build_fc_subject_picker_keyboard(user_id, "fc_list")
+    locale = await loc(user_id)
+    text = t("fc.manage_title", locale)
+    kb = _build_fc_subject_picker_keyboard(user_id, "fc_list", locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
@@ -2355,9 +2444,10 @@ async def handle_fc_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    locale = await loc(user_id)
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
-    text = await _build_fc_list_text(user_id, subject_id)
-    kb = _build_fc_list_keyboard(user_id, subject_id, cards)
+    text = await _build_fc_list_text(user_id, subject_id, locale)
+    kb = _build_fc_list_keyboard(user_id, subject_id, cards, locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
@@ -2376,8 +2466,9 @@ async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    locale = await loc(user_id)
     await callback.answer()
-    await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id)
+    await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id, locale)
 
 
 @router.callback_query(F.data.startswith("fc_del:"))
@@ -2399,14 +2490,16 @@ async def handle_fc_delete(callback: CallbackQuery):
             "user_flashcard_deleted",
             {"subject_id": subject_id, "card_id": card_id},
         )
+    locale = await loc(user_id)
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
-    text = await _build_fc_list_text(user_id, subject_id)
-    kb = _build_fc_list_keyboard(user_id, subject_id, cards)
+    text = await _build_fc_list_text(user_id, subject_id, locale)
+    kb = _build_fc_list_keyboard(user_id, subject_id, cards, locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
         await callback.message.answer(text, reply_markup=kb)
-    locale = await loc(callback.from_user.id); await callback.answer(t("fc.deleted_ok", locale) if deleted else t("fc.deleted_fail", locale))
+    locale = await loc(callback.from_user.id)
+    await callback.answer(t("fc.deleted_ok", locale) if deleted else t("fc.deleted_fail", locale))
 
 
 @router.message(FlashcardCreateStates.waiting_for_term)
@@ -2495,32 +2588,37 @@ async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
         return
-    subject_label = _subject_label_by_id(subject_id)
+    locale = await loc(user_id)
+    subj_lbl = _subject_label_by_id(subject_id, locale)
     await callback.answer()
     await state.set_state(QuizStates.choosing_mode)
-    await state.update_data(subject_id=subject_id, subject_label=subject_label, mode_id="flashcards")
+    await state.update_data(subject_id=subject_id, subject_label=subj_lbl, mode_id="flashcards")
     await start_flashcard_session(
-        callback.message, state, subject_id, subject_label=subject_label,
+        callback.message, state, subject_id, subject_label=subj_lbl,
     )
 
 
-def _build_ut_subject_picker_keyboard(user_id: int, prefix: str) -> InlineKeyboardMarkup:
+def _build_ut_subject_picker_keyboard(user_id: int, prefix: str, locale: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for sid, label in SUBJECTS:
-        kb.button(text=label, callback_data=f"{prefix}:{user_id}:{sid}")
+    for sid in SUBJECT_IDS:
+        kb.button(text=subject_label(sid, locale), callback_data=f"{prefix}:{user_id}:{sid}")
     kb.adjust(1)
     return kb.as_markup()
 
 
-async def _build_ut_list_text(user_id: int, subject_id: str) -> str:
+async def _build_ut_list_text(user_id: int, subject_id: str, locale: str) -> str:
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
-    subject_label = _subject_label_by_id(subject_id)
+    subject_label = _subject_label_by_id(subject_id, locale)
     if not tasks:
         return (
-            f"📋 Мои задачи — {subject_label}\n\n"
-            f"Пока пусто. Нажми «➕ Загрузить .txt», чтобы импортировать задачи."
+            f"{t('user_tasks.list_title', locale, subject=subject_label)}\n\n"
+            f"{t('user_tasks.list_empty', locale)}"
         )
-    lines = [f"📋 Мои задачи — {subject_label}", f"Всего: {len(tasks)}", ""]
+    lines = [
+        t("user_tasks.list_title", locale, subject=subject_label),
+        t("user_tasks.list_total", locale, count=len(tasks)),
+        "",
+    ]
     for i, task in enumerate(tasks, 1):
         preview = task["problem"][:50] + ("…" if len(task["problem"]) > 50 else "")
         lines.append(f"{i}. {preview}")
@@ -2528,10 +2626,10 @@ async def _build_ut_list_text(user_id: int, subject_id: str) -> str:
 
 
 def _build_ut_list_keyboard(
-    user_id: int, subject_id: str, tasks: list[dict]
+    user_id: int, subject_id: str, tasks: list[dict], locale: str,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Загрузить .txt", callback_data=f"ut_import:{user_id}:{subject_id}")
+    kb.button(text=t("user_tasks.import_btn", locale), callback_data=f"ut_import:{user_id}:{subject_id}")
     for task in tasks:
         db_id = int(task["id"][1:], 16)
         preview = task["problem"][:28] + ("…" if len(task["problem"]) > 28 else "")
@@ -2539,8 +2637,8 @@ def _build_ut_list_keyboard(
             text=f"🗑 {preview}",
             callback_data=f"ut_del:{user_id}:{subject_id}:{db_id}",
         )
-    kb.button(text="📋 Начать решать", callback_data=f"ut_study:{user_id}:{subject_id}")
-    kb.button(text="⬅️ К предметам", callback_data=f"ut_manage:{user_id}")
+    kb.button(text=t("user_tasks.start_solving_btn", locale), callback_data=f"ut_study:{user_id}:{subject_id}")
+    kb.button(text=t("user_tasks.back_subjects", locale), callback_data=f"ut_manage:{user_id}")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -2555,8 +2653,9 @@ async def handle_ut_manage(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
-    text = "📋 Мои задачи\n\nВыбери предмет:"
-    kb = _build_ut_subject_picker_keyboard(user_id, "ut_list")
+    locale = await loc(user_id)
+    text = t("user_tasks.manage_title", locale)
+    kb = _build_ut_subject_picker_keyboard(user_id, "ut_list", locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
@@ -2575,9 +2674,10 @@ async def handle_ut_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
+    locale = await loc(user_id)
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
-    text = await _build_ut_list_text(user_id, subject_id)
-    kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
+    text = await _build_ut_list_text(user_id, subject_id, locale)
+    kb = _build_ut_list_keyboard(user_id, subject_id, tasks, locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
@@ -2597,12 +2697,12 @@ async def handle_ut_import_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
     await callback.answer()
+    locale = await loc(user_id)
     await state.set_state(UserTaskImportStates.waiting_for_file)
     await state.update_data(
         ut_subject_id=subject_id,
-        ut_subject_label=_subject_label_by_id(subject_id),
+        ut_subject_label=_subject_label_by_id(subject_id, locale),
     )
-    locale = await loc(user_id)
     await callback.message.answer(
         t("user_tasks.instruction", locale),
         parse_mode="HTML",
@@ -2625,30 +2725,32 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     doc = message.document
-    if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
-        await message.answer(t("user_tasks.need_txt", locale))
-        return
-    if doc.file_size and doc.file_size > USER_TASK_FILE_MAX_BYTES:
-        await message.answer(
-            t("user_tasks.file_too_big", locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
-        )
+    meta_err = validate_task_document_metadata(doc)
+    if meta_err:
+        await message.answer(t(meta_err, locale))
         return
 
     from io import BytesIO
 
     buffer = BytesIO()
     try:
-        await bot.download(doc, destination=buffer)
-        raw = buffer.getvalue().decode("utf-8")
-    except UnicodeDecodeError:
-        await message.answer(t("user_tasks.read_error", locale))
-        return
+        await asyncio.wait_for(bot.download(doc, destination=buffer), timeout=60)
     except Exception as e:
         logger.error("ut.import_download_failed user=%s reason=%s", user_id, e)
         await message.answer(t("user_tasks.download_error", locale))
         return
 
-    parsed, errors = parse_user_tasks_txt(raw)
+    text_content, decode_err = decode_task_upload(buffer.getvalue(), USER_TASK_FILE_MAX_BYTES)
+    if decode_err:
+        if decode_err == "user_tasks.file_too_big":
+            await message.answer(
+                t(decode_err, locale, max_kb=USER_TASK_FILE_MAX_BYTES // 1024),
+            )
+        else:
+            await message.answer(t(decode_err, locale))
+        return
+
+    parsed, errors = parse_user_tasks_txt(text_content)
     if not parsed and errors:
         await message.answer(
             t("user_tasks.parse_no_valid", locale, errors="\n".join(errors[:10])),
@@ -2659,7 +2761,11 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    subject_id = data.get("ut_subject_id")
+    subject_id = validate_subject_id(data.get("ut_subject_id") or "")
+    if subject_id is None:
+        await state.clear()
+        await message.answer(t("errors.state_error", locale))
+        return
     added, err = await user_task_repo.bulk_create(user_id, subject_id, parsed)
     if err == "limit_exceeded":
         await message.answer(
@@ -2674,22 +2780,21 @@ async def handle_ut_import_file(message: Message, state: FSMContext):
         "user_tasks_imported",
         {"subject_id": subject_id, "count": added},
     )
-    lines = [f"✅ Добавлено задач: {added}"]
+    lines = [t("user_tasks.import_added", locale, count=added)]
     if errors:
-        lines.append(f"⚠️ Пропущено строк: {len(errors)}")
+        lines.append(t("user_tasks.import_skipped", locale, count=len(errors)))
         lines.append("\n".join(errors[:5]))
     kb = InlineKeyboardBuilder()
-    kb.button(text="📋 Список задач", callback_data=f"ut_list:{user_id}:{subject_id}")
-    kb.button(text="📋 Начать решать", callback_data=f"ut_study:{user_id}:{subject_id}")
+    kb.button(text=t("user_tasks.list_btn", locale), callback_data=f"ut_list:{user_id}:{subject_id}")
+    kb.button(text=t("user_tasks.start_solving_btn", locale), callback_data=f"ut_study:{user_id}:{subject_id}")
     kb.adjust(1)
     await message.answer("\n\n".join(lines), reply_markup=kb.as_markup())
 
 
 @router.message(UserTaskImportStates.waiting_for_file)
 async def handle_ut_import_wrong(message: Message):
-    await message.answer(
-        "Отправь файл .txt с задачами или /cancel для отмены."
-    )
+    locale = await loc(message.from_user.id)
+    await message.answer(t("user_tasks.send_file", locale))
 
 
 @router.callback_query(F.data.startswith("ut_del:"))
@@ -2711,14 +2816,16 @@ async def handle_ut_delete(callback: CallbackQuery):
             "user_task_deleted",
             {"subject_id": subject_id, "task_db_id": task_db_id},
         )
+    locale = await loc(user_id)
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
-    text = await _build_ut_list_text(user_id, subject_id)
-    kb = _build_ut_list_keyboard(user_id, subject_id, tasks)
+    text = await _build_ut_list_text(user_id, subject_id, locale)
+    kb = _build_ut_list_keyboard(user_id, subject_id, tasks, locale)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
         await callback.message.answer(text, reply_markup=kb)
-    locale = await loc(callback.from_user.id); await callback.answer(t("common.deleted", locale) if deleted else t("common.task_not_found", locale))
+    locale = await loc(callback.from_user.id)
+    await callback.answer(t("common.deleted", locale) if deleted else t("common.task_not_found", locale))
 
 
 @router.callback_query(F.data.startswith("ut_study:"))
@@ -2732,16 +2839,17 @@ async def handle_ut_study(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
         return
-    subject_label = _subject_label_by_id(subject_id)
+    locale = await loc(user_id)
+    subj_lbl = _subject_label_by_id(subject_id, locale)
     await callback.answer()
     await state.set_state(QuizStates.choosing_mode)
     await state.update_data(
         subject_id=subject_id,
-        subject_label=subject_label,
+        subject_label=subj_lbl,
         mode_id="tasks",
     )
     await start_task_session(
-        callback.message, state, subject_id, subject_label=subject_label,
+        callback.message, state, subject_id, subject_label=subj_lbl,
     )
 
 
@@ -3051,38 +3159,43 @@ async def back_to_profile(callback: CallbackQuery):
     if not user:
         await callback.message.answer("Пользователь не найден")
         return
-    inline_kb = InlineKeyboardBuilder()
-    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
-    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
-    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    # Питомец: image preview + customization picker (TODO #16 Phase B).
-    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
-    # Друзья: open friends-tab. Использует существующий friends_back-handler
-    # (тот же, что callback'и accept/reject/remove). callback_data prefix
-    # 'friends_back' семантически означает «main friends-tab view».
-    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
-    # Заморозка стрика (LEADERBOARD.md §Streak Freeze). Кнопка всегда видна;
-    # confirm-экран сам показывает доступность (cooldown / баланс / уже куплено).
-    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1, 1)
     locale = await loc(user_id)
-    last_session = user.get("last_session") or t("profile.never", locale)
-    text = t(
-        "profile.title",
-        locale,
-        user_id=user_id,
-        total_sessions=user["total_sessions"],
-        total_coins=user["total_coins"],
-        current_streak=user["current_streak"],
-        last_session=last_session,
-        pet_emotion=get_pet_emotion(user["current_streak"], locale),
-    )
+    text = _profile_title_text(user, user_id, locale)
+    markup = _build_profile_inline_keyboard(user_id, locale)
     try:
-        await callback.message.edit_text(text, reply_markup=inline_kb.as_markup())
+        await callback.message.edit_text(text, reply_markup=markup)
     except Exception as e:
         logger.warning("profile.back_render_failed user=%s err=%s", user_id, e)
-        await callback.message.answer(text, reply_markup=inline_kb.as_markup())
+        await callback.message.answer(text, reply_markup=markup)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("leaderboard_show:"))
+async def leaderboard_show_from_profile(callback: CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    if callback.from_user.id != user_id:
+        await callback.answer(
+            t("common.not_yours_profile", await loc(callback.from_user.id)),
+            show_alert=True,
+        )
+        return
+    locale = await loc(user_id)
+    try:
+        text = await leaderboard_service.render_leaderboard(user_id)
+        await callback.message.answer(text, parse_mode="HTML")
+        await event_repo.log(user_id, "leaderboard_viewed", {"source": "profile"})
+    except Exception as e:
+        logger.warning(
+            "leaderboard.render_failed user=%s source=profile err=%s",
+            user_id, e,
+        )
+        await callback.message.answer(t("leaderboard.load_failed", locale))
+    await callback.answer()
+
 
 # ------------------------------------------------------------
 # Достижения
@@ -3187,7 +3300,12 @@ async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration
             response += t("timer.bonus", locale, bonus=bonus)
         response += t("timer.total_coins", locale, total_coins=user["total_coins"])
         try:
-            await bot.send_message(chat_id, response, reply_markup=get_main_keyboard(locale))
+            await _send_with_retry_after(
+                lambda: bot.send_message(
+                    chat_id, response, reply_markup=get_main_keyboard(locale),
+                ),
+                label="timer_finished", uid=user_id,
+            )
         except TelegramForbiddenError:
             logger.info("timer.notify_failed user_id=%s reason=blocked", user_id)
         except Exception as e:
@@ -3571,7 +3689,7 @@ async def handle_back_to_menu_during_timer(message: Message, state: FSMContext):
     )
 
 # ------------------------------------------------------------
-# Предметы — общий flow: 📖 Предметы → subject picker → mode picker → режим
+# Подготовка — из главного меню: предмет → режим → сессия
 # ------------------------------------------------------------
 @router.message(kb_in("kb.quizzes"))
 async def handle_quiz_menu(message: Message, state: FSMContext):
@@ -3582,13 +3700,13 @@ async def handle_quiz_menu(message: Message, state: FSMContext):
     if not subjects:
         await message.answer(
             t("nav.no_materials", locale),
-            reply_markup=get_study_keyboard(locale),
+            reply_markup=get_main_keyboard(locale),
         )
         return
     if await state.get_state() == TimerStates.active.state or user_id in active_timers:
-        await _cancel_timer_task(user_id)
-        if await state.get_state() == TimerStates.active.state:
-            await state.clear()
+        await stop_active_timer(message, state)
+        if user_id in active_timers:
+            await _cancel_timer_task(user_id)
     await state.update_data(subject_id=None, subject_label=None, mode_id=None, mode_label=None)
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
@@ -3597,12 +3715,12 @@ async def handle_quiz_menu(message: Message, state: FSMContext):
     )
 
 
-@router.message(QuizStates.choosing_subject, kb_in("kb.back_study"))
-async def handle_subject_back_to_study(message: Message, state: FSMContext):
+@router.message(QuizStates.choosing_subject, kb_in("kb.back_main"))
+async def handle_subject_back_to_main(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     await state.clear()
-    await message.answer(t("nav.study_section", locale), reply_markup=get_study_keyboard(locale))
+    await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
 
 
 @router.message(F.text.in_(_all_subject_button_texts()))
@@ -3643,6 +3761,7 @@ async def handle_subject_picked(message: Message, state: FSMContext):
             t("nav.pick_mode", locale, subject_label=subject_lbl),
             reply_markup=await get_mode_keyboard_for_subject(subject_id, user_id, locale),
         )
+        await _maybe_send_subject_fc_shortcuts(message, user_id, subject_id, locale)
 
     if PLAN_UI_ENABLED:
         ok, _ = await plan_available(subject_id)
@@ -3708,6 +3827,7 @@ async def handle_mode_picked(message: Message, state: FSMContext):
         else:
             await start_task_session(message, state, subject_id, subject_label=subject_lbl)
     elif mode_id == "flashcards":
+        await _maybe_send_flash_mode_fc_shortcuts(message, user_id, subject_id, locale)
         await start_flashcard_session(message, state, subject_id, subject_label=subject_lbl)
     else:
         await message.answer(
@@ -3920,6 +4040,9 @@ async def _show_task_group_picker(
             text=f"{title} ({count})",
             callback_data=f"taskgrp:{message.from_user.id}:{subject_id}:{group_id}",
         )
+    if not kb.export():
+        await start_task_session(message, state, subject_id, subject_label=subject_label)
+        return
     kb.adjust(1)
     await state.set_state(QuizStates.choosing_mode)
     await message.answer(
@@ -4116,6 +4239,67 @@ async def handle_task_stop(message: Message, state: FSMContext):
     await state.clear()
 
 
+def _official_task_solution_path(subject_id: str, task: dict) -> Path | None:
+    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    if not tasks_dir.is_dir():
+        return None
+    filename = safe_task_image_filename(
+        task.get("solution_filename", f"{task['id']}-solution.png"),
+        task["id"],
+    )
+    return resolve_path_under(tasks_dir, filename)
+
+
+def _official_task_has_solution(subject_id: str, task: dict) -> bool:
+    """True if an official task has a solution PNG and/or solution_text to show."""
+    if (task.get("solution_text") or "").strip():
+        return True
+    path = _official_task_solution_path(subject_id, task)
+    return path is not None and path.exists()
+
+
+async def _send_official_task_solution(
+    chat_id: int,
+    *,
+    task: dict,
+    subject_id: str,
+    locale: str,
+    correct_answer: str,
+    after_failure: bool = False,
+) -> None:
+    """Send solution PNG when present; otherwise fall back to solution_text."""
+    solution_path = _official_task_solution_path(subject_id, task)
+    solution_body = (task.get("solution_text") or "").strip()
+
+    if solution_path is not None and solution_path.exists():
+        caption = (
+            t("task.solution_image", locale, answer=correct_answer)
+            if after_failure
+            else "💡 Решение:"
+        )
+        try:
+            await bot.send_photo(chat_id, FSInputFile(solution_path), caption=caption)
+            return
+        except Exception as e:
+            logger.error("task.send_solution_failed task_id=%s reason=%s", task["id"], e)
+
+    if solution_body:
+        if after_failure:
+            await bot.send_message(
+                chat_id,
+                t("task.solution_text_block", locale, solution=solution_body, answer=correct_answer),
+            )
+        else:
+            await bot.send_message(chat_id, f"💡 Решение:\n{solution_body}")
+        return
+
+    if after_failure:
+        await bot.send_message(
+            chat_id,
+            t("task.solution_missing_image", locale, answer=correct_answer),
+        )
+
+
 @router.message(QuizStates.answering_task)
 async def handle_task_answer(message: Message, state: FSMContext):
     # Команды и кнопки уже разобраны выше; здесь ответ — обычный текст
@@ -4162,6 +4346,18 @@ async def handle_task_answer(message: Message, state: FSMContext):
         )
         await message.answer(f"✅ Верно! +{coins_for_this} 🪙")
         await asyncio.sleep(1.0)
+        if task.get("kind") != "user":
+            subject_id = data.get("task_subject_id", "")
+            correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
+            if _official_task_has_solution(subject_id, task):
+                await _send_official_task_solution(
+                    message.chat.id,
+                    task=task,
+                    subject_id=subject_id,
+                    locale=locale,
+                    correct_answer=correct_answer,
+                )
+                await asyncio.sleep(1.0)
         if PLAN_UI_ENABLED and data.get("plan_single"):
             await on_plan_activity_complete(user_id, state, success=True)
             return
@@ -4213,11 +4409,18 @@ async def handle_task_answer(message: Message, state: FSMContext):
         await message.answer(solution_text)
         await state.update_data(task_index=idx + 1, task_attempts=0)
         await asyncio.sleep(1.0)
+        if PLAN_UI_ENABLED and data.get("plan_single"):
+            await return_to_plan_without_complete(
+                message.chat.id,
+                user_id,
+                state,
+                locale,
+                message=t("plan.item_wrong", locale),
+            )
+            return
         await _send_next_task(message.chat.id, state)
         return
 
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
-    solution_path = tasks_dir / task.get("solution_filename", f"{task['id']}-solution.png")
     # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
@@ -4233,33 +4436,25 @@ async def handle_task_answer(message: Message, state: FSMContext):
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
     )
-    solution_body = (task.get("solution_text") or "").strip()
-    if solution_body:
-        await message.answer(
-            t("task.solution_text_block", locale, solution=solution_body, answer=correct_answer),
-        )
-    elif solution_path.exists():
-        try:
-            await bot.send_photo(
-                message.chat.id,
-                FSInputFile(solution_path),
-                caption=(
-                    f"💡 Решение:\n"
-                    f"Правильный ответ: {correct_answer}\n"
-                    f"Монеты за эту задачу: 0 🪙"
-                ),
-            )
-        except Exception as e:
-            logger.error("task.send_solution_failed task_id=%s reason=%s", task["id"], e)
-            await message.answer(
-                f"💡 Правильный ответ: {correct_answer}\nМонеты за эту задачу: 0 🪙"
-            )
-    else:
-        await message.answer(
-            t("task.solution_missing_image", locale, answer=correct_answer),
-        )
+    await _send_official_task_solution(
+        message.chat.id,
+        task=task,
+        subject_id=subject_id,
+        locale=locale,
+        correct_answer=correct_answer,
+        after_failure=True,
+    )
     await state.update_data(task_index=idx + 1, task_attempts=0)
     await asyncio.sleep(1.0)
+    if PLAN_UI_ENABLED and data.get("plan_single"):
+        await return_to_plan_without_complete(
+            message.chat.id,
+            user_id,
+            state,
+            locale,
+            message=t("plan.item_wrong", locale),
+        )
+        return
     await _send_next_task(message.chat.id, state)
 
 
@@ -5024,37 +5219,15 @@ async def cmd_broadcast(message: Message, command: CommandObject):
         failed_ids: list[int] = []
         for uid in user_ids:
             try:
-                await bot.send_message(uid, text)
+                await send_with_telegram_bulkhead(
+                    lambda uid=uid: bot.send_message(uid, text),
+                    label="broadcast", uid=uid,
+                )
                 delivered += 1
             except TelegramForbiddenError:
                 failed += 1
                 failed_ids.append(uid)
                 logger.info("broadcast.send_failed uid=%s reason=blocked", uid)
-            except TelegramRetryAfter as e:
-                # Telegram flood-control: honour the explicit back-off, then
-                # retry this user ONCE. Без этой ветки сотни валидных
-                # получателей оказались бы в failed_ids просто потому, что
-                # мы попали в 30-msg/s окно.
-                logger.warning(
-                    "broadcast.retry_after uid=%s seconds=%s", uid, e.retry_after,
-                )
-                await asyncio.sleep(e.retry_after + 0.5)
-                try:
-                    await bot.send_message(uid, text)
-                    delivered += 1
-                except TelegramForbiddenError:
-                    failed += 1
-                    failed_ids.append(uid)
-                    logger.info(
-                        "broadcast.send_failed uid=%s reason=blocked_after_retry", uid,
-                    )
-                except Exception as e2:
-                    failed += 1
-                    failed_ids.append(uid)
-                    logger.warning(
-                        "broadcast.send_failed uid=%s reason=%s_after_retry detail=%s",
-                        uid, type(e2).__name__, e2,
-                    )
             except TelegramBadRequest as e:
                 # Permanent: chat not found / message too long / parse error —
                 # retry не поможет, помечаем как failed без back-off'а.
@@ -5772,7 +5945,14 @@ async def _send_all_tables_zip(reply_target) -> None:
     reply_target должен иметь .answer + .answer_document (Message или callback.message).
     """
     try:
-        zip_bytes, metadata = await analytics_service.export_all_tables_zip()
+        zip_bytes, metadata = await asyncio.wait_for(
+            analytics_service.export_all_tables_zip(),
+            timeout=120,
+        )
+    except asyncio.TimeoutError:
+        logger.error("export.all_failed reason=timeout")
+        await reply_target.answer("❌ Export-all timed out after 120s.")
+        return
     except Exception as e:
         logger.error("export.all_failed reason=%s detail=%s", type(e).__name__, e)
         await reply_target.answer(f"❌ Export-all failed: {type(e).__name__}: {e}")
@@ -6346,6 +6526,7 @@ async def cmd_leaderboard(message: Message):
     """Показывает недельный лидерборд: auto-routing newbie vs main + собственный ранг.
     См. LEADERBOARD.md."""
     user_id = message.from_user.id
+    locale = await loc(user_id)
     try:
         text = await leaderboard_service.render_leaderboard(user_id)
         await message.answer(text, parse_mode="HTML")
@@ -6355,12 +6536,15 @@ async def cmd_leaderboard(message: Message):
             "leaderboard.render_failed user=%s err=%s detail=%s",
             user_id, type(e).__name__, e,
         )
-        await message.answer("Не удалось загрузить лидерборд. Попробуй позже.")
+        await message.answer(t("leaderboard.load_failed", locale))
 
 
 # ============================================================
 # Pet customization (TODO #16 Phase B): detail screen + picker UI
 # ============================================================
+PET_CUSTOMIZATION_ENABLED = False
+
+
 async def _compute_pet_emotion_for_user(user_id: int) -> tuple:
     """
     Возвращает (emotion_str, FSInputFile | None). image=None если
@@ -6444,16 +6628,23 @@ async def _send_pet_menu(chat_id: int, user_id: int) -> None:
         f"🐾 <b>{pet['name']}</b>\n\n"
         f"Уровень: <b>{pet['level']}</b>\n"
         f"XP: {pet['xp']}\n"
-        f"Цвет: {pet['color']}  ·  Аксессуар: {pet['accessory']}\n"
+    )
+    if PET_CUSTOMIZATION_ENABLED:
+        caption += f"Цвет: {pet['color']}  ·  Аксессуар: {pet['accessory']}\n"
+    caption += (
         f"Эмоция сейчас: {emotion}\n\n"
         f"💰 Баланс: {user['total_coins']} 🪙"
     )
     kb = InlineKeyboardBuilder()
-    kb.button(text="🎨 Цвета", callback_data=f"pet_colors:{user_id}")
-    kb.button(text="🎁 Аксессуары", callback_data=f"pet_accessories:{user_id}")
+    if PET_CUSTOMIZATION_ENABLED:
+        kb.button(text="🎨 Цвета", callback_data=f"pet_colors:{user_id}")
+        kb.button(text="🎁 Аксессуары", callback_data=f"pet_accessories:{user_id}")
     kb.button(text="✏️ Переименовать", callback_data=f"pet_rename:{user_id}")
     kb.button(text="◀️ Профиль", callback_data=f"pet_back_to_profile:{user_id}")
-    kb.adjust(2, 1, 1)
+    if PET_CUSTOMIZATION_ENABLED:
+        kb.adjust(2, 1, 1)
+    else:
+        kb.adjust(1, 1)
 
     if image is not None:
         try:
@@ -6501,6 +6692,16 @@ async def pet_menu(callback: CallbackQuery):
 
 async def _render_picker(callback: CallbackQuery, item_type: str) -> None:
     """Generic picker renderer для colors/accessories."""
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _send_pet_menu(callback.message.chat.id, user_id)
+        return
+
     user_id = callback.from_user.id
     pet = await pet_repo.get_pet(user_id)
     if pet is None:
@@ -6547,12 +6748,18 @@ async def _render_picker(callback: CallbackQuery, item_type: str) -> None:
 
 @router.callback_query(F.data.startswith("pet_colors:"))
 async def pet_colors(callback: CallbackQuery):
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     await callback.answer()
     await _render_picker(callback, "color")
 
 
 @router.callback_query(F.data.startswith("pet_accessories:"))
 async def pet_accessories(callback: CallbackQuery):
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     await callback.answer()
     await _render_picker(callback, "accessory")
 
@@ -6560,6 +6767,9 @@ async def pet_accessories(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("pet_locked:"))
 async def pet_locked(callback: CallbackQuery):
     """Alert на нажатие locked / already-equipped кнопки."""
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     data = callback.data
     if data.startswith("pet_locked:level:"):
         try:
@@ -6579,6 +6789,9 @@ async def pet_locked(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("pet_equip:"))
 async def pet_equip(callback: CallbackQuery):
     """Надеть уже купленный предмет (color/accessory)."""
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     user_id = callback.from_user.id
     try:
         _, item_type, item_value = callback.data.split(":", 2)
@@ -6602,6 +6815,9 @@ async def pet_equip(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("pet_buy:"))
 async def pet_buy_confirm_dialog(callback: CallbackQuery):
     """Confirm dialog перед покупкой."""
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     await callback.answer()
     user_id = callback.from_user.id
     try:
@@ -6652,6 +6868,9 @@ async def pet_buy_confirm_dialog(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("pet_buy_do:"))
 async def pet_buy_do(callback: CallbackQuery):
     """Атомарная покупка через PetRepository.purchase_item."""
+    if not PET_CUSTOMIZATION_ENABLED:
+        await callback.answer()
+        return
     user_id = callback.from_user.id
     try:
         _, item_type, item_value = callback.data.split(":", 2)
@@ -6753,29 +6972,11 @@ async def pet_back_to_profile(callback: CallbackQuery):
     user = await user_repo.get_user(user_id)
     if not user:
         return
-    inline_kb = InlineKeyboardBuilder()
-    inline_kb.button(text="🏆 Достижения", callback_data=f"show_achievements:{user_id}:1")
-    inline_kb.button(text="⚙️ Настройки", callback_data=f"settings_menu:{user_id}")
-    inline_kb.button(text="📊 Прогресс по предметам", callback_data=f"show_progress:{user_id}")
-    inline_kb.button(text="🐾 Питомец", callback_data=f"pet_menu:{user_id}")
-    inline_kb.button(text="👥 Друзья", callback_data=f"friends_back:{user_id}")
-    inline_kb.button(text="❄️ Заморозить стрик", callback_data=f"freeze_menu:{user_id}")
-    inline_kb.adjust(2, 1, 1, 1, 1)
     locale = await loc(user_id)
-    last_session = user.get("last_session") or t("profile.never", locale)
     await bot.send_message(
         callback.message.chat.id,
-        t(
-            "profile.title",
-            locale,
-            user_id=user_id,
-            total_sessions=user["total_sessions"],
-            total_coins=user["total_coins"],
-            current_streak=user["current_streak"],
-            last_session=last_session,
-            pet_emotion=get_pet_emotion(user["current_streak"], locale),
-        ),
-        reply_markup=inline_kb.as_markup(),
+        _profile_title_text(user, user_id, locale),
+        reply_markup=_build_profile_inline_keyboard(user_id, locale),
     )
 
 
@@ -7274,7 +7475,8 @@ async def cmd_help(message: Message):
         "/stop — остановить активный таймер досрочно\n"
         "/cancel — отменить ввод (например, времени напоминания)\n"
         "/skip — пропустить шаг в мастере настройки уведомлений\n\n"
-        "ℹ️ Кнопки главного меню: 📚 Учеба, ❓ FAQ, 📊 Мой профиль, 📢 Новости"
+        "ℹ️ Кнопки главного меню: 📖 Подготовка (отдельная строка), 📚 Учебные инструменты, "
+        "📊 Мой профиль, ❓ FAQ, 📢 Новости"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -7289,6 +7491,8 @@ async def handle_back_to_study(message: Message, state: FSMContext):
 @router.message(kb_in("kb.back_main"))
 async def handle_back_to_main(message: Message, state: FSMContext):
     await _clear_custom_timer_duration_wait(state)
+    # Не срабатывает во время TimerStates.active — отдельный handler выше.
+    await state.clear()
     user_id = message.from_user.id
     locale = await loc(user_id)
     await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
@@ -7350,12 +7554,15 @@ async def handle_any_message(message: Message):
     # Append-only JSONL: одна запись на строку.
     # Без read-modify-write — нет гонок, нет риска порчи при kill -9,
     # нет O(n) перезаписи на каждом сообщении.
+    text = message.text or message.caption
+    if not text:
+        text = f"[{message.content_type}]"
     log_entry = {
         "timestamp": timestamp,
         "user_id": user_id,
         "user_name": user_name,
         "message_id": message.message_id,
-        "text": message.text,
+        "text": text,
     }
     try:
         with open(MESSAGES_FILE, "a", encoding="utf-8") as f:
@@ -7364,7 +7571,7 @@ async def handle_any_message(message: Message):
         logger.error(f"Не удалось записать сообщение пользователя в лог: {e}")
     for admin_id in ADMINS:
         try:
-            await bot.send_message(admin_id, f"📩 Новое сообщение от {user_name} (ID: {user_id}):\n{message.text}")
+            await bot.send_message(admin_id, f"📩 Новое сообщение от {user_name} (ID: {user_id}):\n{text}")
         except Exception:
             pass
     await message.answer(
@@ -7465,7 +7672,12 @@ async def reconcile_stale_timers():
                     if bonus > 0:
                         msg += t("timer.bonus", locale, bonus=bonus)
                     msg += t("timer.total_coins", locale, total_coins=user["total_coins"])
-                    await bot.send_message(chat_id, msg, reply_markup=get_main_keyboard(locale))
+                    await _send_with_retry_after(
+                        lambda chat_id=chat_id, msg=msg: bot.send_message(
+                            chat_id, msg, reply_markup=get_main_keyboard(locale),
+                        ),
+                        label="reconcile_finished", uid=user_id,
+                    )
                     if earned:
                         await send_achievement_notification(user_id, earned)
                 except TelegramForbiddenError:
@@ -7498,10 +7710,13 @@ async def reconcile_stale_timers():
                 )
                 try:
                     resume_locale = await loc(user_id)
-                    await bot.send_message(
-                        chat_id,
-                        t("timer.reconcile_resumed", resume_locale, remaining=remaining_min),
-                        reply_markup=get_timer_active_keyboard(resume_locale),
+                    await _send_with_retry_after(
+                        lambda chat_id=chat_id, resume_locale=resume_locale, remaining_min=remaining_min: bot.send_message(
+                            chat_id,
+                            t("timer.reconcile_resumed", resume_locale, remaining=remaining_min),
+                            reply_markup=get_timer_active_keyboard(resume_locale),
+                        ),
+                        label="reconcile_resumed", uid=user_id,
                     )
                 except TelegramForbiddenError:
                     logger.info("reconcile.notify_failed user_id=%s reason=blocked", user_id)
@@ -7542,7 +7757,8 @@ async def main():
     leaderboard_repo = LeaderboardRepository(db)
     friend_repo = FriendRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
-    bot = Bot(token=BOT_TOKEN)
+    session = AiohttpSession(timeout=TELEGRAM_TIMEOUT)
+    bot = Bot(token=BOT_TOKEN, session=session)
     study_service = StudyService(
         user_repo, session_repo, ach_service,
         pet_repo, leaderboard_repo, bot=bot,
@@ -7556,7 +7772,7 @@ async def main():
     # Регистрируем ДО include_router, чтобы middleware применялся
     # ко всем хендлерам в роутере.
     rate_limiter = UserRateLimiter(max_actions=30, window_seconds=60)
-    rl_middleware = RateLimitMiddleware(rate_limiter)
+    rl_middleware = RateLimitMiddleware(rate_limiter, locale_fn=loc)
     # Username sync — обновляем users.username из event_from_user.username
     # перед всеми handler'ами. Регистрируем ДО rl_middleware, потому что
     # rate-limit может silently drop event (return None), а username хотим
@@ -7663,6 +7879,13 @@ async def main():
         logger.info("app.shutdown")
         for t in background_tasks:
             t.cancel()
+        try:
+            await bot.session.close()
+        except Exception as e:
+            logger.warning(
+                "app.session_close_failed reason=%s detail=%s",
+                type(e).__name__, e,
+            )
 
 if __name__ == "__main__":
     asyncio.run(main())

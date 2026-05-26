@@ -21,26 +21,90 @@ from file_upload_security import sanitize_pet_asset_keys
 
 logger = logging.getLogger("studybuddy_bot")
 
+MAX_SEND_ATTEMPTS = 3
+_TRANSIENT_SEND_ERRORS = (asyncio.TimeoutError, ConnectionError, OSError)
+_TELEGRAM_SEND_SEM = asyncio.Semaphore(5)
+
+
+class TelegramSendBreakerOpen(Exception):
+    """Outbound Telegram sends paused after sustained failures."""
+
+
+class TelegramSendBreaker:
+    def __init__(self, failure_threshold: int = 10, cooldown_seconds: float = 60):
+        self._failures = 0
+        self._open_until = 0.0
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+
+    def allow(self) -> bool:
+        return monotonic() >= self._open_until
+
+    def record_success(self):
+        self._failures = 0
+
+    def record_failure(self):
+        self._failures += 1
+        if self._failures >= self.failure_threshold:
+            self._open_until = monotonic() + self.cooldown_seconds
+            logger.error(
+                "telegram.breaker_open cooldown=%s failures=%s",
+                self.cooldown_seconds,
+                self._failures,
+            )
+
+
+_telegram_send_breaker = TelegramSendBreaker()
+
 
 async def _send_with_retry_after(send_callable, *, label: str, uid: int):
     """
     Запускает send_callable() (0-арг callable, возвращающий awaitable)
-    и при TelegramRetryAfter уважает запрошенный back-off и делает
-    ОДИН retry. 0-arg-callable shape нужен, потому что awaitables
-    одноразовые.
+    с retry на TelegramRetryAfter и transient network errors.
+    0-arg-callable shape нужен, потому что awaitables одноразовые.
 
-    Остальные исключения (TelegramForbiddenError / TelegramBadRequest /
-    network errors) — пробрасываем наружу, caller разбирает по месту.
+    TelegramForbiddenError / TelegramBadRequest — пробрасываем сразу.
     """
-    try:
-        return await send_callable()
-    except TelegramRetryAfter as e:
-        logger.warning(
-            "telegram.retry_after label=%s uid=%s seconds=%s",
-            label, uid, e.retry_after,
-        )
-        await asyncio.sleep(e.retry_after + 0.5)
-        return await send_callable()
+    if not _telegram_send_breaker.allow():
+        logger.warning("telegram.breaker_skip label=%s uid=%s", label, uid)
+        raise TelegramSendBreakerOpen(f"Telegram send breaker open (label={label})")
+
+    last_exc: Exception | None = None
+    for attempt in range(MAX_SEND_ATTEMPTS):
+        try:
+            result = await send_callable()
+            _telegram_send_breaker.record_success()
+            return result
+        except TelegramRetryAfter as e:
+            last_exc = e
+            logger.warning(
+                "telegram.retry_after label=%s uid=%s seconds=%s attempt=%s",
+                label, uid, e.retry_after, attempt + 1,
+            )
+            await asyncio.sleep(e.retry_after + 0.5)
+        except _TRANSIENT_SEND_ERRORS as e:
+            last_exc = e
+            if attempt == MAX_SEND_ATTEMPTS - 1:
+                _telegram_send_breaker.record_failure()
+                raise
+            logger.warning(
+                "telegram.transient_error label=%s uid=%s reason=%s attempt=%s",
+                label, uid, type(e).__name__, attempt + 1,
+            )
+            await asyncio.sleep(0.5 * (2 ** attempt))
+        except Exception:
+            raise
+
+    _telegram_send_breaker.record_failure()
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"telegram.send_exhausted label={label} uid={uid}")
+
+
+async def send_with_telegram_bulkhead(send_callable, *, label: str, uid: int):
+    """Bulk scheduler/broadcast sends: semaphore + unified retry helper."""
+    async with _TELEGRAM_SEND_SEM:
+        return await _send_with_retry_after(send_callable, label=label, uid=uid)
 
 
 def _user_locale(locale: str | None) -> str:
@@ -393,6 +457,8 @@ def derive_emotion(
 #      деградировать до text-only message
 # ------------------------------------------------------------
 _ASSETS_PET_DIR = Path(__file__).resolve().parent / "assets" / "pet"
+PET_SINGLE_IMAGE_MODE = True
+_PET_DEFAULT_IMAGE = _ASSETS_PET_DIR / "default.png"
 
 
 def render_pet(
@@ -409,12 +475,16 @@ def render_pet(
 
     `animated=True` → `<emotion>.gif` (один общий per emotion, без цвета/аксессуара,
     т.к. GIF используется в level-up/sad-reminder для драматического beat'а,
-    конкретный цвет там не критичен).
+    конкретный цвет там не критичен). При `PET_SINGLE_IMAGE_MODE=True`
+    всегда возвращается `assets/pet/default.png` (в т.ч. для animated).
 
     Возвращает Path. Существование файла проверяется внутри (fallback);
     raise FileNotFoundError если даже fallback'и отсутствуют (assets
     директория не была сгенерирована).
     """
+    if PET_SINGLE_IMAGE_MODE and _PET_DEFAULT_IMAGE.exists():
+        return _PET_DEFAULT_IMAGE
+
     emotion, color, accessory = sanitize_pet_asset_keys(
         emotion,
         user_pet.get("color", "orange") if user_pet else "orange",
@@ -529,6 +599,16 @@ def user_calendar_keys(now_local: datetime) -> tuple:
     PK в daily_score_counters и для consumed_for_date в streak_freezes.
     """
     return now_local.strftime("%Y-%m-%d"), now_local.strftime("%G-W%V")
+
+
+def format_leaderboard_user_label(username: str | None, user_id: int) -> str:
+    """
+    Публичная подпись пользователя в leaderboard/friends-tab.
+    Username берётся из users.username (UsernameSyncMiddleware).
+    """
+    if username:
+        return f"@{username}"
+    return f"id={user_id}"
 
 
 def parse_friend_query(text: str) -> tuple:
@@ -739,7 +819,7 @@ class ReminderService:
                             uid, e,
                         )
                 parse_mode = "HTML" if self.morning_tip_builder else None
-                await _send_with_retry_after(
+                await send_with_telegram_bulkhead(
                     lambda: self.bot.send_message(
                         chat_id=uid, text=text, parse_mode=parse_mode,
                     ),
@@ -810,17 +890,28 @@ class ReminderService:
                     # graceful fallback на text-only sad-pet копи.
                     try:
                         from aiogram.types import FSInputFile
-                        gif_path = render_pet(None, "sad", animated=True)
-                        await _send_with_retry_after(
-                            lambda: self.bot.send_animation(
-                                chat_id=uid,
-                                animation=FSInputFile(str(gif_path)),
-                                caption=evening_sad,
-                            ),
-                            label="evening_sad_gif", uid=uid,
-                        )
+                        asset_path = render_pet(None, "sad", animated=True)
+                        media = FSInputFile(str(asset_path))
+                        if asset_path.suffix.lower() == ".png":
+                            await send_with_telegram_bulkhead(
+                                lambda: self.bot.send_photo(
+                                    chat_id=uid,
+                                    photo=media,
+                                    caption=evening_sad,
+                                ),
+                                label="evening_sad_photo", uid=uid,
+                            )
+                        else:
+                            await send_with_telegram_bulkhead(
+                                lambda: self.bot.send_animation(
+                                    chat_id=uid,
+                                    animation=media,
+                                    caption=evening_sad,
+                                ),
+                                label="evening_sad_gif", uid=uid,
+                            )
                     except FileNotFoundError:
-                        await _send_with_retry_after(
+                        await send_with_telegram_bulkhead(
                             lambda: self.bot.send_message(
                                 chat_id=uid, text=evening_sad,
                             ),
@@ -830,7 +921,7 @@ class ReminderService:
                     # Non-sad emotion path → text-only fallback копи.
                     # Defensive: SQL filter гарантирует has_studied_today=0,
                     # так что эта ветка достижима только при странных edge cases.
-                    await _send_with_retry_after(
+                    await send_with_telegram_bulkhead(
                         lambda: self.bot.send_message(
                             chat_id=uid, text=evening_fallback,
                         ),
@@ -952,14 +1043,17 @@ class StreakService:
                 if self.bot and bonus > 0:
                     try:
                         locale = _user_locale(await self.user_repo.get_locale(user_id))
-                        await self.bot.send_message(
-                            chat_id=user_id,
-                            text=t(
-                                "reminders.streak_bonus",
-                                locale,
-                                streak=new_streak,
-                                bonus=bonus,
+                        await send_with_telegram_bulkhead(
+                            lambda: self.bot.send_message(
+                                chat_id=user_id,
+                                text=t(
+                                    "reminders.streak_bonus",
+                                    locale,
+                                    streak=new_streak,
+                                    bonus=bonus,
+                                ),
                             ),
+                            label="streak_bonus", uid=user_id,
                         )
                     except Exception as e:
                         # Блокировка / прочие ошибки — пишем в лог, не падаем.
@@ -989,13 +1083,16 @@ class StreakService:
                                 locale = _user_locale(
                                     await self.user_repo.get_locale(user_id)
                                 )
-                                await self.bot.send_message(
-                                    chat_id=user_id,
-                                    text=t(
-                                        "reminders.freeze_used",
-                                        locale,
-                                        streak=current_streak,
+                                await send_with_telegram_bulkhead(
+                                    lambda: self.bot.send_message(
+                                        chat_id=user_id,
+                                        text=t(
+                                            "reminders.freeze_used",
+                                            locale,
+                                            streak=current_streak,
+                                        ),
                                     ),
+                                    label="streak_freeze", uid=user_id,
                                 )
                             except Exception as e:
                                 logger.warning(
@@ -1094,8 +1191,8 @@ class LeaderboardService:
           - TOP_N_DISPLAY топ-пользователей сегмента (исключая hidden)
           - собственный ранг пользователя ниже, если он за пределами топа
             или hidden (в этом случае с маркером «Вы скрыты»)
-        Имена пользователей не хранятся в БД, поэтому показываем
-        user_id — UI слой может потом обогатить через bot.get_chat.
+        Подписи пользователей — @username из users.username (синхронизируется
+        UsernameSyncMiddleware), иначе fallback id=...
         """
         segment = await self._user_segment(user_id)
         week_iso = await self._current_week_iso(user_id)
@@ -1122,8 +1219,11 @@ class LeaderboardService:
             lines.append("<b>Топ:</b>")
             for idx, entry in enumerate(public_top[: self.TOP_N_DISPLAY], start=1):
                 marker = "👤" if entry["user_id"] == user_id else "  "
+                label = format_leaderboard_user_label(
+                    entry.get("username"), entry["user_id"]
+                )
                 lines.append(
-                    f"{marker} {idx}. id={entry['user_id']}  "
+                    f"{marker} {idx}. {label}  "
                     f"{entry['total_final']:.0f} pts  "
                     f"(×{entry['multiplier']:.2f})"
                 )
@@ -1299,6 +1399,7 @@ class LeaderboardService:
             mult = streak_multiplier(streak_days)
             rows.append({
                 "user_id": uid,
+                "username": user.get("username") if user else None,
                 "total_final": base * mult,
                 "current_streak": streak_days,
             })
@@ -1309,8 +1410,11 @@ class LeaderboardService:
         for rank, row in enumerate(rows, start=1):
             emoji = rank_emojis.get(rank, "  ")
             suffix = " <i>(Вы)</i>" if row["user_id"] == user_id else ""
+            label = format_leaderboard_user_label(
+                row.get("username"), row["user_id"]
+            )
             lines.append(
-                f"{emoji} id={row['user_id']}  "
+                f"{emoji} {label}  "
                 f"{row['total_final']:.0f} pts{suffix}"
             )
         return "\n".join(lines)

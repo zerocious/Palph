@@ -1,6 +1,10 @@
 # Study materials layout
 
+Palph v0.8 — data-driven discovery in `bot.py` (`available_subjects`, `available_modes`).
+
 Each subject lives in `study_materials/<subject_id>/`. The bot discovers subjects from folder names (see `SUBJECTS` in `bot.py`).
+
+**Doc sync:** 2026-05-25.
 
 ## Required for sprint exam plan
 

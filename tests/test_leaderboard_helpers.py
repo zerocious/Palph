@@ -10,11 +10,24 @@ from datetime import datetime
 import pytest
 
 from services import (
+    format_leaderboard_user_label,
     freeze_cost,
     piecewise_time_pts,
     streak_multiplier,
     user_calendar_keys,
 )
+
+
+# ============================================================
+# format_leaderboard_user_label — @username или id= fallback
+# ============================================================
+class TestFormatLeaderboardUserLabel:
+    def test_username(self):
+        assert format_leaderboard_user_label("alice", 42) == "@alice"
+
+    def test_no_username(self):
+        assert format_leaderboard_user_label(None, 42) == "id=42"
+        assert format_leaderboard_user_label("", 7) == "id=7"
 
 
 # ============================================================

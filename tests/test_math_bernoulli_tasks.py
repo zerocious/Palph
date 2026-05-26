@@ -72,6 +72,19 @@ def test_build_content_catalog_text_only(math_materials):
     assert catalog[0].topic == "exam-task-1"
 
 
+def test_task_01_solution_image():
+    root = Path(__file__).resolve().parent.parent / "study_materials" / "math"
+    if not (root / "tasks" / "task-01.json").exists():
+        pytest.skip("math task-01 not present")
+    with open(root / "tasks" / "task-01.json", encoding="utf-8") as f:
+        data = json.load(f)
+    assert data.get("solution_image") == "task-01-solution.png"
+    assert (root / "tasks" / "task-01-solution.png").is_file()
+    tasks = load_tasks("math", group_id="exam-task-1")
+    task_01 = next(t for t in tasks if t["id"] == "task-01")
+    assert task_01["solution_filename"] == "task-01-solution.png"
+
+
 def test_math_official_content_smoke():
     root = Path(__file__).resolve().parent.parent / "study_materials" / "math"
     if not (root / "tasks").exists():

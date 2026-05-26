@@ -4,6 +4,52 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-25 (UX: меню, профиль, карточки)
+
+Goal: три улучшения навигации из обсуждения UX.
+
+**Итог:** shipped **#2** главное меню с **❓ Квизы**, **#3** рейтинг в профиле (+ друзья уже были), **#4** условные inline для своих карточек.
+
+### Changes
+
+| # | Фича | Change |
+|---|------|--------|
+| 2 | Квизы в главном меню | `get_main_keyboard`: 5 кнопок (2+2+1); `get_study_keyboard` без квизов; `kb.quizzes` → «❓ Квизы»; назад с предметов → главное меню |
+| 3 | Discoverability | `profile.leaderboard` + `leaderboard_show:`; `_build_profile_inline_keyboard()`; друзья без изменений |
+| 4 | Меньше шума | `_maybe_send_subject_fc_shortcuts` (если есть свои карты); `_maybe_send_flash_mode_fc_shortcuts` (первый вход во флэш) |
+
+### Tests
+
+- `tests/test_main_menu_ux.py` (3)
+- `tests/test_profile_ux.py` (3)
+
+### Docs
+
+[user-flows.md](user-flows.md), [README.md](README.md), [BACKLOG.md](BACKLOG.md), [TODO.md](TODO.md)
+
+---
+
+## Session — 2026-05-25 (news copy + full doc sync)
+
+Goal: обновить текст экрана **📢 Новости** и синхронизировать все `*.md` с текущим состоянием репозитория.
+
+**Итог:** `locales/ru.json`, `locales/en.json`, `scripts/build_locales.py` — новый body + кнопка «Перейти в канал» / «Go to channel». Документация: README, TODO, user-flows, session_notes, audits/error-handling-review. **732** теста в suite (`pytest --collect-only`).
+
+### Changes
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | i18n | `nav.news_body` — bullet-лист (функции, продуктивность, лайфхаки, бонусы); `nav.open_channel` → «Перейти в канал» |
+| 2 | Docs | README: блок 📢 Новости, счётчик тестов; user-flows §12 «Новости»; TODO фокус 2026-05-25 |
+| 3 | Docs | Исторические записи с «533 теста» не переписывались — актуальное число только в шапках living docs |
+
+### Verification
+
+- `python -m pytest --collect-only -q` → **732 tests collected**
+- `python -m pytest -q` → **724 passed**, 8 failed (`test_leaderboard_service.py::TestRenderLeaderboard` / `TestRenderFriendsTab` — pre-existing, не из этой сессии)
+
+---
+
 ## Session — 2026-05-22 (documentation sync + user flows)
 
 Goal: синхронизировать все `*.md` с v0.8; зафиксировать стандартные user flows

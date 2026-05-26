@@ -20,7 +20,19 @@ async def get_db(db_path: str = DB_PATH) -> aiosqlite.Connection:
     db.lock = asyncio.Lock()
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
+    await db.execute("PRAGMA busy_timeout=5000")
     return db
+
+
+async def execute_with_db_retry(coro_factory, *, retries: int = 3, base_delay: float = 0.05):
+    """Retry aiosqlite coroutine on transient 'database is locked' errors."""
+    for attempt in range(retries):
+        try:
+            return await coro_factory()
+        except aiosqlite.OperationalError as e:
+            if "locked" not in str(e).lower() or attempt == retries - 1:
+                raise
+            await asyncio.sleep(base_delay * (2 ** attempt))
 
 async def init_db(db: aiosqlite.Connection):
     """

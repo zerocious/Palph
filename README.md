@@ -31,8 +31,8 @@ deep-link invite-links через `/share_friend` + friends-tab по weekly
 score). Бот переименован с StudyBuddy в Palph (internals retained
 for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). User flows:
 [user-flows.md](user-flows.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: **533** passing
-(`python -m pytest -q`).
+[session_notes.md](session_notes.md). Tests: **732** in suite
+(`python -m pytest -q`; см. [session_notes.md](session_notes.md) для актуального статуса прогона).
 
 ---
 
@@ -111,7 +111,7 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **Стрики** — ежедневный шедулер в локальном TZ пользователя
 - **10 достижений** (сессии, стрики, минуты, **10 советов по продуктивности**)
 - **4 учебных режима** под несколько предметов; flow учёбы:
-  **❓ Квизы → предмет → режим** (раньше было режим → предмет).
+  **📖 Подготовка → предмет → режим** (раньше было режим → предмет).
   Пустые контентом предметы/режимы автоматически скрываются
   (data-driven обнаружение):
   - 🎯 **Ситуационные квизы** — открытый ответ + keyword-grader +
@@ -179,7 +179,7 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   coin bonus раздаются автоматически на rollover, идемпотентно.
   Backtest notebook `analysis/leaderboard_backtest.ipynb` валидирует
   формулу на исторических `events` до боевого запуска.
-- **🎓 Советы для продуктивности** (📚 Учеба): контент в [`tips/`](tips/)
+- **🎓 Советы для продуктивности** (📚 Учебные инструменты): контент в [`tips/`](tips/)
   (JSON: заголовок, тело, tags, «Попробуй сегодня»). Категории: ⏰ тайм-менеджмент,
   🧠 запоминание, **🎯 как пользоваться ботом**, 🔗 ссылки (URL-кнопки).
   Inline: «Ещё совет», «Все советы» (пагинация). **Контекстный подбор**
@@ -189,6 +189,9 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
   время и часовой пояс настраиваются per-user. Там же: источник
   флэш-карт (Микс/Официальные/Свои) и **📇 Мои карточки** (CRUD по предметам)
+- **📢 Новости** — призыв подписаться на канал [`t.me/palph_study`](https://t.me/palph_study):
+  новые функции, советы по продуктивности, лайфхаки для учёбы, бонусы и конкурсы;
+  inline-кнопка **«Перейти в канал»** (`nav.open_channel` / `CHANNEL_URL` в `bot.py`).
 - **❓ FAQ** — интерактивное меню с 10 вопросами + кнопка техподдержки.
   Каждый вопрос как отдельная inline-кнопка → message edit показывает
   ответ + `[◀️ К списку]`. Вопросы: миссия проекта, эффективность,
@@ -197,8 +200,11 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **🛠 Техподдержка**: пользователь пишет в чат → forward всем админам;
   ответ через `/reply <user_id> <текст>` (или через FAQ → «Связаться с
   техподдержкой»).
+- **Главное меню (Reply):** **📖 Подготовка** (отдельная строка) · 📚 Учебные инструменты (таймер + советы) ·
+  📊 Профиль · ❓ FAQ · 📢 Новости. В профиле: **🏆 Рейтинг недели**, **👥 Друзья**,
+  питомец, прогресс, настройки. Подробно — [user-flows.md](user-flows.md).
 - **Пользовательские команды:** `/start`, `/help`, `/stop`, `/leaderboard`,
-  `/friends`, `/share_friend`, `/cancel`. Навигация кнопками — [user-flows.md](user-flows.md).
+  `/friends`, `/share_friend`, `/cancel` (дублируют кнопки профиля).
 - **Админ-инструменты:** `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
   `/rmadmin`, `/listadmins`, `/backup`, `/analytics`, `/export`, …
   Подробно — [admin_commands.md](admin_commands.md).
@@ -208,7 +214,8 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
   heatmap, export CSV/ZIP. Отдельные команды: `/cohort_stats`, `/funnel`,
   `/activation`, `/product_metrics`, `/dau`, `/feature_usage`, `/segments`,
   `/content_stats`, `/event_timeline`, `/heatmap`, `/export <alias>`,
-  `/export all`, `/parse_logs`. Подробно — [admin_commands.md](admin_commands.md).
+  `/export all`, `/parse_logs`. **Launch kit:** [analysis/README.md](analysis/README.md)
+  (framework, logbook, weekly templates, notebooks 01–04). Подробно — [admin_commands.md](admin_commands.md).
 
 ---
 
@@ -301,7 +308,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
 | [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**533**): baseline + flashcards + tips + **PA analytics** (cohort, funnel, product metrics, export×20) |
+| [tests/](tests/) | Юнит-тесты (**738+**): baseline + flashcards + tips + LB/friends + UX (меню/профиль) + **PA analytics** |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
 | [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
 | [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
@@ -325,7 +332,7 @@ pytest tests/test_sm2.py
 pytest tests/test_streak_service.py -v
 ```
 
-Покрытие — **533 теста** (~50 сек):
+Покрытие — **732 теста** (~60 сек; полный перечень: `pytest --collect-only -q`):
 
 **Pre-leaderboard baseline (185):**
 

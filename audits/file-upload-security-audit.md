@@ -1,7 +1,7 @@
 # File Upload Security Audit
 
-**Project:** Palph / Study Buddy Telegram bot (`tg bot 0.6 (settings not working)`)  
-**Date:** 2026-05-22  
+**Project:** Palph Telegram bot (`tg bot 0.6 (settings not working)`)  
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-05-25 (product v0.8, 732 pytest)  
 **Scope:** All user-facing and operator-facing file ingest, outbound file generation, and filesystem reads tied to uploaded or user-influenced identifiers  
 **Method:** Static code review, ripgrep (`document`, `download`, `FSInputFile`, `ZipFile`, `PIL`, `open`, `write_bytes`), cross-reference with `audits/input-validation-audit.md`  
 **Runtime model:** Long-polling aiogram 3 bot — **no HTTP upload endpoint**, no web server serving user files

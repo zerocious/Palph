@@ -9,7 +9,9 @@ Palph-бота. Обычные пользователи получают `❌ Н
 > **Примечание про user-facing команды.** Этот файл документирует
 > только админ-команды. Пользовательские слэш-команды
 > (`/start`, `/help`, `/stop`, `/leaderboard`, `/friends`, `/share_friend`,
-> `/cancel`) — в [README.md](README.md). Навигация по кнопкам и подсчёт
+> `/cancel`) — в [README.md](README.md). Reply-кнопка **📢 Новости** —
+> текст `nav.news_body` + inline «Перейти в канал» (`CHANNEL_URL`); см.
+> [user-flows.md](user-flows.md) §12. Навигация по кнопкам и подсчёт
 > кликов — в [user-flows.md](user-flows.md). Лидерборд-стек — в
 > [LEADERBOARD.md](LEADERBOARD.md).
 

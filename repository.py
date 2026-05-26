@@ -1698,7 +1698,7 @@ class LeaderboardRepository:
         """
         Возвращает список dict'ов всех пользователей в сегменте, отсортированный
         по total_final DESC. Каждая запись:
-          user_id, time_pts, task_pts, quiz_pts, card_pts,
+          user_id, username, time_pts, task_pts, quiz_pts, card_pts,
           current_streak, multiplier, total_base, total_final, hidden
 
         segment ∈ {'newbie', 'main'}.
@@ -1722,8 +1722,8 @@ class LeaderboardRepository:
         hide_cond = "AND u.hidden_from_leaderboards = 0" if exclude_hidden else ""
 
         sql = (
-            "SELECT ws.user_id, ws.time_pts, ws.task_pts, ws.quiz_pts, ws.card_pts, "
-            "       u.current_streak, u.hidden_from_leaderboards "
+            "SELECT ws.user_id, u.username, ws.time_pts, ws.task_pts, ws.quiz_pts, "
+            "       ws.card_pts, u.current_streak, u.hidden_from_leaderboards "
             "FROM weekly_scores ws "
             "JOIN users u ON ws.user_id = u.user_id "
             f"WHERE ws.week_iso = ? AND {seg_cond} {hide_cond}"
@@ -1739,6 +1739,7 @@ class LeaderboardRepository:
             )
             result.append({
                 "user_id": r["user_id"],
+                "username": r["username"],
                 "time_pts": r["time_pts"],
                 "task_pts": r["task_pts"],
                 "quiz_pts": r["quiz_pts"],
