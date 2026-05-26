@@ -1537,7 +1537,7 @@ async def handle_language_choice(callback: CallbackQuery, state: FSMContext):
     else:
         lang_name = t("lang.ru", locale) if locale == "ru" else t("lang.en", locale)
         await callback.message.answer(
-            t("lang.saved", locale, locale=lang_name),
+            t("lang.saved", locale, lang_name=lang_name),
             reply_markup=get_main_keyboard(locale),
         )
 

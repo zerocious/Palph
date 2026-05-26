@@ -128,7 +128,7 @@ def ru_bundle():
             "picker_title_bilingual": "🌍 Выбери язык / Choose language",
             "ru": "🇷🇺 Русский",
             "en": "🇬🇧 English",
-            "saved": "✅ Язык изменён на {locale}",
+            "saved": "✅ Язык изменён на {lang_name}",
         },
         "start": {
             "welcome_new": (
@@ -396,6 +396,7 @@ def ru_bundle():
         },
         "common": {
             "cancelled": "Отменено.",
+            "unexpected_error": "⚠️ Что-то пошло не так. Попробуй ещё раз через минуту.",
             "not_yours_session": "Это не твоя сессия",
             "not_yours_cards": "Это не твои карточки",
             "not_yours_tasks": "Это не твои задачи",
@@ -848,7 +849,7 @@ def en_bundle():
         "picker_title_bilingual": "🌍 Choose language / Выбери язык",
         "ru": "🇷🇺 Russian",
         "en": "🇬🇧 English",
-        "saved": "✅ Language changed to {locale}",
+        "saved": "✅ Language changed to {lang_name}",
     }
     b["start"]["welcome_new"] = (
         "🐾 Hi! I'm Palph, your digital study pet!\n\n"
@@ -1121,6 +1122,7 @@ def en_bundle():
     b["errors"]["rate_limit_cb"] = "⏸ Too fast — wait a moment."
 
     b["common"]["cancelled"] = "Cancelled."
+    b["common"]["unexpected_error"] = "⚠️ Something went wrong. Please try again in a minute."
     b["common"]["not_yours_session"] = "Not your session"
     b["common"]["not_yours_cards"] = "Not your flashcards"
     b["common"]["not_yours_tasks"] = "Not your tasks"

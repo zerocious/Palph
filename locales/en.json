@@ -27,7 +27,7 @@
     "picker_title_bilingual": "🌍 Choose language / Выбери язык",
     "ru": "🇷🇺 Russian",
     "en": "🇬🇧 English",
-    "saved": "✅ Language changed to {locale}"
+    "saved": "✅ Language changed to {lang_name}"
   },
   "start": {
     "welcome_new": "🐾 Hi! I'm Palph, your digital study pet!\n\n✨ I'll help you study regularly without stress. Even 5 minutes a day is already a win!\n\nWant to set up notifications first or jump right in?",
@@ -188,6 +188,7 @@
   },
   "common": {
     "cancelled": "Cancelled.",
+    "unexpected_error": "⚠️ Something went wrong. Please try again in a minute.",
     "not_yours_session": "Not your session",
     "not_yours_cards": "Not your flashcards",
     "not_yours_tasks": "Not your tasks",

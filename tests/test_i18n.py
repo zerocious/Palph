@@ -51,6 +51,21 @@ def test_fc_keys_both_locales():
         assert t("fc.term_empty", loc)
 
 
+def test_lang_saved_format_does_not_shadow_t_locale_param():
+    """Regression: lang.saved must not pass locale= into t() format kwargs."""
+    for loc in SUPPORTED_LOCALES:
+        lang_name = t("lang.ru", loc) if loc == "ru" else t("lang.en", loc)
+        msg = t("lang.saved", loc, lang_name=lang_name)
+        assert msg != "lang.saved"
+        assert lang_name in msg
+
+
+def test_common_unexpected_error_translated():
+    for loc in SUPPORTED_LOCALES:
+        val = t("common.unexpected_error", loc)
+        assert val != "common.unexpected_error"
+
+
 def test_critical_keys_not_self_fallback():
     keys = [
         "user_tasks.instruction",
@@ -61,6 +76,7 @@ def test_critical_keys_not_self_fallback():
         "friends.invite_invalid",
         "timer.finished",
         "common.cancelled",
+        "common.unexpected_error",
     ]
     for key in keys:
         for loc in SUPPORTED_LOCALES:
