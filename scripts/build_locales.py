@@ -261,6 +261,11 @@ def ru_bundle():
             "rate_hard": "❌ Не знал",
             "rate_medium": "😐 Сложно",
             "rate_easy": "✅ Легко",
+            "stopped": (
+                "⏹ Сессия флэш-карт остановлена.\n"
+                "Просмотрено: {reviewed}\n"
+                "🪙 Получено: {coins} монет"
+            ),
         },
         "mcq": {
             "question": "❓ Вопрос {idx}/{total}\n\n{question}",
@@ -305,6 +310,16 @@ def ru_bundle():
                 "💡 Правильный ответ: {answer}\n"
                 "(Изображение решения не найдено)\n"
                 "Монеты за эту задачу: 0 🪙"
+            ),
+            "done": (
+                "🎉 Готово! {subject_label}\n"
+                "Решено: {correct} из {total}\n"
+                "🪙 Заработано: {coins} монет"
+            ),
+            "stopped": (
+                "⏹ Задачи остановлены.\n"
+                "Решено: {idx}/{total} (правильных: {correct})\n"
+                "🪙 Получено: {coins} монет"
             ),
         },
         "settings": {
@@ -979,6 +994,11 @@ def en_bundle():
         "No flashcards for this subject yet.\n"
         "Add your own via «📇 My flashcards» or wait for official content."
     )
+    b["flash"]["stopped"] = (
+        "⏹ Flashcard session stopped.\n"
+        "Reviewed: {reviewed}\n"
+        "🪙 Earned: {coins} coins"
+    )
 
     b["mcq"]["question"] = "❓ Question {idx}/{total}\n\n{question}"
     b["mcq"]["correct"] = "✅ Correct! +1 🪙"
@@ -1021,6 +1041,15 @@ def en_bundle():
         "💡 Correct answer: {answer}\n"
         "(Solution image not found)\n"
         "Coins for this task: 0 🪙"
+    )
+    b["task"]["done"] = (
+        "🎉 Done! {subject_label}\n"
+        "Solved: {correct} of {total}\n🪙 Earned: {coins} coins"
+    )
+    b["task"]["stopped"] = (
+        "⏹ Tasks stopped.\n"
+        "Solved: {idx}/{total} (correct: {correct})\n"
+        "🪙 Earned: {coins} coins"
     )
 
     b["settings"]["title"] = "⚙️ Notification settings\n"

@@ -98,7 +98,8 @@
     "hint_mix": "No flashcards for this subject yet.\nAdd your own via «📇 My flashcards» or wait for official content.",
     "rate_hard": "❌ Не знал",
     "rate_medium": "😐 Сложно",
-    "rate_easy": "✅ Легко"
+    "rate_easy": "✅ Легко",
+    "stopped": "⏹ Flashcard session stopped.\nReviewed: {reviewed}\n🪙 Earned: {coins} coins"
   },
   "mcq": {
     "question": "❓ Question {idx}/{total}\n\n{question}",
@@ -121,7 +122,9 @@
     "solution": "💡 Correct answer: {answer}\nCoins for this task: 0 🪙",
     "solution_text_block": "💡 Solution:\n{solution}\n\nCorrect answer: {answer}\nCoins for this task: 0 🪙",
     "solution_image": "💡 Solution:\nCorrect answer: {answer}\nCoins for this task: 0 🪙",
-    "solution_missing_image": "💡 Correct answer: {answer}\n(Solution image not found)\nCoins for this task: 0 🪙"
+    "solution_missing_image": "💡 Correct answer: {answer}\n(Solution image not found)\nCoins for this task: 0 🪙",
+    "done": "🎉 Done! {subject_label}\nSolved: {correct} of {total}\n🪙 Earned: {coins} coins",
+    "stopped": "⏹ Tasks stopped.\nSolved: {idx}/{total} (correct: {correct})\n🪙 Earned: {coins} coins"
   },
   "settings": {
     "title": "⚙️ Notification settings\n",
