@@ -91,8 +91,26 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
-`docker-compose.yml` монтирует `./data/` на хосте в `/data` в контейнере —
+`docker-compose.yml` монтирует `./data/` на хосте в `/app/data` в контейнере —
 SQLite-БД, логи и `admins.json.migrated` живут там, переживают rebuild.
+
+### Деплой на bothost.ru
+
+[bothost.ru](https://bothost.ru) использует persistent storage в **`/app/data/`**
+(не `/data/`). Dockerfile уже задаёт дефолты:
+
+```env
+DB_PATH=/app/data/studybuddy.db
+LOG_FILE=/app/data/bot.log
+BACKUP_DIR=/app/data/backups
+```
+
+При старте бот создаёт `/app/data` и подкаталоги, если их нет. Явно задавать
+эти переменные в панели bothost не обязательно, если используется образ из
+репозитория.
+
+**Важно:** на бесплатном тарифе bothost данные могут сбрасываться при redeploy;
+на платном `/app/data` сохраняется между рестартами.
 
 При первом запуске:
 - создаётся `studybuddy.db` (SQLite, WAL-режим)
@@ -131,7 +149,7 @@ SQLite-БД, логи и `admins.json.migrated` живут там, пережи�
 - **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
   в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
   retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
-  `./backups/` (Docker: `/data/backups/`). Главный админ может
+  `./backups/` (Docker/bothost: `/app/data/backups/`). Главный админ может
   принудительно snapshot через `/backup`. Для disaster-recovery —
   template script `scripts/backup_offsite.sh.example` (GPG-шифрование +
   rclone upload в S3/B2; ручная настройка на хосте).
@@ -302,7 +320,7 @@ study_materials/    # Учебные материалы — data-driven дере
 
 | Файл | Назначение |
 |------|------------|
-| [Dockerfile](Dockerfile) | Python 3.12-slim образ; non-root user; `/data` для persistent state |
+| [Dockerfile](Dockerfile) | Python 3.12-slim образ; non-root user; `/app/data` для persistent state |
 | [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
 | [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
@@ -421,7 +439,7 @@ sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, cr
 
 `bot.log` — ротация 5 МБ × 5 файлов (~25 МБ потолок). Уровень регулируется
 через `LOG_LEVEL` в `.env`. Путь — через `LOG_FILE` (default `bot.log`;
-в Docker → `/data/bot.log` на mounted volume). Шум сторонних библиотек
+в Docker/bothost → `/app/data/bot.log` на persistent volume). Шум сторонних библиотек
 (aiogram, aiohttp, aiosqlite) глушится до WARNING.
 
 Бизнес-события идут как структурированные строки `event.tag key=value`:

@@ -21,18 +21,18 @@ services:
     env_file: .env
 
     # Переопределяем пути в контейнере, чтобы persistent state шёл в volume,
-    # а не в эфемерный слой образа. Backup'ы тоже в /data — переживают rebuild.
+    # а не в эфемерный слой образа. Backup'ы тоже в /app/data — переживают rebuild.
     environment:
-      DB_PATH: /data/studybuddy.db
-      LOG_FILE: /data/bot.log
-      BACKUP_DIR: /data/backups
+      DB_PATH: /app/data/studybuddy.db
+      LOG_FILE: /app/data/bot.log
+      BACKUP_DIR: /app/data/backups
       BACKUP_RETENTION_DAYS: "30"
 
     volumes:
-      - ./data:/data
+      - ./data:/app/data
 
     # Лог-драйвер Docker'а ловит stdout — `docker compose logs` работает.
-    # Файл-логи всё равно остаются в /data для post-mortem.
+    # Файл-логи всё равно остаются в /app/data для post-mortem.
     logging:
       driver: json-file
       options:

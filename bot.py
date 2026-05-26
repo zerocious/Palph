@@ -39,7 +39,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
 
-from db import get_db, init_db
+from db import ensure_persistent_dirs, get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
@@ -91,6 +91,7 @@ from locale_bot import (
 # Настройки окружения
 # ------------------------------------------------------------
 load_dotenv()
+ensure_persistent_dirs()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID", "0"))
 # Numeric seconds — aiogram BaseSession.timeout and polling add polling_timeout to it.
@@ -126,8 +127,8 @@ def setup_logger():
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # LOG_FILE можно переопределить в env — в Docker мы пишем в `/data/bot.log`
-    # (на mounted volume), локально по умолчанию остаётся `./bot.log`.
+    # LOG_FILE можно переопределить в env — в Docker/bothost пишем в
+    # `/app/data/bot.log` (persistent volume), локально — `./bot.log`.
     log_file = os.getenv("LOG_FILE", "bot.log")
     file_handler = RotatingFileHandler(
         log_file,
@@ -7799,7 +7800,7 @@ async def main():
     )
     # Backup сервис: snapshot БД раз в сутки после streak processing.
     # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;
-    # в Docker — указываются в docker-compose чтобы лежали на mounted /data.
+    # в Docker/bothost — на mounted /app/data (см. docker-compose / Dockerfile).
     backup_service = BackupService(
         db_path=os.getenv("DB_PATH", "studybuddy.db"),
         backup_dir=os.getenv("BACKUP_DIR", "backups"),

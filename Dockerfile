@@ -13,19 +13,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Non-root user (security best practice). Owns both /app (code) and /data (state).
+# Non-root user (security best practice). Owns /app (code) and /app/data (state).
 RUN useradd --create-home --shell /bin/bash app \
-    && mkdir -p /data \
-    && chown -R app:app /data
+    && mkdir -p /app/data \
+    && chown -R app:app /app/data
 
 # Project code
 COPY --chown=app:app . .
 
 USER app
 
-# Paths to persistent state — overridden in docker-compose so SQLite DB and
-# logs live on a mounted volume, not in the ephemeral container layer.
-ENV DB_PATH=/data/studybuddy.db \
-    LOG_FILE=/data/bot.log
+# Paths to persistent state — bothost.ru mounts /app/data; docker-compose
+# binds ./data:/app/data for local Docker dev.
+ENV DB_PATH=/app/data/studybuddy.db \
+    LOG_FILE=/app/data/bot.log \
+    BACKUP_DIR=/app/data/backups
 
 CMD ["python", "bot.py"]

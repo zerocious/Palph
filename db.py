@@ -7,6 +7,22 @@ load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "studybuddy.db")
 
+
+def ensure_persistent_dirs() -> None:
+    """Create parent dirs for DB/log files and the backup directory if missing."""
+    db_path = os.getenv("DB_PATH", "studybuddy.db")
+    log_file = os.getenv("LOG_FILE", "bot.log")
+    backup_dir = os.getenv("BACKUP_DIR", "backups")
+
+    for file_path in (db_path, log_file):
+        parent = os.path.dirname(file_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+    if backup_dir:
+        os.makedirs(backup_dir, exist_ok=True)
+
+
 async def get_db(db_path: str = DB_PATH) -> aiosqlite.Connection:
     """
     Создаёт и возвращает асинхронное подключение к SQLite.
@@ -15,6 +31,10 @@ async def get_db(db_path: str = DB_PATH) -> aiosqlite.Connection:
     для read-modify-write операций (например, complete_session,
     переключение настроек), чтобы избежать гонок.
     """
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
     db = await aiosqlite.connect(db_path)
     db.row_factory = aiosqlite.Row
     db.lock = asyncio.Lock()
