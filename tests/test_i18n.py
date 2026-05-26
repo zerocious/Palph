@@ -44,6 +44,13 @@ def test_language_picker_keys_exist():
         assert t("lang.en", loc)
 
 
+def test_settings_language_btn_exists():
+    for loc in SUPPORTED_LOCALES:
+        label = t("settings.language_btn", loc, current=t("lang.ru", loc))
+        assert label != "settings.language_btn", f"missing settings.language_btn for {loc}"
+        assert "{current}" not in label
+
+
 def test_fc_keys_both_locales():
     for loc in SUPPORTED_LOCALES:
         assert t("fc.add_btn", loc)
@@ -51,13 +58,14 @@ def test_fc_keys_both_locales():
         assert t("fc.term_empty", loc)
 
 
-def test_lang_saved_format_does_not_shadow_t_locale_param():
-    """Regression: lang.saved must not pass locale= into t() format kwargs."""
+def test_lang_saved_format_uses_lang_name_kwarg():
+    """Regression: lang.saved must use lang_name= (locale= shadows t()'s locale param)."""
     for loc in SUPPORTED_LOCALES:
         lang_name = t("lang.ru", loc) if loc == "ru" else t("lang.en", loc)
         msg = t("lang.saved", loc, lang_name=lang_name)
         assert msg != "lang.saved"
         assert lang_name in msg
+        assert "{lang_name}" not in msg
 
 
 def test_common_unexpected_error_translated():
@@ -77,6 +85,7 @@ def test_critical_keys_not_self_fallback():
         "timer.finished",
         "common.cancelled",
         "common.unexpected_error",
+        "settings.language_btn",
     ]
     for key in keys:
         for loc in SUPPORTED_LOCALES:

@@ -153,7 +153,17 @@
     "toggle_error": "Ошибка переключения",
     "flash_mix": "Микс",
     "flash_official": "Официальные",
-    "flash_own": "Свои"
+    "flash_own": "Свои",
+    "language": "🌍 Язык интерфейса",
+    "language_btn": "🌍 Язык: {current}",
+    "time_change_prompt": "🕘 Введи время {slot} напоминания в формате ЧЧ:ММ (например, 09:30).\nДля отмены отправь /cancel.",
+    "time_invalid": "❌ Неверный формат. Введи время как ЧЧ:ММ, например 09:30.\nДля отмены отправь /cancel.",
+    "time_saved": "✅ Новое {slot} время сохранено: {time}",
+    "unknown_slot": "Неизвестный слот",
+    "slot_morning": "утреннего",
+    "slot_evening": "вечернего",
+    "tz_picker_title": "🌍 Выбери свой часовой пояс — напоминания и сброс стрика будут привязаны к нему:",
+    "tz_back": "⬅️ Назад в настройки"
   },
   "profile": {
     "title": "📊 Твой профиль:\n🆔 ID: {user_id}\n📚 Всего сессий: {total_sessions}\n💰 Всего монет: {total_coins} 🪙\n🔥 Стрик: {current_streak} дней подряд\n⏱️ Последняя сессия: {last_session}\n\n🐾 Твой питомец: {pet_emotion}",
@@ -192,9 +202,22 @@
     "not_yours_session": "Это не твоя сессия",
     "not_yours_cards": "Это не твои карточки",
     "not_yours_tasks": "Это не твои задачи",
+    "not_yours_profile": "Это не твой профиль",
+    "not_yours_achievements": "Это не твои достижения",
+    "not_yours_settings": "Это не твои настройки",
+    "user_not_found": "Пользователь не найден",
+    "unknown_tz": "Неизвестный часовой пояс",
+    "broken_callback": "Сломанный callback",
+    "admin_only": "Только для админов",
+    "unknown_table": "Неизвестная таблица",
+    "request_inactive": "Запрос уже не активен.",
     "deleted": "Удалено",
     "card_not_found": "Карточка не найдена",
     "task_not_found": "Задача не найдена"
+  },
+  "rating": {
+    "thanks": "✅ Спасибо за оценку! {emoji}",
+    "save_failed": "Не удалось сохранить оценку"
   },
   "subjects": {
     "industrial-management": "🏭 Основы производственного менеджмента",

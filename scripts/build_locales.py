@@ -350,6 +350,25 @@ def ru_bundle():
             "flash_mix": "Микс",
             "flash_official": "Официальные",
             "flash_own": "Свои",
+            "language": "🌍 Язык интерфейса",
+            "language_btn": "🌍 Язык: {current}",
+            "time_change_prompt": (
+                "🕘 Введи время {slot} напоминания в формате ЧЧ:ММ (например, 09:30).\n"
+                "Для отмены отправь /cancel."
+            ),
+            "time_invalid": (
+                "❌ Неверный формат. Введи время как ЧЧ:ММ, например 09:30.\n"
+                "Для отмены отправь /cancel."
+            ),
+            "time_saved": "✅ Новое {slot} время сохранено: {time}",
+            "unknown_slot": "Неизвестный слот",
+            "slot_morning": "утреннего",
+            "slot_evening": "вечернего",
+            "tz_picker_title": (
+                "🌍 Выбери свой часовой пояс — напоминания и сброс стрика "
+                "будут привязаны к нему:"
+            ),
+            "tz_back": "⬅️ Назад в настройки",
         },
         "profile": {
             "title": (
@@ -400,9 +419,22 @@ def ru_bundle():
             "not_yours_session": "Это не твоя сессия",
             "not_yours_cards": "Это не твои карточки",
             "not_yours_tasks": "Это не твои задачи",
+            "not_yours_profile": "Это не твой профиль",
+            "not_yours_achievements": "Это не твои достижения",
+            "not_yours_settings": "Это не твои настройки",
+            "user_not_found": "Пользователь не найден",
+            "unknown_tz": "Неизвестный часовой пояс",
+            "broken_callback": "Сломанный callback",
+            "admin_only": "Только для админов",
+            "unknown_table": "Неизвестная таблица",
+            "request_inactive": "Запрос уже не активен.",
             "deleted": "Удалено",
             "card_not_found": "Карточка не найдена",
             "task_not_found": "Задача не найдена",
+        },
+        "rating": {
+            "thanks": "✅ Спасибо за оценку! {emoji}",
+            "save_failed": "Не удалось сохранить оценку",
         },
         "subjects": {
             "industrial-management": "🏭 Основы производственного менеджмента",
@@ -1080,6 +1112,24 @@ def en_bundle():
     b["settings"]["flash_mix"] = "Mix"
     b["settings"]["flash_official"] = "Official"
     b["settings"]["flash_own"] = "Own"
+    b["settings"]["language"] = "🌍 Interface language"
+    b["settings"]["language_btn"] = "🌍 Language: {current}"
+    b["settings"]["time_change_prompt"] = (
+        "🕘 Enter {slot} reminder time as HH:MM (e.g. 09:30).\n"
+        "Send /cancel to abort."
+    )
+    b["settings"]["time_invalid"] = (
+        "❌ Invalid format. Enter time as HH:MM, e.g. 09:30.\n"
+        "Send /cancel to abort."
+    )
+    b["settings"]["time_saved"] = "✅ New {slot} time saved: {time}"
+    b["settings"]["unknown_slot"] = "Unknown slot"
+    b["settings"]["slot_morning"] = "morning"
+    b["settings"]["slot_evening"] = "evening"
+    b["settings"]["tz_picker_title"] = (
+        "🌍 Choose your time zone — reminders and streak reset follow it:"
+    )
+    b["settings"]["tz_back"] = "⬅️ Back to settings"
 
     b["profile"]["title"] = (
         "📊 Your profile:\n"
@@ -1126,9 +1176,23 @@ def en_bundle():
     b["common"]["not_yours_session"] = "Not your session"
     b["common"]["not_yours_cards"] = "Not your flashcards"
     b["common"]["not_yours_tasks"] = "Not your tasks"
+    b["common"]["not_yours_profile"] = "This isn't your profile"
+    b["common"]["not_yours_achievements"] = "These aren't your achievements"
+    b["common"]["not_yours_settings"] = "These aren't your settings"
+    b["common"]["user_not_found"] = "User not found"
+    b["common"]["unknown_tz"] = "Unknown time zone"
+    b["common"]["broken_callback"] = "Broken callback"
+    b["common"]["admin_only"] = "Admins only"
+    b["common"]["unknown_table"] = "Unknown table"
+    b["common"]["request_inactive"] = "Request is no longer active."
     b["common"]["deleted"] = "Deleted"
     b["common"]["card_not_found"] = "Card not found"
     b["common"]["task_not_found"] = "Task not found"
+
+    b["rating"] = {
+        "thanks": "✅ Thanks for the rating! {emoji}",
+        "save_failed": "Could not save rating",
+    }
 
     b["subjects"] = {
         "industrial-management": "🏭 Production management basics",

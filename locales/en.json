@@ -153,7 +153,17 @@
     "toggle_error": "Toggle failed",
     "flash_mix": "Mix",
     "flash_official": "Official",
-    "flash_own": "Own"
+    "flash_own": "Own",
+    "language": "🌍 Interface language",
+    "language_btn": "🌍 Language: {current}",
+    "time_change_prompt": "🕘 Enter {slot} reminder time as HH:MM (e.g. 09:30).\nSend /cancel to abort.",
+    "time_invalid": "❌ Invalid format. Enter time as HH:MM, e.g. 09:30.\nSend /cancel to abort.",
+    "time_saved": "✅ New {slot} time saved: {time}",
+    "unknown_slot": "Unknown slot",
+    "slot_morning": "morning",
+    "slot_evening": "evening",
+    "tz_picker_title": "🌍 Choose your time zone — reminders and streak reset follow it:",
+    "tz_back": "⬅️ Back to settings"
   },
   "profile": {
     "title": "📊 Your profile:\n🆔 ID: {user_id}\n📚 Total sessions: {total_sessions}\n💰 Total coins: {total_coins} 🪙\n🔥 Streak: {current_streak} days\n⏱️ Last session: {last_session}\n\n🐾 Your pet: {pet_emotion}",
@@ -192,9 +202,22 @@
     "not_yours_session": "Not your session",
     "not_yours_cards": "Not your flashcards",
     "not_yours_tasks": "Not your tasks",
+    "not_yours_profile": "This isn't your profile",
+    "not_yours_achievements": "These aren't your achievements",
+    "not_yours_settings": "These aren't your settings",
+    "user_not_found": "User not found",
+    "unknown_tz": "Unknown time zone",
+    "broken_callback": "Broken callback",
+    "admin_only": "Admins only",
+    "unknown_table": "Unknown table",
+    "request_inactive": "Request is no longer active.",
     "deleted": "Deleted",
     "card_not_found": "Card not found",
     "task_not_found": "Task not found"
+  },
+  "rating": {
+    "thanks": "✅ Thanks for the rating! {emoji}",
+    "save_failed": "Could not save rating"
   },
   "subjects": {
     "industrial-management": "🏭 Production management basics",
