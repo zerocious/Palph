@@ -90,7 +90,7 @@ def test_math_official_content_smoke():
     if not (root / "tasks").exists():
         pytest.skip("math materials not generated")
     tasks = load_tasks("math", group_id="exam-task-1")
-    assert len(tasks) == 33
+    assert len(tasks) == 37
     assert all(t.get("text_only") for t in tasks)
     assert all(t.get("accepted") for t in tasks)
     assert all(t.get("solution_text") for t in tasks)
