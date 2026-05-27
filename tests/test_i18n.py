@@ -74,6 +74,27 @@ def test_common_unexpected_error_translated():
         assert val != "common.unexpected_error"
 
 
+def test_rating_thanks_translated_with_emoji():
+    """Regression: rating.thanks must resolve after locale rebuild (not raw key)."""
+    for loc in SUPPORTED_LOCALES:
+        msg = t("rating.thanks", loc, emoji="🙂")
+        assert msg != "rating.thanks"
+        assert "🙂" in msg
+        assert "{emoji}" not in msg
+
+
+def test_rating_save_failed_translated():
+    for loc in SUPPORTED_LOCALES:
+        val = t("rating.save_failed", loc)
+        assert val != "rating.save_failed"
+
+
+def test_timer_rating_prompt_and_skip_translated():
+    for loc in SUPPORTED_LOCALES:
+        assert t("timer.rating_prompt", loc) != "timer.rating_prompt"
+        assert t("timer.rating_skip", loc) != "timer.rating_skip"
+
+
 def test_critical_keys_not_self_fallback():
     keys = [
         "user_tasks.instruction",
@@ -83,6 +104,10 @@ def test_critical_keys_not_self_fallback():
         "flash.stopped",
         "friends.invite_invalid",
         "timer.finished",
+        "timer.rating_prompt",
+        "timer.rating_skip",
+        "rating.thanks",
+        "rating.save_failed",
         "common.cancelled",
         "common.unexpected_error",
         "settings.language_btn",
