@@ -1,12 +1,12 @@
 # Math — высшая математика (схема Бернулли)
 
-**Doc sync:** 2026-05-27 · 29 text-only tasks shipped in Palph v0.8.
+**Doc sync:** 2026-05-27 · 33 text-only tasks shipped in Palph v0.8.
 
 ## Contents
 
 | File / folder | Description |
 |---------------|-------------|
-| `tasks/task-01.json` … `task-29.json` | Text-only exam tasks (`text_only: true`) |
+| `tasks/task-01.json` … `task-33.json` | Text-only exam tasks (`text_only: true`) |
 | `groups.json` | UI group `exam-task-1` — «Билет, задача 1 (формула Бернулли)» |
 | `topics.json` | Planner topic order: `["exam-task-1"]` |
 | `diagnostic/default.json` | 7 self-check prompts → task refs for sprint plan |
