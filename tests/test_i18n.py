@@ -2,6 +2,7 @@
 import ast
 import importlib
 import json
+import re
 from pathlib import Path
 
 from i18n import SUPPORTED_LOCALES, all_locale_texts, subject_label, t
@@ -9,6 +10,36 @@ from locale_bot import SUBJECT_IDS
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCALES_DIR = ROOT / "locales"
+
+I18N_SOURCE_FILES = (
+    ROOT / "bot.py",
+    ROOT / "plan_handlers.py",
+    ROOT / "locale_bot.py",
+    ROOT / "services.py",
+)
+T_KEY_RE = re.compile(
+    r"""t\(\s*[\"']([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]+)+)[\"']""",
+    re.IGNORECASE,
+)
+
+
+def _flatten_locale_keys(data: dict, prefix: str = "") -> set[str]:
+    out: set[str] = set()
+    for key, value in data.items():
+        full = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            out |= _flatten_locale_keys(value, full)
+        else:
+            out.add(full)
+    return out
+
+
+def _collect_t_keys_from_sources() -> set[str]:
+    keys: set[str] = set()
+    for path in I18N_SOURCE_FILES:
+        if path.exists():
+            keys |= set(T_KEY_RE.findall(path.read_text(encoding="utf-8")))
+    return keys
 
 
 def test_locale_json_valid():
@@ -106,16 +137,46 @@ def test_critical_keys_not_self_fallback():
         "timer.finished",
         "timer.rating_prompt",
         "timer.rating_skip",
+        "timer.reconcile_resumed",
+        "timer.reconcile_finished",
         "rating.thanks",
         "rating.save_failed",
         "common.cancelled",
         "common.unexpected_error",
         "settings.language_btn",
+        "quiz.answer_prompt",
+        "delete_account.done",
+        "commands.delete_account",
     ]
     for key in keys:
         for loc in SUPPORTED_LOCALES:
             val = t(key, loc)
             assert val != key, f"missing {key} for {loc}"
+
+
+def test_all_source_t_keys_exist_in_locales():
+    """Regression: every t('dotted.key') in bot sources must resolve in ru/en JSON."""
+    used = _collect_t_keys_from_sources()
+    assert used, "expected at least one t() key in source files"
+    locale_keys = {
+        loc: _flatten_locale_keys(
+            json.loads((LOCALES_DIR / f"{loc}.json").read_text(encoding="utf-8"))
+        )
+        for loc in SUPPORTED_LOCALES
+    }
+    missing = {
+        loc: sorted(used - locale_keys[loc]) for loc in SUPPORTED_LOCALES
+    }
+    problems = {loc: keys for loc, keys in missing.items() if keys}
+    assert not problems, f"missing locale keys: {problems}"
+
+
+def test_timer_reconcile_resumed_translated():
+    for loc in SUPPORTED_LOCALES:
+        msg = t("timer.reconcile_resumed", loc, remaining=12)
+        assert msg != "timer.reconcile_resumed"
+        assert "12" in msg
+        assert "{remaining}" not in msg
 
 
 def test_bot_handlers_no_undefined_user_id_for_loc():

@@ -222,11 +222,28 @@ def ru_bundle():
                 "Таймер продолжает работать в фоне — сессия завершится автоматически.\n\n"
                 "Чтобы остановить досрочно, отправь /stop."
             ),
+            "reconcile_finished": (
+                "🎉 Таймер на {duration} мин завершился, пока бот был офлайн.\n"
+                "🪙 Получено: {duration} монет"
+            ),
+            "reconcile_resumed": (
+                "♻️ Бот перезапустился — но твой таймер продолжается!\n"
+                "⏱️ Осталось: {remaining} мин"
+            ),
         },
         "quiz": {
             "pick_section": "✏️ Раздел: {section_name}\n\nНапиши ДОСЛОВНОЕ определение термина:\n«{term}»",
+            "pick_section_menu": "📚 {subject}\nВыбери раздел:",
+            "answer_prompt": (
+                "✏️ Раздел: {section}\n\n"
+                "Напиши ДОСЛОВНОЕ определение термина:\n«{term}»"
+            ),
             "repeat_in_days": "\n\n🔥 Термин будет повторён через {days} дн.",
             "section_done": "🎉 Все термины раздела повторены! Ты молодец!",
+            "section_done_great": "🎉 Все термины раздела повторены! Отличная работа! 🏆",
+            "section_empty": "Раздел не найден или пуст.",
+            "finished_saved": "✅ Квиз завершён. Прогресс сохранён.",
+            "restart": "Ошибка, начните заново.",
             "no_sections": "🚧 Для этого предмета пока нет ситуационных квизов.",
         },
         "flash": {
@@ -269,6 +286,11 @@ def ru_bundle():
             ),
         },
         "mcq": {
+            "no_questions": "🚧 Для этого предмета пока нет MCQ-вопросов.",
+            "session_intro": (
+                "📝 MCQ — {subject_label}\n"
+                "Вопросов: {count}. За каждый правильный +1 🪙."
+            ),
             "question": "❓ Вопрос {idx}/{total}\n\n{question}",
             "correct": "✅ Верно! +1 🪙",
             "wrong": "❌ Неверно.\nПравильный ответ: {answer}",
@@ -665,6 +687,97 @@ def ru_bundle():
             "leaderboard": "Недельный лидерборд",
             "friends": "Друзья и рейтинг",
             "share_friend": "Ссылка-приглашение в друзья",
+            "delete_account": "🗑 Удалить мой аккаунт и все данные",
+        },
+        "support": {
+            "message_sent": (
+                "✅ Твоё сообщение отправлено! Администратор ответит в ближайшее время.\n\n"
+                "А пока можешь продолжить учиться — выбери Учеба в меню ниже 👇"
+            ),
+            "rate_limited": "⏳ Подожди минуту перед следующим сообщением администраторам.",
+        },
+        "delete_account": {
+            "confirm_prompt": (
+                "⚠️ <b>Удаление аккаунта</b>\n\n"
+                "Это <b>полностью</b> удалит все твои данные:\n"
+                "• учебные сессии, стрик, монеты\n"
+                "• достижения и прогресс по предметам\n"
+                "• питомца, инвентарь, уровень\n"
+                "• твои флэш-карты и задачи\n"
+                "• друзей и заявки\n"
+                "• журнал событий и настройки\n\n"
+                "Восстановить НЕЛЬЗЯ. Бэкапы могут содержать твои данные ещё до 30 дней — "
+                "затем будут удалены автоматически.\n\n"
+                "Подтверди, что хочешь удалить аккаунт."
+            ),
+            "confirm_btn": "🗑 Да, удалить всё",
+            "cancel_btn": "❌ Отмена",
+            "cancelled": "✅ Удаление отменено. Данные на месте.",
+            "done": (
+                "🗑 Аккаунт удалён.\n\n"
+                "Все твои данные стёрты из активной БД. Бэкапы будут вычищены автоматически "
+                "в течение 30 дней.\n\n"
+                "Если захочешь начать заново — отправь /start."
+            ),
+            "no_data": (
+                "У тебя нет аккаунта в Боте — удалять нечего. "
+                "Если ты считаешь, что это ошибка, напиши на maksim.frantsov@yandex.ru."
+            ),
+            "main_admin_blocked": (
+                "❌ Главный администратор не может удалить себя этой командой — "
+                "бот станет неуправляемым.\n\n"
+                "Если всё же нужно удалить главный аккаунт: смени <code>MAIN_ADMIN_ID</code> "
+                "в <code>.env</code> на другой user_id и перезапусти бота, "
+                "а затем удали аккаунт через эту команду."
+            ),
+        },
+        "plan": {
+            "btn_today": "📋 План на сегодня",
+            "subject_menu": "🎯 План к экзамену:",
+            "btn_calendar": "📅 Календарь 14 дней",
+            "btn_start": "🎯 План к экзамену",
+            "btn_change": "🔁 Сменить план",
+            "btn_next_day": "➡️ Следующий день",
+            "first_visit": (
+                "🎯 Хочешь <b>14-дневный план к экзамену</b> по {subject}?\n\n"
+                "Короткий входной тест подберёт задания под твой уровень."
+            ),
+            "prompt_start": "🎯 Начать план",
+            "prompt_skip": "⏭ Пропустить",
+            "prompt_never": "Больше не спрашивать",
+            "prompt_skipped": "Ок — план можно начать в любой момент кнопками ниже.",
+            "pick_minutes": "⏱ Сколько времени в день готов учиться?",
+            "minutes_60": "60 мин / день",
+            "minutes_120": "120 мин / день",
+            "minutes_180": "180 мин / день",
+            "minutes_240": "240+ мин / день",
+            "diag_progress": "Диагностика {current}/{total}",
+            "diag_default_q": "Знаешь эту тему?",
+            "diag_know": "✅ Знаю",
+            "diag_unknown": "❌ Ещё нет",
+            "diag_saved": "Сохранено",
+            "created": "✅ 14-дневный план готов! Открой «📋 План на сегодня», чтобы начать.",
+            "no_plan": "Активного плана пока нет. Начни с кнопки ниже.",
+            "no_content": "Пока недостаточно контента для плана.",
+            "no_diagnostic": "Для этого предмета ещё нет диагностического теста.",
+            "today_header": "📋 <b>День {day}</b> — {done}/{total} на сегодня",
+            "today_empty": (
+                "На сегодня всё сделано — отлично! "
+                "Смотри календарь или перейди к следующему дню."
+            ),
+            "calendar_header": "📅 <b>План 14 дней</b> — {done}/{total} всего",
+            "day_line": "День {day}: {done}/{total}",
+            "day_complete": "🎉 День закрыт! Питомец гордится — до завтра.",
+            "item_start": "▶️ Пункт плана — выполни, чтобы отметить готовым.",
+            "item_done": "Уже выполнено",
+            "item_missing": "Этот пункт больше недоступен в материалах.",
+            "item_wrong": (
+                "Не засчитано — нажми пункт в плане на сегодня, чтобы попробовать снова."
+            ),
+            "badge_review": "📌 повторение",
+            "badge_weak": "🔁 слабая тема",
+            "badge_new": "🆕 новое",
+            "badge_progress": "📈 прогресс",
         },
         "reminders": {
             "morning": (
@@ -844,6 +957,7 @@ def ru_bundle():
             "no_points": "Вы пока без очков на этой неделе.",
             "your_rank": "Ваш ранг: <b>{rank}</b>  {pts:.0f} pts{hidden}",
             "hidden_note": " · Вы скрыты",
+            "load_failed": "⚠️ Не удалось загрузить лидерборд. Попробуй позже.",
         },
         "freeze": {
             "title": "❄️ <b>Заморозка стрика</b>",
@@ -995,10 +1109,26 @@ def en_bundle():
         "The timer keeps running in the background — the session will finish automatically.\n\n"
         "To stop early, send /stop."
     )
+    b["timer"]["reconcile_finished"] = (
+        "🎉 Your {duration}-minute timer finished while the bot was offline.\n"
+        "🪙 Earned: {duration} coins"
+    )
+    b["timer"]["reconcile_resumed"] = (
+        "♻️ The bot restarted — your timer is still running!\n"
+        "⏱️ Remaining: {remaining} min"
+    )
 
     b["quiz"]["pick_section"] = "✏️ Section: {section_name}\n\nType the EXACT definition of:\n«{term}»"
+    b["quiz"]["pick_section_menu"] = "📚 {subject}\nChoose a section:"
+    b["quiz"]["answer_prompt"] = (
+        "✏️ Section: {section}\n\nType the EXACT definition of:\n«{term}»"
+    )
     b["quiz"]["repeat_in_days"] = "\n\n🔥 This term will repeat in {days} days."
     b["quiz"]["section_done"] = "🎉 All terms in this section reviewed! Great job!"
+    b["quiz"]["section_done_great"] = "🎉 All terms in this section reviewed! Excellent work! 🏆"
+    b["quiz"]["section_empty"] = "Section not found or empty."
+    b["quiz"]["finished_saved"] = "✅ Quiz finished. Progress saved."
+    b["quiz"]["restart"] = "Error — please start over."
     b["quiz"]["no_sections"] = "🚧 No situational quizzes for this subject yet."
 
     b["flash"]["session_start"] = (
@@ -1035,6 +1165,10 @@ def en_bundle():
         "🪙 Earned: {coins} coins"
     )
 
+    b["mcq"]["no_questions"] = "🚧 No MCQ questions for this subject yet."
+    b["mcq"]["session_intro"] = (
+        "📝 MCQ — {subject_label}\nQuestions: {count}. +1 🪙 per correct answer."
+    )
     b["mcq"]["question"] = "❓ Question {idx}/{total}\n\n{question}"
     b["mcq"]["correct"] = "✅ Correct! +1 🪙"
     b["mcq"]["wrong"] = "❌ Wrong.\nCorrect answer: {answer}"
@@ -1416,6 +1550,98 @@ def en_bundle():
         "leaderboard": "Weekly leaderboard",
         "friends": "Friends and rankings",
         "share_friend": "Friend invite link",
+        "delete_account": "🗑 Delete my account and all data",
+    }
+
+    b["support"] = {
+        "message_sent": (
+            "✅ Your message was sent! An admin will reply soon.\n\n"
+            "Meanwhile, keep studying — tap Study in the menu below 👇"
+        ),
+        "rate_limited": "⏳ Please wait a minute before sending another message to admins.",
+    }
+
+    b["delete_account"] = {
+        "confirm_prompt": (
+            "⚠️ <b>Account deletion</b>\n\n"
+            "This will <b>permanently</b> erase all your data:\n"
+            "• study sessions, streak, coins\n"
+            "• achievements and per-subject progress\n"
+            "• pet, inventory, level\n"
+            "• your flashcards and tasks\n"
+            "• friends and pending requests\n"
+            "• event log and settings\n\n"
+            "This CANNOT be undone. Backups may retain your data for up to 30 more days — "
+            "then they're deleted automatically.\n\n"
+            "Confirm that you want to delete your account."
+        ),
+        "confirm_btn": "🗑 Yes, delete everything",
+        "cancel_btn": "❌ Cancel",
+        "cancelled": "✅ Deletion cancelled. Your data is intact.",
+        "done": (
+            "🗑 Account deleted.\n\n"
+            "All your data has been removed from the active database. Backups will be purged "
+            "automatically within 30 days.\n\n"
+            "If you want to start over — send /start."
+        ),
+        "no_data": (
+            "You don't have an account in the Bot — nothing to delete. "
+            "If you believe this is an error, email maksim.frantsov@yandex.ru."
+        ),
+        "main_admin_blocked": (
+            "❌ The main administrator can't delete themselves via this command — "
+            "the bot would become unmanageable.\n\n"
+            "If you really need to delete the main account: change <code>MAIN_ADMIN_ID</code> "
+            "in <code>.env</code> to a different user_id and restart the bot, "
+            "then run this command."
+        ),
+    }
+
+    b["plan"] = {
+        "btn_today": "📋 Today's plan",
+        "btn_calendar": "📅 14-day calendar",
+        "subject_menu": "🎯 Exam sprint plan:",
+        "btn_start": "🎯 Start exam plan",
+        "btn_change": "🔁 Change plan",
+        "btn_next_day": "➡️ Next day",
+        "first_visit": (
+            "🎯 Want a <b>14-day exam plan</b> for {subject}?\n\n"
+            "A short diagnostic test will tailor daily tasks to your level."
+        ),
+        "prompt_start": "🎯 Start exam plan",
+        "prompt_skip": "⏭ Skip for now",
+        "prompt_never": "Don't ask again",
+        "prompt_skipped": "OK — you can start a plan anytime from the buttons below.",
+        "pick_minutes": "⏱ How much time per day can you study?",
+        "minutes_60": "60 min / day",
+        "minutes_120": "120 min / day",
+        "minutes_180": "180 min / day",
+        "minutes_240": "240+ min / day",
+        "diag_progress": "Diagnostic {current}/{total}",
+        "diag_default_q": "Do you know this topic?",
+        "diag_know": "✅ I know",
+        "diag_unknown": "❌ Not yet",
+        "diag_saved": "Saved",
+        "created": "✅ Your 14-day plan is ready! Open «📋 Today's plan» to start day 1.",
+        "no_plan": "You don't have an active plan yet. Start one with the button below.",
+        "no_content": "Not enough study content for a plan yet.",
+        "no_diagnostic": "No diagnostic test for this subject yet.",
+        "today_header": "📋 <b>Day {day}</b> — {done}/{total} done today",
+        "today_empty": (
+            "Nothing scheduled for today — great job! "
+            "Check the calendar or advance to the next day."
+        ),
+        "calendar_header": "📅 <b>14-day plan</b> — {done}/{total} total",
+        "day_line": "Day {day}: {done}/{total}",
+        "day_complete": "🎉 Day complete! Your pet is proud — see you tomorrow.",
+        "item_start": "▶️ Plan item — complete it to mark done.",
+        "item_done": "Already done",
+        "item_missing": "This item is no longer available in the content library.",
+        "item_wrong": "Not marked done — tap the item in today's plan to try again.",
+        "badge_review": "📌 review",
+        "badge_weak": "🔁 weak topic",
+        "badge_new": "🆕 new",
+        "badge_progress": "📈 progress",
     }
 
     b["reminders"]["morning"] = (
@@ -1589,6 +1815,7 @@ def en_bundle():
     b["leaderboard"]["no_points"] = "You have no points this week yet."
     b["leaderboard"]["your_rank"] = "Your rank: <b>{rank}</b>  {pts:.0f} pts{hidden}"
     b["leaderboard"]["hidden_note"] = " · You are hidden"
+    b["leaderboard"]["load_failed"] = "⚠️ Could not load the leaderboard. Try again later."
 
     b["freeze"]["title"] = "❄️ <b>Streak freeze</b>"
     b["freeze"]["current"] = "🔥 Current streak: <b>{streak}</b> days"

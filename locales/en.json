@@ -78,12 +78,20 @@
     "finished": "🎉 Timer complete!\n⏱️ Session: {duration} minutes\n🪙 Earned: {duration} coins",
     "already_done": "Timer already finished.",
     "no_active": "No active timer right now.",
-    "back_menu": "🐾 You're back in the main menu.\nThe timer keeps running in the background — the session will finish automatically.\n\nTo stop early, send /stop."
+    "back_menu": "🐾 You're back in the main menu.\nThe timer keeps running in the background — the session will finish automatically.\n\nTo stop early, send /stop.",
+    "reconcile_finished": "🎉 Your {duration}-minute timer finished while the bot was offline.\n🪙 Earned: {duration} coins",
+    "reconcile_resumed": "♻️ The bot restarted — your timer is still running!\n⏱️ Remaining: {remaining} min"
   },
   "quiz": {
     "pick_section": "✏️ Section: {section_name}\n\nType the EXACT definition of:\n«{term}»",
+    "pick_section_menu": "📚 {subject}\nChoose a section:",
+    "answer_prompt": "✏️ Section: {section}\n\nType the EXACT definition of:\n«{term}»",
     "repeat_in_days": "\n\n🔥 This term will repeat in {days} days.",
     "section_done": "🎉 All terms in this section reviewed! Great job!",
+    "section_done_great": "🎉 All terms in this section reviewed! Excellent work! 🏆",
+    "section_empty": "Section not found or empty.",
+    "finished_saved": "✅ Quiz finished. Progress saved.",
+    "restart": "Error — please start over.",
     "no_sections": "🚧 No situational quizzes for this subject yet."
   },
   "flash": {
@@ -103,6 +111,8 @@
     "stopped": "⏹ Flashcard session stopped.\nReviewed: {reviewed}\n🪙 Earned: {coins} coins"
   },
   "mcq": {
+    "no_questions": "🚧 No MCQ questions for this subject yet.",
+    "session_intro": "📝 MCQ — {subject_label}\nQuestions: {count}. +1 🪙 per correct answer.",
     "question": "❓ Question {idx}/{total}\n\n{question}",
     "correct": "✅ Correct! +1 🪙",
     "wrong": "❌ Wrong.\nCorrect answer: {answer}",
@@ -349,7 +359,61 @@
     "pet": "Pet and customization",
     "leaderboard": "Weekly leaderboard",
     "friends": "Friends and rankings",
-    "share_friend": "Friend invite link"
+    "share_friend": "Friend invite link",
+    "delete_account": "🗑 Delete my account and all data"
+  },
+  "support": {
+    "message_sent": "✅ Your message was sent! An admin will reply soon.\n\nMeanwhile, keep studying — tap Study in the menu below 👇",
+    "rate_limited": "⏳ Please wait a minute before sending another message to admins."
+  },
+  "delete_account": {
+    "confirm_prompt": "⚠️ <b>Account deletion</b>\n\nThis will <b>permanently</b> erase all your data:\n• study sessions, streak, coins\n• achievements and per-subject progress\n• pet, inventory, level\n• your flashcards and tasks\n• friends and pending requests\n• event log and settings\n\nThis CANNOT be undone. Backups may retain your data for up to 30 more days — then they're deleted automatically.\n\nConfirm that you want to delete your account.",
+    "confirm_btn": "🗑 Yes, delete everything",
+    "cancel_btn": "❌ Cancel",
+    "cancelled": "✅ Deletion cancelled. Your data is intact.",
+    "done": "🗑 Account deleted.\n\nAll your data has been removed from the active database. Backups will be purged automatically within 30 days.\n\nIf you want to start over — send /start.",
+    "no_data": "You don't have an account in the Bot — nothing to delete. If you believe this is an error, email maksim.frantsov@yandex.ru.",
+    "main_admin_blocked": "❌ The main administrator can't delete themselves via this command — the bot would become unmanageable.\n\nIf you really need to delete the main account: change <code>MAIN_ADMIN_ID</code> in <code>.env</code> to a different user_id and restart the bot, then run this command."
+  },
+  "plan": {
+    "btn_today": "📋 Today's plan",
+    "btn_calendar": "📅 14-day calendar",
+    "subject_menu": "🎯 Exam sprint plan:",
+    "btn_start": "🎯 Start exam plan",
+    "btn_change": "🔁 Change plan",
+    "btn_next_day": "➡️ Next day",
+    "first_visit": "🎯 Want a <b>14-day exam plan</b> for {subject}?\n\nA short diagnostic test will tailor daily tasks to your level.",
+    "prompt_start": "🎯 Start exam plan",
+    "prompt_skip": "⏭ Skip for now",
+    "prompt_never": "Don't ask again",
+    "prompt_skipped": "OK — you can start a plan anytime from the buttons below.",
+    "pick_minutes": "⏱ How much time per day can you study?",
+    "minutes_60": "60 min / day",
+    "minutes_120": "120 min / day",
+    "minutes_180": "180 min / day",
+    "minutes_240": "240+ min / day",
+    "diag_progress": "Diagnostic {current}/{total}",
+    "diag_default_q": "Do you know this topic?",
+    "diag_know": "✅ I know",
+    "diag_unknown": "❌ Not yet",
+    "diag_saved": "Saved",
+    "created": "✅ Your 14-day plan is ready! Open «📋 Today's plan» to start day 1.",
+    "no_plan": "You don't have an active plan yet. Start one with the button below.",
+    "no_content": "Not enough study content for a plan yet.",
+    "no_diagnostic": "No diagnostic test for this subject yet.",
+    "today_header": "📋 <b>Day {day}</b> — {done}/{total} done today",
+    "today_empty": "Nothing scheduled for today — great job! Check the calendar or advance to the next day.",
+    "calendar_header": "📅 <b>14-day plan</b> — {done}/{total} total",
+    "day_line": "Day {day}: {done}/{total}",
+    "day_complete": "🎉 Day complete! Your pet is proud — see you tomorrow.",
+    "item_start": "▶️ Plan item — complete it to mark done.",
+    "item_done": "Already done",
+    "item_missing": "This item is no longer available in the content library.",
+    "item_wrong": "Not marked done — tap the item in today's plan to try again.",
+    "badge_review": "📌 review",
+    "badge_weak": "🔁 weak topic",
+    "badge_new": "🆕 new",
+    "badge_progress": "📈 progress"
   },
   "reminders": {
     "morning": "🌅 Good morning!\nYour pet is waiting for today's first session 🐾\nEven 5 minutes is already a win.",
@@ -449,7 +513,8 @@
     "row": "{marker} {rank}. {user_label}  {pts:.0f} pts  (×{mult:.2f})",
     "no_points": "You have no points this week yet.",
     "your_rank": "Your rank: <b>{rank}</b>  {pts:.0f} pts{hidden}",
-    "hidden_note": " · You are hidden"
+    "hidden_note": " · You are hidden",
+    "load_failed": "⚠️ Could not load the leaderboard. Try again later."
   },
   "freeze": {
     "title": "❄️ <b>Streak freeze</b>",
