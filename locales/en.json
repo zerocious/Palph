@@ -49,6 +49,7 @@
     "change_later": "Change anytime in «📊 My profile» → «⚙️ Settings»."
   },
   "nav": {
+    "main_menu": "🏠 Main menu",
     "study_section": "📚 Study tools: Pomodoro timer and productivity tips.",
     "pick_subject": "📖 Choose a subject:",
     "pick_mode": "{subject_label}\nChoose a study mode:",

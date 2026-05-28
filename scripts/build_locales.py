@@ -176,6 +176,7 @@ def ru_bundle():
             "change_later": "Поменять можно в «📊 Мой профиль» → «⚙️ Настройки».",
         },
         "nav": {
+            "main_menu": "🏠 Главное меню",
             "study_section": "📚 Учебные инструменты: таймер Pomodoro и советы по продуктивности.",
             "pick_subject": "📖 Выбери предмет:",
             "pick_mode": "{subject_label}\nВыбери режим учёбы:",
@@ -950,6 +951,7 @@ def en_bundle():
     b["setup"]["evening_off"] = "🌙 Evening: off"
     b["setup"]["change_later"] = "Change anytime in «📊 My profile» → «⚙️ Settings»."
 
+    b["nav"]["main_menu"] = "🏠 Main menu"
     b["nav"]["study_section"] = "📚 Study tools: Pomodoro timer and productivity tips."
     b["nav"]["pick_subject"] = "📖 Choose a subject:"
     b["nav"]["pick_mode"] = "{subject_label}\nChoose a study mode:"
