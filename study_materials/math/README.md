@@ -1,14 +1,15 @@
 # Math — высшая математика (схема Бернулли)
 
-**Doc sync:** 2026-05-27 · 41 text-only tasks shipped in Palph v0.8.
+**Doc sync:** 2026-05-28 · 72 text-only tasks shipped in Palph v0.8.
 
 ## Contents
 
 | File / folder | Description |
 |---------------|-------------|
-| `tasks/task-01.json` … `task-41.json` | Text-only exam tasks (`text_only: true`) |
-| `groups.json` | UI group `exam-task-1` — «Билет, задача 1 (формула Бернулли)» |
-| `topics.json` | Planner topic order: `["exam-task-1"]` |
+| `tasks/task-01.json` … `task-72.json` | Text-only exam tasks (`text_only: true`) |
+| `groups.json` | UI groups `exam-task-1` … `exam-task-6` (билет №1–6) |
+| `topics.json` | Planner topic order: six exam-task groups |
+| `source/top3_tasks_etalon.md` | Source curation list (not loaded by bot) |
 | `diagnostic/default.json` | 7 self-check prompts → task refs for sprint plan |
 | `source/pz-6.pdf` | Source problem set (not loaded by bot) |
 
@@ -16,9 +17,10 @@
 
 ```bash
 python scripts/generate_math_bernoulli_tasks.py
+python scripts/generate_math_etalon_top3_tasks.py
 ```
 
-Writes all `tasks/*.json`, `groups.json`, `topics.json`, and `diagnostic/default.json`.
+Bernoulli script writes `task-01`…`task-41` and diagnostic. Etalon script appends `task-42`…`task-72` and updates `groups.json` / `topics.json` (does not overwrite diagnostic).
 
 ## Answers
 

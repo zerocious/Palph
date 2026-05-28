@@ -1,0 +1,13 @@
+{
+  "text_only": true,
+  "group": "exam-task-3",
+  "topics": [
+    "exam-task-3"
+  ],
+  "subtitle": "Гмурман · 208",
+  "problem": "Случайные величины X и Y независимы. Найти дисперсию Z=3X+2Y, если D(X)=5, D(Y)=6.",
+  "accepted": [
+    "69"
+  ],
+  "solution_text": "D(3X+2Y)=9·D(X)+4·D(Y)=9·5+4·6=69."
+}

@@ -89,11 +89,16 @@ def test_math_official_content_smoke():
     root = Path(__file__).resolve().parent.parent / "study_materials" / "math"
     if not (root / "tasks").exists():
         pytest.skip("math materials not generated")
-    tasks = load_tasks("math", group_id="exam-task-1")
-    assert len(tasks) == 41
-    assert all(t.get("text_only") for t in tasks)
-    assert all(t.get("accepted") for t in tasks)
-    assert all(t.get("solution_text") for t in tasks)
+    all_tasks = load_tasks("math")
+    assert len(all_tasks) == 72
+    assert all(t.get("text_only") for t in all_tasks)
+    assert all(t.get("accepted") for t in all_tasks)
+    assert all(t.get("solution_text") for t in all_tasks)
+    groups = load_task_groups("math")
+    assert len(groups) == 6
+    assert "exam-task-2" in groups
+    bernoulli = load_tasks("math", group_id="exam-task-1")
+    assert len(bernoulli) == 42
     catalog = build_content_catalog("math")
     assert catalog_has_minimum(catalog, 10)
     diag = load_diagnostic("math")
