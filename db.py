@@ -5,14 +5,50 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_PATH = os.getenv("DB_PATH", "studybuddy.db")
+CONTAINER_DATA_DIR = "/app/data"
+
+_LOCAL_DEFAULTS = {
+    "DB_PATH": "studybuddy.db",
+    "LOG_FILE": "bot.log",
+    "BACKUP_DIR": "backups",
+}
+
+
+def _use_container_data_paths() -> bool:
+    """True when running in Docker/bothost layout (persistent /app/data volume)."""
+    if os.path.isdir(CONTAINER_DATA_DIR):
+        return True
+    return os.path.isdir("/app") and os.path.isfile("/app/bot.py")
+
+
+def _container_defaults() -> dict[str, str]:
+    return {
+        "DB_PATH": os.path.join(CONTAINER_DATA_DIR, "studybuddy.db"),
+        "LOG_FILE": os.path.join(CONTAINER_DATA_DIR, "bot.log"),
+        "BACKUP_DIR": os.path.join(CONTAINER_DATA_DIR, "backups"),
+    }
+
+
+def resolve_env_path(name: str) -> str:
+    """Resolve DB_PATH / LOG_FILE / BACKUP_DIR with container-aware defaults."""
+    explicit = os.getenv(name)
+    if explicit:
+        return explicit
+    if _use_container_data_paths():
+        return _container_defaults()[name]
+    return _LOCAL_DEFAULTS[name]
+
+
+DB_PATH = resolve_env_path("DB_PATH")
+LOG_FILE = resolve_env_path("LOG_FILE")
+BACKUP_DIR = resolve_env_path("BACKUP_DIR")
 
 
 def ensure_persistent_dirs() -> None:
     """Create parent dirs for DB/log files and the backup directory if missing."""
-    db_path = os.getenv("DB_PATH", "studybuddy.db")
-    log_file = os.getenv("LOG_FILE", "bot.log")
-    backup_dir = os.getenv("BACKUP_DIR", "backups")
+    db_path = resolve_env_path("DB_PATH")
+    log_file = resolve_env_path("LOG_FILE")
+    backup_dir = resolve_env_path("BACKUP_DIR")
 
     for file_path in (db_path, log_file):
         parent = os.path.dirname(file_path)

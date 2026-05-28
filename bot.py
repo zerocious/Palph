@@ -39,7 +39,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
 
-from db import ensure_persistent_dirs, get_db, init_db
+from db import BACKUP_DIR, DB_PATH, LOG_FILE, ensure_persistent_dirs, get_db, init_db
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
@@ -129,7 +129,7 @@ def setup_logger():
 
     # LOG_FILE можно переопределить в env — в Docker/bothost пишем в
     # `/app/data/bot.log` (persistent volume), локально — `./bot.log`.
-    log_file = os.getenv("LOG_FILE", "bot.log")
+    log_file = LOG_FILE
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=5 * 1024 * 1024,  # 5 МБ
@@ -6417,7 +6417,7 @@ async def cmd_parse_logs(message: Message):
         return
     from parse_logs import parse_log_file, to_csv_bytes
 
-    log_file_path = Path(os.getenv("LOG_FILE", "bot.log"))
+    log_file_path = Path(LOG_FILE)
     log_paths: list[Path] = []
     if log_file_path.exists():
         log_paths.append(log_file_path)
@@ -7802,8 +7802,8 @@ async def main():
     # BACKUP_DIR/BACKUP_RETENTION_DAYS можно переопределить в .env;
     # в Docker/bothost — на mounted /app/data (см. docker-compose / Dockerfile).
     backup_service = BackupService(
-        db_path=os.getenv("DB_PATH", "studybuddy.db"),
-        backup_dir=os.getenv("BACKUP_DIR", "backups"),
+        db_path=DB_PATH,
+        backup_dir=BACKUP_DIR,
         retention_days=int(os.getenv("BACKUP_RETENTION_DAYS", "30")),
     )
     analytics_service = AnalyticsService(db)

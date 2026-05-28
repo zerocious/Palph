@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from db import ensure_persistent_dirs, get_db, init_db
+import db
+from db import ensure_persistent_dirs, get_db, init_db, resolve_env_path
 
 
 @pytest.mark.asyncio
@@ -74,3 +75,38 @@ async def test_get_db_creates_parent_and_inits(tmp_path):
 
     assert db_path.parent.is_dir()
     assert db_path.exists()
+
+
+def test_resolve_env_path_uses_local_defaults_when_not_in_container(monkeypatch):
+    monkeypatch.delenv("DB_PATH", raising=False)
+    monkeypatch.delenv("LOG_FILE", raising=False)
+    monkeypatch.delenv("BACKUP_DIR", raising=False)
+    monkeypatch.setattr(db, "_use_container_data_paths", lambda: False)
+
+    assert resolve_env_path("DB_PATH") == "studybuddy.db"
+    assert resolve_env_path("LOG_FILE") == "bot.log"
+    assert resolve_env_path("BACKUP_DIR") == "backups"
+
+
+def test_resolve_env_path_uses_container_defaults_when_layout_detected(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("DB_PATH", raising=False)
+    monkeypatch.delenv("LOG_FILE", raising=False)
+    monkeypatch.delenv("BACKUP_DIR", raising=False)
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(db, "CONTAINER_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(db, "_use_container_data_paths", lambda: True)
+
+    assert resolve_env_path("DB_PATH") == str(data_dir / "studybuddy.db")
+    assert resolve_env_path("LOG_FILE") == str(data_dir / "bot.log")
+    assert resolve_env_path("BACKUP_DIR") == str(data_dir / "backups")
+
+
+def test_resolve_env_path_prefers_explicit_env(monkeypatch):
+    monkeypatch.setenv("DB_PATH", "/custom/db.sqlite")
+    monkeypatch.setattr(db, "_use_container_data_paths", lambda: True)
+
+    assert resolve_env_path("DB_PATH") == "/custom/db.sqlite"
