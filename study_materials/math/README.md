@@ -31,8 +31,8 @@ Bernoulli script writes `task-01`…`task-41` and diagnostic. Etalon script appe
 | `text_only` | yes | `true` — no PNG required |
 | `problem` | yes | Full statement in chat |
 | `accepted` | yes | Fraction + decimal variants |
-| `solution_text` | yes | Shown after 3 wrong attempts |
-| `hint` | optional | Pedagogical nudge on 3rd failure (before full solution) |
+| `solution_text` | yes | Shown after 2 wrong attempts |
+| `hint` | optional | Pedagogical nudge on 1st wrong attempt (before full answer on 2nd) |
 | `group`, `subtitle`, `topics` | yes | UI + planner |
 
 ## Answers

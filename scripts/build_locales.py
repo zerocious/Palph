@@ -313,14 +313,15 @@ def ru_bundle():
             ),
             "session_start": (
                 "📷 Задачи — {subject_label}\n"
-                "Задач: {count}. До 3 попыток на задачу. "
-                "Награды: +3 / +2 / +1 🪙; 0 🪙 если открыли решение."
+                "Задач: {count}. До 2 попыток: после 1-й ошибки — подсказка, "
+                "после 2-й — ответ. Награды: +3 / +2 🪙; 0 🪙 если открыли ответ."
             ),
             "pick_group": "📋 Задачи — {subject}\nВыбери блок:",
             "item": "📋 Задача {idx}/{total}",
             "item_header": "📋 {header}",
             "enter_answer": "✏️ Введи ответ:",
             "wrong_retry": "❌ Неверно. Попробуй ещё (осталось попыток: {remaining}).",
+            "hint_only": "💡 Подсказка:\n{hint}\n\nПопробуй ещё раз.",
             "hint_block": "💡 Подсказка:\n{hint}\n\nПравильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
             "solution": "💡 Правильный ответ: {answer}\nМонеты за эту задачу: 0 🪙",
             "solution_text_block": (
@@ -1190,14 +1191,15 @@ def en_bundle():
     )
     b["task"]["session_start"] = (
         "📷 Tasks — {subject_label}\n"
-        "Tasks: {count}. Up to 3 attempts per task. "
-        "Rewards: +3 / +2 / +1 🪙; 0 🪙 if the solution was revealed."
+        "Tasks: {count}. Up to 2 attempts: hint after the 1st mistake, "
+        "answer after the 2nd. Rewards: +3 / +2 🪙; 0 🪙 if the answer was revealed."
     )
     b["task"]["pick_group"] = "📋 Tasks — {subject}\nPick a block:"
     b["task"]["item"] = "📋 Task {idx}/{total}"
     b["task"]["item_header"] = "📋 {header}"
     b["task"]["enter_answer"] = "✏️ Enter your answer:"
     b["task"]["wrong_retry"] = "❌ Wrong. Try again (attempts left: {remaining})."
+    b["task"]["hint_only"] = "💡 Hint:\n{hint}\n\nTry again."
     b["task"]["hint_block"] = "💡 Hint:\n{hint}\n\nCorrect answer: {answer}\nCoins for this task: 0 🪙"
     b["task"]["solution"] = "💡 Correct answer: {answer}\nCoins for this task: 0 🪙"
     b["task"]["solution_text_block"] = (

@@ -36,7 +36,7 @@ For subjects where the problem is fully described in text (e.g. math Bernoulli t
 
 - `text_only: true` — `task-NN.png` is optional; the bot sends the problem as a text message.
 - `solution_text` — shown instead of `task-NN-solution.png` when the user exhausts attempts.
-- `hint` (optional) — on the 3rd wrong attempt the bot sends `task.hint_block` before the full solution (official math etalon tasks: `scripts/apply_math_task_hints.py`).
+- `hint` (optional) — on the 1st wrong attempt the bot sends `task.hint_only` (without the answer); on the 2nd wrong attempt — full answer / `solution_text`.
 - Answers are checked with `task_answer_match.task_answer_matches` (fractions, comma/dot decimals, normalized text).
 
 `plan_service.build_content_catalog` includes text-only tasks without a PNG (same rule as `load_tasks` in `bot.py`).

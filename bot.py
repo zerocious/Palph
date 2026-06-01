@@ -4019,9 +4019,9 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
 # ============================================================
 # Photo-task flow (#14)
 # ============================================================
-# Награды: +3 / +2 / +1 / 0 монет в зависимости от попытки (0 = открыли решение).
-TASK_REWARDS_BY_ATTEMPT = [3, 2, 1]
-MAX_TASK_ATTEMPTS = 3
+# Награды: +3 / +2 / 0 монет (0 = открыли ответ после 2-й ошибки).
+TASK_REWARDS_BY_ATTEMPT = [3, 2]
+MAX_TASK_ATTEMPTS = 2
 
 
 async def _show_task_group_picker(
@@ -4368,6 +4368,10 @@ async def handle_task_answer(message: Message, state: FSMContext):
         return
 
     new_attempts = attempts + 1
+    subject_id = data.get("task_subject_id", "")
+    correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
+    hint = (task.get("hint") or "").strip()
+
     if new_attempts < MAX_TASK_ATTEMPTS:
         remaining = MAX_TASK_ATTEMPTS - new_attempts
         await state.update_data(task_attempts=new_attempts)
@@ -4375,54 +4379,15 @@ async def handle_task_answer(message: Message, state: FSMContext):
             "task.answered user_id=%s task_id=%s attempts=%s result=wrong remaining=%s",
             user_id, task["id"], new_attempts, remaining,
         )
-        await message.answer(
-            t("task.wrong_retry", locale, remaining=remaining),
-        )
+        if new_attempts == 1 and hint:
+            await message.answer(t("task.hint_only", locale, hint=hint))
+        else:
+            await message.answer(
+                t("task.wrong_retry", locale, remaining=remaining),
+            )
         return
 
-    # 3-я неверная — открываем решение
-    subject_id = data.get("task_subject_id", "")
-    correct_answer = task["accepted"][0] if task.get("accepted") else "(нет данных)"
-    if task.get("kind") == "user":
-        hint = (task.get("hint") or "").strip()
-        solution_text = (
-            t("task.hint_block", locale, hint=hint, answer=correct_answer)
-            if hint
-            else (
-                f"💡 Правильный ответ: {correct_answer}\n"
-                f"Монеты за эту задачу: 0 🪙"
-            )
-        )
-        await task_repo.record_attempt(
-            user_id, task["id"], attempts_used=new_attempts, succeeded=False
-        )
-        await event_repo.log(user_id, "task_attempted", {
-            "subject_id": subject_id,
-            "task_id": task["id"],
-            "attempts_used": new_attempts,
-            "succeeded": False,
-            "coins": 0,
-        })
-        logger.info(
-            "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
-            user_id, task["id"], new_attempts,
-        )
-        await message.answer(solution_text)
-        await state.update_data(task_index=idx + 1, task_attempts=0)
-        await asyncio.sleep(1.0)
-        if PLAN_UI_ENABLED and data.get("plan_single"):
-            await return_to_plan_without_complete(
-                message.chat.id,
-                user_id,
-                state,
-                locale,
-                message=t("plan.item_wrong", locale),
-            )
-            return
-        await _send_next_task(message.chat.id, state)
-        return
-
-    # Per-task tracking: задача НЕ решена (3 неверных, показали решение)
+    # 2-я неверная — открываем ответ / решение
     await task_repo.record_attempt(
         user_id, task["id"], attempts_used=new_attempts, succeeded=False
     )
@@ -4437,18 +4402,9 @@ async def handle_task_answer(message: Message, state: FSMContext):
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
     )
-    hint = (task.get("hint") or "").strip()
-    if hint:
-        await message.answer(
-            t("task.hint_block", locale, hint=hint, answer=correct_answer),
-        )
-        await asyncio.sleep(0.5)
-    elif not _official_task_has_solution(subject_id, task):
-        await message.answer(
-            f"💡 Правильный ответ: {correct_answer}\n"
-            f"Монеты за эту задачу: 0 🪙"
-        )
-    if _official_task_has_solution(subject_id, task):
+    if task.get("kind") == "user" or not _official_task_has_solution(subject_id, task):
+        await message.answer(t("task.solution", locale, answer=correct_answer))
+    else:
         await _send_official_task_solution(
             message.chat.id,
             task=task,

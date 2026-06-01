@@ -146,7 +146,7 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
   - 📷 **Задачи (фото или текст)** — `task-NN.png` + JSON или `text_only` + `problem`/
     `solution_text` / опционально `hint` (см. [study_materials/README.md](study_materials/README.md)); `task_answer_match.py`;
-    3 попытки → подсказка (если есть) + решение; награды +3 / +2 / +1 / 0 🪙
+    2 попытки → после 1-й ошибки подсказка (если есть), после 2-й — ответ; награды +3 / +2 / 0 🪙
 - **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
   в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
   retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
