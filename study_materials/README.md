@@ -4,7 +4,7 @@ Palph v0.8 — data-driven discovery in `bot.py` (`available_subjects`, `availab
 
 Each subject lives in `study_materials/<subject_id>/`. The bot discovers subjects from folder names (see `SUBJECTS` in `bot.py`).
 
-**Doc sync:** 2026-05-25.
+**Doc sync:** 2026-05-23.
 
 ## Required for sprint exam plan
 
@@ -27,6 +27,7 @@ For subjects where the problem is fully described in text (e.g. math Bernoulli t
   "problem": "Full problem statement…",
   "accepted": ["8/27", "0.2963", "0,2963"],
   "solution_text": "Step-by-step solution shown after 3 wrong attempts.",
+  "hint": "Optional pedagogical hint (plain text, no LaTeX).",
   "group": "exam-task-1",
   "subtitle": "Пример 2",
   "topics": ["exam-task-1"]
@@ -35,6 +36,7 @@ For subjects where the problem is fully described in text (e.g. math Bernoulli t
 
 - `text_only: true` — `task-NN.png` is optional; the bot sends the problem as a text message.
 - `solution_text` — shown instead of `task-NN-solution.png` when the user exhausts attempts.
+- `hint` (optional) — on the 3rd wrong attempt the bot sends `task.hint_block` before the full solution (official math etalon tasks: `scripts/apply_math_task_hints.py`).
 - Answers are checked with `task_answer_match.task_answer_matches` (fractions, comma/dot decimals, normalized text).
 
 `plan_service.build_content_catalog` includes text-only tasks without a PNG (same rule as `load_tasks` in `bot.py`).
@@ -56,7 +58,7 @@ When present, the **tasks** mode shows an inline picker (group title + task coun
 
 ## Math (`study_materials/math/`)
 
-Shipped content: 15 Bernoulli-scheme tasks (PZ-6), one group `exam-task-1`, diagnostic + `topics.json`. See [math/README.md](math/README.md). Regenerate from source script: `python scripts/generate_math_bernoulli_tasks.py`.
+Shipped content: **71** text-only tasks (`task-01`…`task-72`, no `task-08`), six exam groups `exam-task-1`…`6`, diagnostic + `topics.json`; **36 tasks** with `hint` from etalon source. See [math/README.md](math/README.md). Regenerate: `generate_math_bernoulli_tasks.py`, `generate_math_etalon_top3_tasks.py`, `apply_math_task_hints.py`.
 
 ## Accounting (`study_materials/accounting/`)
 

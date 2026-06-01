@@ -50,7 +50,7 @@
 
 **Решение**: **defer** (post-v0.8). #14 (photo tasks) shipped; ждём engagement по математике в `events`. Если низкий — вернуться к идее.
 
-**Update 2026-05-23**: baseline math content — 15 text-only Bernoulli tasks in `study_materials/math/` (группа `exam-task-1`, diagnostic).
+**Update 2026-05-23**: math content — 71 text-only tasks, 6 exam groups, diagnostic; **36 etalon tasks** with pedagogical `hint` (`scripts/apply_math_task_hints.py`, source `top3_tasks_etalon_1.md`).
 
 ---
 

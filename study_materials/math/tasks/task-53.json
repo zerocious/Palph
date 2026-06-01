@@ -9,5 +9,6 @@
   "accepted": [
     "61"
   ],
-  "solution_text": "D(2X+3Y)=4·D(X)+9·D(Y)=4·4+9·5=61."
+  "solution_text": "D(2X+3Y)=4·D(X)+9·D(Y)=4·4+9·5=61.",
+  "hint": "D(2X+3Y)=4D(X)+9D(Y)=4·4+9·5."
 }

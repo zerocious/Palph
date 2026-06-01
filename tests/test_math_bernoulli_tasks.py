@@ -49,6 +49,19 @@ def test_load_tasks_text_only_without_png(math_materials, monkeypatch):
     assert len(tasks) == 1
     assert tasks[0]["text_only"] is True
     assert tasks[0]["solution_text"] == "Because."
+    assert tasks[0]["hint"] == ""
+
+
+def test_load_tasks_includes_hint_field(math_materials, monkeypatch):
+    monkeypatch.setattr("bot.STUDY_MATERIALS_PATH", math_materials)
+    tasks_dir = math_materials / "math" / "tasks"
+    with open(tasks_dir / "task-01.json", encoding="utf-8") as f:
+        data = json.load(f)
+    data["hint"] = "Think about n and p."
+    with open(tasks_dir / "task-01.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tasks = load_tasks("math")
+    assert tasks[0]["hint"] == "Think about n and p."
 
 
 def test_load_tasks_filter_by_group(math_materials, monkeypatch):
@@ -94,6 +107,7 @@ def test_math_official_content_smoke():
     assert all(t.get("text_only") for t in all_tasks)
     assert all(t.get("accepted") for t in all_tasks)
     assert all(t.get("solution_text") for t in all_tasks)
+    assert all("hint" in t for t in all_tasks)
     groups = load_task_groups("math")
     assert len(groups) == 6
     assert "exam-task-2" in groups
@@ -103,3 +117,45 @@ def test_math_official_content_smoke():
     assert catalog_has_minimum(catalog, 10)
     diag = load_diagnostic("math")
     assert len(diag) >= 5
+
+
+ETALON_HINT_TASK_IDS = {
+    *(f"task-{n:02d}" for n in range(42, 73)),
+    "task-16",
+    "task-17",
+    "task-18",
+    "task-20",
+    "task-25",
+}
+
+
+def test_etalon_tasks_have_hints():
+    root = Path(__file__).resolve().parent.parent / "study_materials" / "math" / "tasks"
+    if not root.is_dir():
+        pytest.skip("math materials not generated")
+    missing = []
+    for task_id in sorted(ETALON_HINT_TASK_IDS):
+        path = root / f"{task_id}.json"
+        if not path.is_file():
+            missing.append(f"{task_id} (file missing)")
+            continue
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        hint = (data.get("hint") or "").strip()
+        if not hint:
+            missing.append(task_id)
+        else:
+            assert "$" not in hint
+            assert "\\dfrac" not in hint
+    assert not missing, f"etalon tasks without hints: {missing}"
+
+
+def test_apply_math_task_hints_script():
+    from scripts.apply_math_task_hints import apply_hints, latex_to_plain
+
+    assert "√" in latex_to_plain(r"$\sqrt{D(X)/n}$")
+    assert "0,2" in latex_to_plain(r"$p{=}0{,}2$")
+    md = Path(__file__).resolve().parent.parent / "study_materials" / "math" / "source" / "top3_tasks_etalon_1.md"
+    if not md.is_file():
+        pytest.skip("top3_tasks_etalon_1.md not present")
+    apply_hints(md, dry_run=True)

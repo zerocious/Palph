@@ -1227,6 +1227,7 @@ def load_tasks(subject_id: str, group_id: str | None = None) -> list[dict]:
       - 'solution_text': str — текстовое решение
       - 'group': str — id группы (exam-task-1)
       - 'subtitle': str — подпись в UI (Пример 2, Вариант 1 · №1)
+      - 'hint': str — педагогическая подсказка (показывается после 3-й ошибки)
     Задачи без PNG пропускаются, если не text_only и problem пустой.
     """
     tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
@@ -1268,6 +1269,7 @@ def load_tasks(subject_id: str, group_id: str | None = None) -> list[dict]:
             "group": task_group,
             "subtitle": str(data.get("subtitle") or ""),
             "topics": [str(t) for t in raw_topics],
+            "hint": str(data.get("hint") or ""),
             "kind": "official",
         })
     return tasks
@@ -4384,9 +4386,7 @@ async def handle_task_answer(message: Message, state: FSMContext):
     if task.get("kind") == "user":
         hint = (task.get("hint") or "").strip()
         solution_text = (
-            f"💡 Подсказка:\n{hint}\n\n"
-            f"Правильный ответ: {correct_answer}\n"
-            f"Монеты за эту задачу: 0 🪙"
+            t("task.hint_block", locale, hint=hint, answer=correct_answer)
             if hint
             else (
                 f"💡 Правильный ответ: {correct_answer}\n"
@@ -4437,14 +4437,26 @@ async def handle_task_answer(message: Message, state: FSMContext):
         "task.answered user_id=%s task_id=%s attempts=%s result=show_solution coins=0",
         user_id, task["id"], new_attempts,
     )
-    await _send_official_task_solution(
-        message.chat.id,
-        task=task,
-        subject_id=subject_id,
-        locale=locale,
-        correct_answer=correct_answer,
-        after_failure=True,
-    )
+    hint = (task.get("hint") or "").strip()
+    if hint:
+        await message.answer(
+            t("task.hint_block", locale, hint=hint, answer=correct_answer),
+        )
+        await asyncio.sleep(0.5)
+    elif not _official_task_has_solution(subject_id, task):
+        await message.answer(
+            f"💡 Правильный ответ: {correct_answer}\n"
+            f"Монеты за эту задачу: 0 🪙"
+        )
+    if _official_task_has_solution(subject_id, task):
+        await _send_official_task_solution(
+            message.chat.id,
+            task=task,
+            subject_id=subject_id,
+            locale=locale,
+            correct_answer=correct_answer,
+            after_failure=True,
+        )
     await state.update_data(task_index=idx + 1, task_attempts=0)
     await asyncio.sleep(1.0)
     if PLAN_UI_ENABLED and data.get("plan_single"):

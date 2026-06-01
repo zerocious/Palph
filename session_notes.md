@@ -4,6 +4,27 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-05-23 (math: pedagogical hints)
+
+Goal: импорт подсказок из `top3_tasks_etalon_1.md` в математические задачи и показ в боте после 3-й ошибки.
+
+**Итог:** 36 задач с полем `"hint"`; `load_tasks()` отдаёт `hint`; на 3-й неудачной попытке — `task.hint_block`, затем полное решение.
+
+### Changes
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | Content | `hint` в `task-16`…`18`, `20`, `25`, `task-42`…`72`; source `study_materials/math/source/top3_tasks_etalon_1.md` |
+| 2 | Script | `scripts/apply_math_task_hints.py` — парсинг 💡 блоков, LaTeX → plain text, матчинг по subtitle |
+| 3 | Bot | `bot.py`: `load_tasks` + official 3rd-failure flow; user tasks → `task.hint_block` |
+| 4 | Tests | `tests/test_math_bernoulli_tasks.py` — hint field, etalon coverage, script smoke |
+
+### Docs
+
+[study_materials/math/README.md](study_materials/math/README.md), [study_materials/README.md](study_materials/README.md), [README.md](README.md), [user-flows.md](user-flows.md), [BACKLOG.md](BACKLOG.md)
+
+---
+
 ## Session — 2026-05-25 (UX: меню, профиль, карточки)
 
 Goal: три улучшения навигации из обсуждения UX.

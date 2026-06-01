@@ -145,8 +145,8 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
     Официальные / Свои (`flashcard_source` в `notification_settings`)
   - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
   - 📷 **Задачи (фото или текст)** — `task-NN.png` + JSON или `text_only` + `problem`/
-    `solution_text` (см. [study_materials/README.md](study_materials/README.md)); `task_answer_match.py`;
-    3 попытки → solution; награды +3 / +2 / +1 / 0 🪙
+    `solution_text` / опционально `hint` (см. [study_materials/README.md](study_materials/README.md)); `task_answer_match.py`;
+    3 попытки → подсказка (если есть) + решение; награды +3 / +2 / +1 / 0 🪙
 - **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
   в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
   retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
@@ -164,7 +164,7 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
   10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
   «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
   предметы без контента (например english) показываются с пометкой
-  «🚧 Контент в разработке». **Математика**: 15 text-only задач (Бернулли).
+  «🚧 Контент в разработке». **Математика**: 71 text-only задача (6 групп билета), 36 с подсказками.
   Mastery считается из 4 режимов: ситуационные
   termы с `streak ≥ 3`, флэш-карты (официальные + свои) с
   `repetitions ≥ 3`, MCQ-вопросы отвеченные хотя бы раз верно,
@@ -270,7 +270,7 @@ study_materials/    # Учебные материалы — data-driven дере
     flashcards.txt                          (термин ‖ определение)
     mcq.txt                          (вопрос ‖ верный ‖ w1 ‖ w2 ‖ w3)
     tasks/task-NN.{png,json,-solution.png}  (картинка-условие + JSON метаданных)
-  math/                                     (15 text-only задач, groups.json, diagnostic)
+  math/                                     (71 text-only задач, groups.json, hints, diagnostic)
   accounting/                               (source/ для PDF; предмет не в SUBJECTS)
   english/                                  (ждёт контента)
 ```
