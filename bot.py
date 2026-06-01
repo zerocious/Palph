@@ -57,8 +57,15 @@ from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
 from user_task_txt import parse_user_tasks_txt
 from file_upload_security import (
     decode_task_upload,
+    FRIEND_QUERY_MAX_LEN,
     resolve_path_under,
+    safe_subject_dir,
     safe_task_image_filename,
+    sanitize_plain_preview,
+    SUPPORT_MESSAGE_MAX_LEN,
+    TELEGRAM_MAX_MESSAGE_LEN,
+    truncate_for_telegram_message,
+    truncate_text,
     validate_subject_id,
     validate_task_document_metadata,
 )
@@ -1052,6 +1059,9 @@ SUBJECTS: list[tuple[str, str]] = [
 # Предметы без блока прогресса в профиле — только заглушка «в разработке».
 PROFILE_COMING_SOON_SUBJECTS = ("english", "industrial-management")
 
+# Скрыты в «📖 Подготовка» (предмет → режим), контент на диске сохраняется.
+PREP_HIDDEN_SUBJECT_IDS = frozenset({"industrial-management"})
+
 # Каталог режимов учёбы. id определяет где лежит контент:
 #   situational → subject/situational/section-*.txt (multi-section)
 #   flashcards / mcq → subject/<mode>.txt (один файл)
@@ -1107,9 +1117,11 @@ async def available_modes(
 
 
 async def available_subjects(user_id: int, locale: str = "ru") -> list[tuple[str, str]]:
-    """Предметы, у которых есть хотя бы один доступный режим."""
+    """Предметы, у которых есть хотя бы один доступный режим (меню «Подготовка»)."""
     result = []
     for sid in SUBJECT_IDS:
+        if sid in PREP_HIDDEN_SUBJECT_IDS:
+            continue
         if await available_modes(sid, user_id, locale):
             result.append((sid, subject_label(sid, locale)))
     return result
@@ -1120,6 +1132,7 @@ def subjects_with_mode(mode_id: str, locale: str = "ru") -> list[tuple[str, str]
     return [
         (sid, subject_label(sid, locale))
         for sid in SUBJECT_IDS
+        if sid not in PREP_HIDDEN_SUBJECT_IDS
         if mode_id in _file_based_mode_ids(sid)
     ]
 
@@ -1151,7 +1164,13 @@ class QuizTerm:
         }
 
 def load_quiz_section(section: str, subject_id: str = "industrial-management") -> list[QuizTerm]:
-    file_path = STUDY_MATERIALS_PATH / subject_id / "situational" / f"section-{section.lower()}.txt"
+    key = section.lower()
+    if key not in QUIZ_SECTION_KEYS:
+        return []
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return []
+    file_path = base / "situational" / f"section-{key}.txt"
     if not file_path.exists():
         return []
     terms = []
@@ -1173,7 +1192,10 @@ def load_mcq(subject_id: str) -> list[dict]:
     Строки с # и пустые — игнорируются. Малформ-строки (< 5 частей) — пропускаются.
     Возвращает list of dicts: {"question", "correct", "wrongs": [w1, w2, w3]}.
     """
-    file_path = STUDY_MATERIALS_PATH / subject_id / "mcq.txt"
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return []
+    file_path = base / "mcq.txt"
     if not file_path.exists():
         return []
     questions = []
@@ -1197,7 +1219,10 @@ def load_mcq(subject_id: str) -> list[dict]:
 
 def load_task_groups(subject_id: str) -> dict[str, dict]:
     """Читает study_materials/<subject>/groups.json — метаданные групп задач."""
-    path = STUDY_MATERIALS_PATH / subject_id / "groups.json"
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return {}
+    path = base / "groups.json"
     if not path.exists():
         return {}
     try:
@@ -1230,7 +1255,10 @@ def load_tasks(subject_id: str, group_id: str | None = None) -> list[dict]:
       - 'hint': str — педагогическая подсказка (показывается после 3-й ошибки)
     Задачи без PNG пропускаются, если не text_only и problem пустой.
     """
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return []
+    tasks_dir = base / "tasks"
     if not tasks_dir.is_dir():
         return []
     tasks = []
@@ -1255,7 +1283,10 @@ def load_tasks(subject_id: str, group_id: str | None = None) -> list[dict]:
         if not isinstance(accepted, list) or not accepted:
             logger.warning(f"task.no_accepted task_id={task_id}")
             continue
-        solution_filename = data.get("solution_image", f"{task_id}-solution.png")
+        solution_filename = safe_task_image_filename(
+            str(data.get("solution_image", f"{task_id}-solution.png")),
+            task_id,
+        )
         raw_topics = data.get("topics") or []
         if isinstance(raw_topics, str):
             raw_topics = [raw_topics]
@@ -1304,7 +1335,10 @@ def load_flashcards(subject_id: str) -> list[dict]:
     Возвращает list of dicts: {"term", "definition", "hash"}.
     Хэш — 8-символьный MD5 термина (PK части в flashcard_progress).
     """
-    file_path = STUDY_MATERIALS_PATH / subject_id / "flashcards.txt"
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return []
+    file_path = base / "flashcards.txt"
     if not file_path.exists():
         return []
     cards = []
@@ -2288,6 +2322,20 @@ def _subject_label_by_id(subject_id: str, locale: str = "ru") -> str:
     return subject_label(subject_id, locale)
 
 
+async def _callback_allowlisted_subject(
+    callback: CallbackQuery, subject_id: str,
+) -> str | None:
+    """Return allowlisted subject_id or alert and None."""
+    validated = validate_subject_id(subject_id)
+    if validated is None:
+        await callback.answer(
+            t("errors.state_error", await loc(callback.from_user.id)),
+            show_alert=True,
+        )
+        return None
+    return validated
+
+
 def _build_fc_subject_picker_keyboard(user_id: int, prefix: str, locale: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for sid in SUBJECT_IDS:
@@ -2310,7 +2358,7 @@ async def _build_fc_list_text(user_id: int, subject_id: str, locale: str) -> str
         "",
     ]
     for i, card in enumerate(cards, 1):
-        lines.append(f"{i}. {card['term']}")
+        lines.append(f"{i}. {sanitize_plain_preview(card['term'])}")
     return "\n".join(lines)
 
 
@@ -2407,6 +2455,10 @@ async def _start_flashcard_create_wizard(
     subject_id: str,
     locale: str,
 ) -> None:
+    subject_id = validate_subject_id(subject_id)
+    if subject_id is None:
+        await message.answer(t("errors.state_error", locale))
+        return
     subject_label = _subject_label_by_id(subject_id, locale)
     await state.set_state(FlashcardCreateStates.waiting_for_term)
     await state.update_data(fc_subject_id=subject_id, fc_subject_label=subject_label)
@@ -2447,6 +2499,9 @@ async def handle_fc_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
+        return
     locale = await loc(user_id)
     cards = await user_flashcard_repo.list_by_subject(user_id, subject_id)
     text = await _build_fc_list_text(user_id, subject_id, locale)
@@ -2469,6 +2524,9 @@ async def handle_fc_add(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
         return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
+        return
     locale = await loc(user_id)
     await callback.answer()
     await _start_flashcard_create_wizard(callback.message, state, user_id, subject_id, locale)
@@ -2485,6 +2543,9 @@ async def handle_fc_delete(callback: CallbackQuery):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_cards", await loc(callback.from_user.id)), show_alert=True)
+        return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
         return
     deleted = await user_flashcard_repo.delete(user_id, card_id)
     if deleted:
@@ -2538,7 +2599,11 @@ async def handle_fc_definition(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    subject_id = data.get("fc_subject_id")
+    subject_id = validate_subject_id(data.get("fc_subject_id") or "")
+    if subject_id is None:
+        await message.answer(t("errors.state_error", locale))
+        await state.clear()
+        return
     term = data.get("fc_term", "")
 
     try:
@@ -2574,7 +2639,7 @@ async def handle_fc_definition(message: Message, state: FSMContext):
     kb.button(text=t("fc.start_study", locale), callback_data=f"fc_study:{user_id}:{subject_id}")
     kb.adjust(1)
     await message.answer(
-        t("fc.saved", locale, term=term, definition=definition),
+        t("fc.saved", locale, term=html_escape(term), definition=html_escape(definition)),
         parse_mode="HTML",
         reply_markup=kb.as_markup(),
     )
@@ -2590,6 +2655,9 @@ async def handle_fc_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
         return
     locale = await loc(user_id)
     subj_lbl = _subject_label_by_id(subject_id, locale)
@@ -2623,7 +2691,7 @@ async def _build_ut_list_text(user_id: int, subject_id: str, locale: str) -> str
         "",
     ]
     for i, task in enumerate(tasks, 1):
-        preview = task["problem"][:50] + ("…" if len(task["problem"]) > 50 else "")
+        preview = sanitize_plain_preview(task["problem"], max_len=50)
         lines.append(f"{i}. {preview}")
     return "\n".join(lines)
 
@@ -2635,7 +2703,7 @@ def _build_ut_list_keyboard(
     kb.button(text=t("user_tasks.import_btn", locale), callback_data=f"ut_import:{user_id}:{subject_id}")
     for task in tasks:
         db_id = int(task["id"][1:], 16)
-        preview = task["problem"][:28] + ("…" if len(task["problem"]) > 28 else "")
+        preview = sanitize_plain_preview(task["problem"], max_len=28)
         kb.button(
             text=f"🗑 {preview}",
             callback_data=f"ut_del:{user_id}:{subject_id}:{db_id}",
@@ -2677,6 +2745,9 @@ async def handle_ut_list(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
+        return
     locale = await loc(user_id)
     tasks = await user_task_repo.list_by_subject(user_id, subject_id)
     text = await _build_ut_list_text(user_id, subject_id, locale)
@@ -2698,6 +2769,9 @@ async def handle_ut_import_start(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
+        return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
         return
     await callback.answer()
     locale = await loc(user_id)
@@ -2812,6 +2886,9 @@ async def handle_ut_delete(callback: CallbackQuery):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_tasks", await loc(callback.from_user.id)), show_alert=True)
         return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
+        return
     deleted = await user_task_repo.delete(user_id, task_db_id)
     if deleted:
         await event_repo.log(
@@ -2841,6 +2918,9 @@ async def handle_ut_study(callback: CallbackQuery, state: FSMContext):
         return
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
+        return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
         return
     locale = await loc(user_id)
     subj_lbl = _subject_label_by_id(subject_id, locale)
@@ -3736,6 +3816,13 @@ async def handle_subject_picked(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
     subject_lbl = subject_label(subject_id, locale)
+    if subject_id in PREP_HIDDEN_SUBJECT_IDS:
+        await state.set_state(QuizStates.choosing_subject)
+        await message.answer(
+            f"{subject_lbl}\n{t('progress.coming_soon', locale).strip()}",
+            reply_markup=await get_subject_keyboard(user_id, locale),
+        )
+        return
     modes = await available_modes(subject_id, user_id, locale)
     if not modes:
         await message.answer(
@@ -4065,6 +4152,9 @@ async def handle_task_group_picked(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != user_id:
         await callback.answer(t("common.not_yours_session", await loc(callback.from_user.id)), show_alert=True)
         return
+    subject_id = await _callback_allowlisted_subject(callback, subject_id)
+    if subject_id is None:
+        return
     groups = load_task_groups(subject_id)
     group_meta = groups.get(group_id) or {}
     locale = await loc(user_id)
@@ -4095,6 +4185,12 @@ async def start_task_session(
     group_id: str | None = None,
     group_title: str | None = None,
 ):
+    subject_id = validate_subject_id(subject_id)
+    if subject_id is None:
+        locale = await loc(message.from_user.id)
+        await message.answer(t("errors.state_error", locale))
+        await state.set_state(QuizStates.choosing_mode)
+        return
     user_id = message.from_user.id
     locale = await loc(user_id)
     tasks = await load_tasks_for_study(user_id, subject_id, group_id=group_id)
@@ -4243,7 +4339,10 @@ async def handle_task_stop(message: Message, state: FSMContext):
 
 
 def _official_task_solution_path(subject_id: str, task: dict) -> Path | None:
-    tasks_dir = STUDY_MATERIALS_PATH / subject_id / "tasks"
+    base = safe_subject_dir(STUDY_MATERIALS_PATH, subject_id)
+    if base is None:
+        return None
+    tasks_dir = base / "tasks"
     if not tasks_dir.is_dir():
         return None
     filename = safe_task_image_filename(
@@ -4442,6 +4541,12 @@ FLASH_COINS_PER_CARD = 1  # +1🪙 за просмотр независимо о
 
 
 async def start_flashcard_session(message: Message, state: FSMContext, subject_id: str, subject_label: str):
+    subject_id = validate_subject_id(subject_id)
+    if subject_id is None:
+        locale = await loc(message.from_user.id)
+        await message.answer(t("errors.state_error", locale))
+        await state.set_state(QuizStates.choosing_mode)
+        return
     user_id = message.from_user.id
     settings = await user_repo.get_notification_settings(user_id) or {}
     source = settings.get("flashcard_source", "mix")
@@ -4518,7 +4623,7 @@ async def _send_flashcard(chat_id: int, state: FSMContext, card_hash: str):
     kb.adjust(1)
     await bot.send_message(
         chat_id,
-        f"🃏 Карточка #{reviewed + 1}\n\n<b>{card['term']}</b>",
+        f"🃏 Карточка #{reviewed + 1}\n\n<b>{html_escape(card['term'])}</b>",
         reply_markup=kb.as_markup(),
         parse_mode="HTML",
     )
@@ -4587,8 +4692,8 @@ async def handle_flashcard_show(callback: CallbackQuery, state: FSMContext):
     reviewed = data.get("flash_reviewed_count", 0)
     new_text = (
         f"🃏 Карточка #{reviewed + 1}\n\n"
-        f"<b>{card['term']}</b>\n\n"
-        f"💡 <i>{card['definition']}</i>\n\n"
+        f"<b>{html_escape(card['term'])}</b>\n\n"
+        f"💡 <i>{html_escape(card['definition'])}</i>\n\n"
         f"Как тебе далось? Оцени честно — алгоритм подберёт интервал:"
     )
     try:
@@ -5134,9 +5239,15 @@ async def cmd_reply(message: Message, command: CommandObject):
         await message.answer("❌ Использование: /reply <user_id> <сообщение>")
         return
     user_id_str, reply_text = args.split(maxsplit=1)
+    reply_text = truncate_text(reply_text.strip())
+    if not reply_text:
+        await message.answer("❌ Сообщение не может быть пустым.")
+        return
     try:
         user_id = int(user_id_str)
-        await bot.send_message(user_id, f"📨 Ответ от администратора:\n\n{reply_text}")
+        prefix = "📨 Ответ от администратора:\n\n"
+        body = truncate_for_telegram_message(prefix, reply_text)
+        await bot.send_message(user_id, f"{prefix}{body}")
         await message.answer(f"✅ Ответ отправлен пользователю {user_id}")
     except ValueError:
         await message.answer("❌ Неверный ID.")
@@ -5158,13 +5269,14 @@ async def cmd_broadcast(message: Message, command: CommandObject):
         await message.answer("❌ Нет прав.")
         return
 
-    text = (command.args or "").strip()
+    text = truncate_text((command.args or "").strip())
     if not text:
         await message.answer(
             "❌ Использование: /broadcast <сообщение>\n"
             "Сообщение получат все зарегистрированные пользователи."
         )
         return
+    truncated = len((command.args or "").strip()) > TELEGRAM_MAX_MESSAGE_LEN
 
     if _broadcast_in_progress:
         await message.answer("⚠️ Рассылка уже идёт. Дождись её завершения.")
@@ -5183,6 +5295,10 @@ async def cmd_broadcast(message: Message, command: CommandObject):
             admin_id, len(user_ids), len(text),
         )
         await message.answer(f"📣 Начинаю рассылку для {len(user_ids)} пользователей…")
+        if truncated:
+            await message.answer(
+                f"⚠️ Текст обрезан до {TELEGRAM_MAX_MESSAGE_LEN} символов (лимит Telegram)."
+            )
         delivered = 0
         failed = 0
         failed_ids: list[int] = []
@@ -6594,7 +6710,7 @@ async def _send_pet_menu(chat_id: int, user_id: int) -> None:
     emotion, image = await _compute_pet_emotion_for_user(user_id)
 
     caption = (
-        f"🐾 <b>{pet['name']}</b>\n\n"
+        f"🐾 <b>{html_escape(pet['name'])}</b>\n\n"
         f"Уровень: <b>{pet['level']}</b>\n"
         f"XP: {pet['xp']}\n"
     )
@@ -7111,7 +7227,13 @@ async def friend_add_process(message: Message, state: FSMContext):
     (с inline-кнопками Accept/Reject).
     """
     user_id = message.from_user.id
-    text_input = message.text or ""
+    text_input = (message.text or "").strip()
+    if len(text_input) > FRIEND_QUERY_MAX_LEN:
+        await message.answer(
+            f"❌ Слишком длинный ввод (максимум {FRIEND_QUERY_MAX_LEN} символов). "
+            "Введи @username или числовой Telegram ID (или /cancel)."
+        )
+        return
 
     username, target_id = parse_friend_query(text_input)
     if username is None and target_id is None:
@@ -7126,7 +7248,7 @@ async def friend_add_process(message: Message, state: FSMContext):
         target_id = await user_repo.find_user_id_by_username(username)
         if target_id is None:
             await message.answer(
-                f"❌ Пользователь <code>@{username}</code> не найден.\n"
+                f"❌ Пользователь <code>@{html_escape(username)}</code> не найден.\n"
                 f"Возможно, он ещё не открывал бота, скрыл @handle или "
                 f"имя написано с опечаткой. Попроси его прислать тебе "
                 f"свой числовой Telegram ID и попробуй снова через /friends.",
@@ -7526,6 +7648,8 @@ async def handle_any_message(message: Message):
     text = message.text or message.caption
     if not text:
         text = f"[{message.content_type}]"
+    else:
+        text = truncate_text(text, max_len=SUPPORT_MESSAGE_MAX_LEN)
     log_entry = {
         "timestamp": timestamp,
         "user_id": user_id,
@@ -7540,7 +7664,9 @@ async def handle_any_message(message: Message):
         logger.error(f"Не удалось записать сообщение пользователя в лог: {e}")
     for admin_id in ADMINS:
         try:
-            await bot.send_message(admin_id, f"📩 Новое сообщение от {user_name} (ID: {user_id}):\n{text}")
+            admin_prefix = f"📩 Новое сообщение от {user_name} (ID: {user_id}):\n"
+            admin_body = truncate_for_telegram_message(admin_prefix, text)
+            await bot.send_message(admin_id, f"{admin_prefix}{admin_body}")
         except Exception:
             pass
     await message.answer(

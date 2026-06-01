@@ -8,7 +8,10 @@ from file_upload_security import (
     decode_task_upload,
     resolve_path_under,
     safe_task_image_filename,
+    sanitize_plain_preview,
     scan_upload_bytes,
+    truncate_for_telegram_message,
+    truncate_text,
     validate_subject_id,
     validate_task_document_metadata,
     validate_zip_member,
@@ -111,3 +114,13 @@ class TestZipMemberValidation:
 
     def test_accepts_normal(self):
         assert validate_zip_member(1000, 500) is True
+
+
+class TestTextHelpers:
+    def test_truncate_for_telegram_message(self):
+        prefix = "header:\n"
+        body = truncate_for_telegram_message(prefix, "x" * 5000)
+        assert len(prefix + body) <= 4096
+
+    def test_sanitize_plain_preview(self):
+        assert "\n" not in sanitize_plain_preview("line1\nline2")

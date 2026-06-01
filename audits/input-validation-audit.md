@@ -1,7 +1,7 @@
 # Input Validation Security Audit
 
 **Project:** Palph Telegram bot (`tg bot 0.6 (settings not working)`)  
-**Audit date:** 2026-05-22 · **Doc sync:** 2026-05-25 (product v0.8, 732 pytest)  
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-06-01 (remediation in `command-input-security-audit.md`)  
 **Scope:** Python sources — `bot.py`, `db.py`, `repository.py`, `services.py`, `i18n.py`, `locale_bot.py`, `user_task_txt.py`, `fsm_storage.py`, `tasks.py`, `parse_logs.py`, `scripts/*.py`, `tests/*.py`  
 **Method:** Static review, pattern grep (`execute`, f-strings in SQL, `subprocess`, `open`, `Path`, `eval`, etc.), handler mapping, targeted pytest (`47 passed` on validation-related tests)
 
@@ -13,7 +13,7 @@ The bot is a **Telegram-only** application (aiogram 3.x + SQLite). There is **no
 
 The main gaps are **Telegram HTML/markup injection** on user-authored flashcard content, **path traversal risk** when `subject_id` from callback data is passed into filesystem loaders without allowlisting, and **incomplete field-length validation** on imported user tasks. Authorization on callback `user_id` fields is generally solid for profile/settings/flashcards/tasks.
 
-**Risk score: 4 / 10** — no confirmed RCE or SQLi; issues are mostly integrity, markup abuse, and constrained file read outside `study_materials/`.
+**Risk score: 4 / 10** — superseded for open items by [command-input-security-audit.md](command-input-security-audit.md) (2026-06-01 remediation; current **2/10**).
 
 ---
 

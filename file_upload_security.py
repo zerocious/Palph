@@ -44,6 +44,43 @@ ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 ZIP_MAX_COMPRESSION_RATIO = 20
 ZIP_MAX_MEMBER_COUNT = 500
 
+# Telegram Bot API message text limit (UTF-16 code units; safe cap for plain text).
+TELEGRAM_MAX_MESSAGE_LEN = 4096
+FRIEND_QUERY_MAX_LEN = 64
+SUPPORT_MESSAGE_MAX_LEN = TELEGRAM_MAX_MESSAGE_LEN
+LIST_PREVIEW_MAX_LEN = 80
+
+
+def truncate_text(
+    text: str,
+    max_len: int = TELEGRAM_MAX_MESSAGE_LEN,
+    suffix: str = "…",
+) -> str:
+    """Trim text to max_len, appending suffix when truncated."""
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    if len(suffix) >= max_len:
+        return text[:max_len]
+    return text[: max_len - len(suffix)] + suffix
+
+
+def sanitize_plain_preview(text: str, max_len: int = LIST_PREVIEW_MAX_LEN) -> str:
+    """Single-line preview for plain-text lists (no HTML parse mode)."""
+    collapsed = " ".join((text or "").split())
+    return truncate_text(collapsed, max_len)
+
+
+def truncate_for_telegram_message(
+    prefix: str,
+    body: str,
+    max_len: int = TELEGRAM_MAX_MESSAGE_LEN,
+) -> str:
+    """Truncate body so prefix + body fits Telegram message limit."""
+    max_body = max(0, max_len - len(prefix))
+    return truncate_text(body, max_len=max_body)
+
 
 def validate_subject_id(subject_id: str) -> str | None:
     """Return subject_id if allowlisted, else None."""
