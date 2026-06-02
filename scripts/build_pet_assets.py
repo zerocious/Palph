@@ -5,9 +5,30 @@ Generates 125 PNGs (5 emotions × 5 colors × 5 accessories) + 5 emotion GIFs
 into `assets/pet/`. Run once at build time; the bot reads these files at
 runtime via `services.render_pet`.
 
-Output filenames match what `render_pet` expects:
+Output filenames match what `render_pet` expects.
+
+Legacy (flat, no time of day):
     assets/pet/<emotion>_<color>_<accessory>.png
     assets/pet/<emotion>.gif
+
+Time-of-day variants (subdir per period; same basename inside each):
+    assets/pet/morning/<emotion>_<color>_<accessory>.png
+    assets/pet/day/...
+    assets/pet/evening/...
+    assets/pet/night/...
+    assets/pet/<period>/<emotion>.gif
+
+Single-image mode (`PET_SINGLE_IMAGE_MODE`): place artist PNGs at
+    assets/pet/default.png
+    assets/pet/morning/default.png   (optional per period)
+    assets/pet/day/default.png
+    ...
+
+Period buckets (local user TZ, see services.get_pet_time_period):
+    morning  06:00–11:59
+    day      12:00–16:59
+    evening  17:00–21:59
+    night    22:00–05:59
 
 This is placeholder art (programmer-art): colored circle body + emotion
 emoji + small accessory shape. The Bot is fully functional with these
@@ -45,6 +66,8 @@ from PIL import Image, ImageDraw, ImageFont
 # render_pet looks for.
 # ────────────────────────────────────────────────────────────────
 EMOTIONS = ("happy", "sad", "excited", "sleepy", "studying")
+# Must match file_upload_security.PET_TIME_PERIODS / services.get_pet_time_period
+TIME_PERIODS = ("morning", "day", "evening", "night")
 
 # Hex → RGB tuple for Pillow
 COLOR_RGB = {
@@ -188,11 +211,7 @@ def _compose_pet_gif(emotion: str) -> list:
 # ────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────
-def main() -> int:
-    repo_root = Path(__file__).resolve().parent.parent
-    out_dir = repo_root / "assets" / "pet"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+def _write_png_set(out_dir: Path) -> int:
     png_count = 0
     for emotion in EMOTIONS:
         for color in COLOR_RGB.keys():
@@ -201,11 +220,13 @@ def main() -> int:
                 fname = f"{emotion}_{color}_{accessory}.png"
                 img.save(out_dir / fname)
                 png_count += 1
+    return png_count
 
+
+def _write_gif_set(out_dir: Path) -> int:
     gif_count = 0
     for emotion in EMOTIONS:
         frames = _compose_pet_gif(emotion)
-        # GIF doesn't support full alpha; export with white-ish background
         flat_frames = []
         for f in frames:
             bg = Image.new("RGBA", f.size, (255, 255, 255, 255))
@@ -220,8 +241,35 @@ def main() -> int:
             disposal=2,
         )
         gif_count += 1
+    return gif_count
 
-    print(f"wrote {png_count} PNGs and {gif_count} GIFs to {out_dir}")
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate placeholder pet assets.")
+    parser.add_argument(
+        "--with-periods",
+        action="store_true",
+        help="Also write the same 125 PNG + 5 GIF into assets/pet/{morning,day,evening,night}/",
+    )
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parent.parent
+    out_dir = repo_root / "assets" / "pet"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    png_count = _write_png_set(out_dir)
+    gif_count = _write_gif_set(out_dir)
+
+    if args.with_periods:
+        for period in TIME_PERIODS:
+            period_dir = out_dir / period
+            period_dir.mkdir(parents=True, exist_ok=True)
+            png_count += _write_png_set(period_dir)
+            gif_count += _write_gif_set(period_dir)
+
+    print(f"wrote {png_count} PNGs and {gif_count} GIFs under {out_dir}")
     return 0
 
 

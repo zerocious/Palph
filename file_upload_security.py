@@ -38,6 +38,7 @@ TASK_IMAGE_RE = re.compile(r"^[\w.-]+\.png$", re.IGNORECASE)
 PET_EMOTIONS = frozenset({"happy", "sad", "excited", "sleepy", "studying"})
 PET_COLORS = frozenset({"orange", "grey", "blue", "green", "pink"})
 PET_ACCESSORIES = frozenset({"none", "hat", "glasses", "scarf", "crown"})
+PET_TIME_PERIODS = frozenset({"morning", "day", "evening", "night"})
 
 # --- ZIP (future inbound archives) ---
 ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
@@ -177,6 +178,13 @@ def sanitize_pet_asset_keys(
     if accessory not in PET_ACCESSORIES:
         accessory = "none"
     return emotion, color, accessory
+
+
+def sanitize_pet_time_period(period: str | None) -> str | None:
+    """Return period if allowlisted, else None (skip period-specific lookup)."""
+    if period in PET_TIME_PERIODS:
+        return period
+    return None
 
 
 def validate_zip_member(

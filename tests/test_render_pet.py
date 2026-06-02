@@ -3,12 +3,16 @@
 
 Покрывает:
 - PET_SINGLE_IMAGE_MODE → всегда default.png
+- Time-of-day subdirs → period default, then root default
 - Existing combination → корректный path (legacy multi-asset mode)
 - Missing combination → fallback на <emotion>_orange_none.png
 - Animated=True → .gif path (legacy) или default.png (single-image)
 - Все assets отсутствуют → FileNotFoundError
 - user_pet=None → дефолтные orange/none
 """
+from datetime import datetime
+from pathlib import Path
+
 import pytest
 
 import services
@@ -116,6 +120,72 @@ class TestRenderPetAnimated:
                           "excited", animated=True)
         # Не excited_pink_crown.gif, а просто excited.gif
         assert path.name == "excited.gif"
+
+
+class TestRenderPetTimePeriod:
+    def test_period_subdir_png_before_flat_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", tmp_path / "default.png")
+
+        evening_dir = tmp_path / "evening"
+        evening_dir.mkdir()
+        target = evening_dir / "happy_blue_hat.png"
+        target.write_bytes(b"png")
+
+        path = render_pet(
+            {"color": "blue", "accessory": "hat"},
+            "happy",
+            now_local=datetime(2026, 6, 2, 19, 0),
+        )
+        assert path == target
+
+    def test_period_default_png_in_single_image_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", True)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        root_default = tmp_path / "default.png"
+        root_default.write_bytes(b"root")
+        period_default = tmp_path / "morning" / "default.png"
+        period_default.parent.mkdir()
+        period_default.write_bytes(b"morning")
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", root_default)
+
+        path = render_pet(
+            None, "happy",
+            now_local=datetime(2026, 6, 2, 8, 0),
+        )
+        assert path == period_default
+
+    def test_missing_period_asset_falls_back_to_root_default(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", True)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        root_default = tmp_path / "default.png"
+        root_default.write_bytes(b"root")
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", root_default)
+
+        path = render_pet(
+            None, "happy",
+            now_local=datetime(2026, 6, 2, 14, 0),
+        )
+        assert path == root_default
+
+    def test_explicit_time_period_overrides_now_local(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", tmp_path / "default.png")
+
+        night_dir = tmp_path / "night"
+        night_dir.mkdir()
+        night_png = night_dir / "sad_orange_none.png"
+        night_png.write_bytes(b"png")
+
+        # 14:00 would be "day", but explicit period wins
+        path = render_pet(
+            None, "sad",
+            now_local=datetime(2026, 6, 2, 14, 0),
+            time_period="night",
+        )
+        assert path == night_png
 
 
 class TestRenderPetMissingAssets:

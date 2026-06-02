@@ -17,7 +17,7 @@ from aiogram.exceptions import (
 
 from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
 from i18n import t, DEFAULT_LOCALE, SUPPORTED_LOCALES
-from file_upload_security import sanitize_pet_asset_keys
+from file_upload_security import sanitize_pet_asset_keys, sanitize_pet_time_period
 
 logger = logging.getLogger("studybuddy_bot")
 
@@ -440,6 +440,22 @@ def derive_emotion(
 
 
 # ------------------------------------------------------------
+# get_pet_time_period — сутки питомца (4 варианта арта).
+# Использует локальный час пользователя (users.timezone / caller now_local).
+# Границы под русский UX: утро 06–12, день 12–17, вечер 17–22, ночь 22–06.
+# ------------------------------------------------------------
+def get_pet_time_period(now_local: datetime) -> str:
+    hour = now_local.hour
+    if 6 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "day"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
+
+
+# ------------------------------------------------------------
 # render_pet — путь к asset-файлу питомца.
 # Pure-функция, не делает I/O помимо `Path.exists()`. Caller
 # заворачивает результат в `FSInputFile` или подобный wrapper
@@ -450,15 +466,43 @@ def derive_emotion(
 # в production runtime — только чтение готовых PNG/GIF.
 #
 # Fallback chain (если запрошенной комбинации нет):
-#   1. <emotion>_<color>_<accessory>.png — основной путь
-#   2. <emotion>_orange_none.png — дефолтная комбинация
-#   3. <emotion>_happy_none.png ИЛИ генерим первый существующий
-#   4. raise FileNotFoundError — caller может graceful'но
-#      деградировать до text-only message
+#   With time_period (subdir assets/pet/<period>/):
+#   1. <period>/<emotion>_<color>_<accessory>.png
+#   2. <period>/<emotion>_orange_none.png
+#   3. <period>/default.png
+#   Then legacy flat assets/pet/:
+#   4. <emotion>_<color>_<accessory>.png
+#   5. <emotion>_orange_none.png
+#   6. happy_orange_none.png
+#   7. default.png
+#   8. raise FileNotFoundError
 # ------------------------------------------------------------
 _ASSETS_PET_DIR = Path(__file__).resolve().parent / "assets" / "pet"
 PET_SINGLE_IMAGE_MODE = True
 _PET_DEFAULT_IMAGE = _ASSETS_PET_DIR / "default.png"
+
+
+def _pet_period_dir(time_period: str) -> Path:
+    return _ASSETS_PET_DIR / time_period
+
+
+def _first_existing_path(candidates: list[Path]) -> Path | None:
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _resolve_pet_time_period(
+    *,
+    now_local: datetime | None,
+    time_period: str | None,
+) -> str | None:
+    if time_period is not None:
+        return sanitize_pet_time_period(time_period)
+    if now_local is not None:
+        return get_pet_time_period(now_local)
+    return None
 
 
 def render_pet(
@@ -466,6 +510,8 @@ def render_pet(
     emotion: str,
     *,
     animated: bool = False,
+    now_local: datetime | None = None,
+    time_period: str | None = None,
 ) -> Path:
     """
     Returns Path к asset-файлу питомца. Pure: только path-resolution.
@@ -473,17 +519,27 @@ def render_pet(
     `user_pet=None` трактуется как дефолт (orange + none) — для пользователей
     без созданного pet'a (добавляется auto в add_xp; до первой сессии row нет).
 
-    `animated=True` → `<emotion>.gif` (один общий per emotion, без цвета/аксессуара,
-    т.к. GIF используется в level-up/sad-reminder для драматического beat'а,
-    конкретный цвет там не критичен). При `PET_SINGLE_IMAGE_MODE=True`
-    всегда возвращается `assets/pet/default.png` (в т.ч. для animated).
+    `now_local` / `time_period` — суточный вариант арта (morning/day/evening/night).
+    Если передан только `now_local`, период вычисляется через `get_pet_time_period`.
+    Отсутствующие period-файлы откатываются на legacy flat assets и default.png.
+
+    `animated=True` → `<period>/<emotion>.gif` или `<emotion>.gif` (без цвета/аксессуара).
+    При `PET_SINGLE_IMAGE_MODE=True` сначала ищется `<period>/default.png`, затем
+    `assets/pet/default.png`.
 
     Возвращает Path. Существование файла проверяется внутри (fallback);
     raise FileNotFoundError если даже fallback'и отсутствуют (assets
     директория не была сгенерирована).
     """
-    if PET_SINGLE_IMAGE_MODE and _PET_DEFAULT_IMAGE.exists():
-        return _PET_DEFAULT_IMAGE
+    period = _resolve_pet_time_period(now_local=now_local, time_period=time_period)
+
+    if PET_SINGLE_IMAGE_MODE:
+        if period:
+            period_default = _pet_period_dir(period) / "default.png"
+            if period_default.exists():
+                return period_default
+        if _PET_DEFAULT_IMAGE.exists():
+            return _PET_DEFAULT_IMAGE
 
     emotion, color, accessory = sanitize_pet_asset_keys(
         emotion,
@@ -492,35 +548,43 @@ def render_pet(
     )
 
     if animated:
-        path = _ASSETS_PET_DIR / f"{emotion}.gif"
-        if path.exists():
-            return path
-        # Animated fallback: happy.gif как универсальный нейтрал
-        path = _ASSETS_PET_DIR / "happy.gif"
-        if path.exists():
-            return path
+        gif_candidates: list[Path] = []
+        if period:
+            gif_candidates.append(_pet_period_dir(period) / f"{emotion}.gif")
+        gif_candidates.extend([
+            _ASSETS_PET_DIR / f"{emotion}.gif",
+            _ASSETS_PET_DIR / "happy.gif",
+        ])
+        found = _first_existing_path(gif_candidates)
+        if found:
+            return found
         raise FileNotFoundError(
-            f"No animated assets for emotion={emotion!r}. "
+            f"No animated assets for emotion={emotion!r} period={period!r}. "
             f"Run `python scripts/build_pet_assets.py` to generate them."
         )
 
-    primary = _ASSETS_PET_DIR / f"{emotion}_{color}_{accessory}.png"
-    if primary.exists():
-        return primary
-
-    # Fallback 1: дефолтная комбинация для этой эмоции
-    fallback_default = _ASSETS_PET_DIR / f"{emotion}_orange_none.png"
-    if fallback_default.exists():
-        return fallback_default
-
-    # Fallback 2: happy_orange_none — самая безопасная картинка
-    fallback_happy = _ASSETS_PET_DIR / "happy_orange_none.png"
-    if fallback_happy.exists():
-        return fallback_happy
+    png_candidates: list[Path] = []
+    if period:
+        period_dir = _pet_period_dir(period)
+        png_candidates.extend([
+            period_dir / f"{emotion}_{color}_{accessory}.png",
+            period_dir / f"{emotion}_orange_none.png",
+            period_dir / "default.png",
+        ])
+    png_candidates.extend([
+        _ASSETS_PET_DIR / f"{emotion}_{color}_{accessory}.png",
+        _ASSETS_PET_DIR / f"{emotion}_orange_none.png",
+        _ASSETS_PET_DIR / "happy_orange_none.png",
+        _PET_DEFAULT_IMAGE,
+    ])
+    found = _first_existing_path(png_candidates)
+    if found:
+        return found
 
     raise FileNotFoundError(
         f"No pet assets found for emotion={emotion!r} color={color!r} "
-        f"accessory={accessory!r}. Run `python scripts/build_pet_assets.py`."
+        f"accessory={accessory!r} period={period!r}. "
+        f"Run `python scripts/build_pet_assets.py` or add assets under assets/pet/."
     )
 
 
@@ -890,7 +954,9 @@ class ReminderService:
                     # graceful fallback на text-only sad-pet копи.
                     try:
                         from aiogram.types import FSInputFile
-                        asset_path = render_pet(None, "sad", animated=True)
+                        asset_path = render_pet(
+                            None, "sad", animated=True, now_local=now_local,
+                        )
                         media = FSInputFile(str(asset_path))
                         if asset_path.suffix.lower() == ".png":
                             await send_with_telegram_bulkhead(

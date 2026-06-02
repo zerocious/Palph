@@ -181,7 +181,12 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
   на покупку, **переименование** через FSM. Pillow build-script
   (`scripts/build_pet_assets.py`) генерирует 125 PNG + 5 GIF placeholder
   ассетов (programmer-art) — **real artwork** как отдельный track (замена
-  файлов в `assets/pet/`). **Sad-pet в вечернем напоминании** — shipped:
+  файлов в `assets/pet/`). **Четыре суточных варианта** (утро/день/вечер/ночь
+  по локальному TZ пользователя): кладите арт в `assets/pet/<period>/` с теми
+  же именами (`happy_orange_none.png`, `default.png`, `sad.gif` и т.д.);
+  см. `services.get_pet_time_period` и docstring `render_pet`. Опционально
+  `python scripts/build_pet_assets.py --with-periods` для placeholder-копий.
+  **Sad-pet в вечернем напоминании** — shipped:
   `derive_emotion` → `sad` + `send_animation(sad.gif)` с fallback на текст.
 - **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
   `(time + math_task + quiz + card) × streak_multiplier`, daily caps,

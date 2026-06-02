@@ -6668,7 +6668,7 @@ async def _compute_pet_emotion_for_user(user_id: int) -> tuple:
         now_local=now_local,
     )
     try:
-        path = render_pet(pet, emotion)
+        path = render_pet(pet, emotion, now_local=now_local)
         return emotion, FSInputFile(str(path))
     except FileNotFoundError:
         return emotion, None
