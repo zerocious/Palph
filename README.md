@@ -170,8 +170,8 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
   `repetitions ≥ 3`, MCQ-вопросы отвеченные хотя бы раз верно,
   решённые задачи.
 - **Цифровой питомец** — data-layer ([PR #2 merged](https://github.com/zerocious/Palph/pull/2))
-  + art/UI track в PR #3: один дизайн, **5 derived эмоций**
-  (`studying / excited / sad / sleepy / happy` — выводятся в момент
+  + art/UI track в PR #3: один дизайн, **3 derived эмоции**
+  (`neutral / joy / sad` — выводятся в момент
   рендера), 1 XP/мин, `level = floor(sqrt(xp/10)) + 1`,
   `user_pet_inventory` под кастомизацию, атомарная покупка под `db.lock`,
   **level-up notification** со списком новых разблокированных предметов,
@@ -179,11 +179,11 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
   **4-state customization picker** (⭐ надето / ✓ куплено / 💰 N доступно /
   🔒 lv.N заблокировано) для 5 цветов и 5 аксессуаров с confirm-диалогом
   на покупку, **переименование** через FSM. Pillow build-script
-  (`scripts/build_pet_assets.py`) генерирует 125 PNG + 5 GIF placeholder
+  (`scripts/build_pet_assets.py`) генерирует 75 PNG + 3 GIF placeholder
   ассетов (programmer-art) — **real artwork** как отдельный track (замена
   файлов в `assets/pet/`). **Четыре суточных варианта** (утро/день/вечер/ночь
   по локальному TZ пользователя): кладите арт в `assets/pet/<period>/` с теми
-  же именами (`happy_orange_none.png`, `default.png`, `sad.gif` и т.д.);
+  же именами (`neutral_orange_none.png`, `default.png`, `sad.gif` и т.д.);
   см. `services.get_pet_time_period` и docstring `render_pet`. Опционально
   `python scripts/build_pet_assets.py --with-periods` для placeholder-копий.
   **Sad-pet в вечернем напоминании** — shipped:
@@ -377,7 +377,7 @@ pytest tests/test_streak_service.py -v
 | Файл | Тестов | Что покрывает |
 |------|--------|--------------|
 | `test_pet_repository.py` | 32 | create/get/inventory + xp formula (parametrized) + atomic purchase under db.lock + insufficient coins/level/already-owned/unknown-item + equip ownership / rename / mark_excited |
-| `test_derive_emotion.py` | 15 | 5 priority branches + 10 hour-boundary cases (sleepy `[22:00, 06:00)`) |
+| `test_derive_emotion.py` | 15 | 3-emotion priority branches + 10 hour cases (all neutral when studied) |
 
 **Leaderboard + friends + invite-links (205, PR #3 in flight):**
 

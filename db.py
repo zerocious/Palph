@@ -240,7 +240,7 @@ async def init_db(db: aiosqlite.Connection):
 
         -- Цифровой питомец пользователя (v0.7 TODO #16).
         -- Один питомец на user, один общий дизайн — поэтому species не хранится.
-        -- Эмоция (studying/excited/sad/sleepy/happy) выводится из состояния
+        -- Эмоция (neutral/joy/sad) выводится из состояния
         -- пользователя в момент рендера через services.derive_emotion() —
         -- здесь её НЕ храним.
         -- color/accessory всегда NOT NULL; sentinel-значение "none" для аксессуара

@@ -20,18 +20,16 @@ from services import PET_SINGLE_IMAGE_MODE, render_pet
 
 
 # Тесты предполагают, что `scripts/build_pet_assets.py` запущен
-# и сгенерировал 125 PNG + 5 GIF. Если нет — большинство тестов упадут
+# и сгенерировал 75 PNG + 3 GIF. Если нет — большинство тестов упадут
 # с FileNotFoundError; в этом случае запусти:
 #   python scripts/build_pet_assets.py
 
 
 class TestRenderPetSingleImageMode:
     @pytest.mark.parametrize("emotion,color,accessory", [
-        ("happy", "orange", "none"),
+        ("neutral", "orange", "none"),
         ("sad", "blue", "hat"),
-        ("excited", "pink", "crown"),
-        ("sleepy", "grey", "glasses"),
-        ("studying", "green", "scarf"),
+        ("joy", "pink", "crown"),
     ])
     def test_always_returns_default_png(self, emotion, color, accessory):
         if not PET_SINGLE_IMAGE_MODE:
@@ -41,9 +39,7 @@ class TestRenderPetSingleImageMode:
         assert path.exists()
         assert path.name == "default.png"
 
-    @pytest.mark.parametrize("emotion", [
-        "happy", "sad", "excited", "sleepy", "studying",
-    ])
+    @pytest.mark.parametrize("emotion", ["neutral", "joy", "sad"])
     def test_animated_also_returns_default_png(self, emotion):
         if not PET_SINGLE_IMAGE_MODE:
             pytest.skip("PET_SINGLE_IMAGE_MODE is off")
@@ -55,18 +51,16 @@ class TestRenderPetSingleImageMode:
     def test_user_pet_none_uses_default(self):
         if not PET_SINGLE_IMAGE_MODE:
             pytest.skip("PET_SINGLE_IMAGE_MODE is off")
-        path = render_pet(None, "happy")
+        path = render_pet(None, "neutral")
         assert path.exists()
         assert path.name == "default.png"
 
 
 class TestRenderPetExistingCombinations:
     @pytest.mark.parametrize("emotion,color,accessory", [
-        ("happy", "orange", "none"),
+        ("neutral", "orange", "none"),
         ("sad", "blue", "hat"),
-        ("excited", "pink", "crown"),
-        ("sleepy", "grey", "glasses"),
-        ("studying", "green", "scarf"),
+        ("joy", "pink", "crown"),
     ])
     def test_resolves_to_existing_png(self, emotion, color, accessory, monkeypatch):
         if PET_SINGLE_IMAGE_MODE:
@@ -84,24 +78,21 @@ class TestRenderPetFallback:
         if PET_SINGLE_IMAGE_MODE:
             monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
         pet = {"color": "rainbow", "accessory": "topHat"}  # не в каталогах
-        path = render_pet(pet, "happy")
-        # Не должно бросить — должен быть happy_orange_none.png
+        path = render_pet(pet, "neutral")
         assert path.exists()
-        assert path.name == "happy_orange_none.png"
+        assert path.name == "neutral_orange_none.png"
 
     def test_user_pet_none_uses_default(self, monkeypatch):
         """Питомец ещё не создан (None) → дефолтные orange + none."""
         if PET_SINGLE_IMAGE_MODE:
             monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
-        path = render_pet(None, "happy")
+        path = render_pet(None, "neutral")
         assert path.exists()
-        assert path.name == "happy_orange_none.png"
+        assert path.name == "neutral_orange_none.png"
 
 
 class TestRenderPetAnimated:
-    @pytest.mark.parametrize("emotion", [
-        "happy", "sad", "excited", "sleepy", "studying",
-    ])
+    @pytest.mark.parametrize("emotion", ["neutral", "joy", "sad"])
     def test_resolves_to_gif(self, emotion, monkeypatch):
         if PET_SINGLE_IMAGE_MODE:
             monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
@@ -117,9 +108,35 @@ class TestRenderPetAnimated:
         if PET_SINGLE_IMAGE_MODE:
             monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
         path = render_pet({"color": "pink", "accessory": "crown"},
-                          "excited", animated=True)
-        # Не excited_pink_crown.gif, а просто excited.gif
-        assert path.name == "excited.gif"
+                          "joy", animated=True)
+        assert path.name == "joy.gif"
+
+
+class TestRenderPetLegacyFallback:
+    def test_joy_falls_back_to_happy_gif(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", tmp_path / "default.png")
+        legacy = tmp_path / "happy.gif"
+        legacy.write_bytes(b"gif")
+        path = render_pet(None, "joy", animated=True)
+        assert path == legacy
+
+    def test_neutral_falls_back_to_sleepy_png(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
+        monkeypatch.setattr(services, "_ASSETS_PET_DIR", tmp_path)
+        monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", tmp_path / "default.png")
+        legacy = tmp_path / "sleepy_orange_none.png"
+        legacy.write_bytes(b"png")
+        path = render_pet(None, "neutral")
+        assert path == legacy
+
+    def test_legacy_emotion_input_maps_to_new_assets(self, monkeypatch):
+        if PET_SINGLE_IMAGE_MODE:
+            monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
+        path = render_pet(None, "happy")
+        assert path.exists()
+        assert path.name == "joy_orange_none.png"
 
 
 class TestRenderPetTimePeriod:
@@ -130,12 +147,12 @@ class TestRenderPetTimePeriod:
 
         evening_dir = tmp_path / "evening"
         evening_dir.mkdir()
-        target = evening_dir / "happy_blue_hat.png"
+        target = evening_dir / "neutral_blue_hat.png"
         target.write_bytes(b"png")
 
         path = render_pet(
             {"color": "blue", "accessory": "hat"},
-            "happy",
+            "neutral",
             now_local=datetime(2026, 6, 2, 19, 0),
         )
         assert path == target
@@ -151,7 +168,7 @@ class TestRenderPetTimePeriod:
         monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", root_default)
 
         path = render_pet(
-            None, "happy",
+            None, "neutral",
             now_local=datetime(2026, 6, 2, 8, 0),
         )
         assert path == period_default
@@ -164,7 +181,7 @@ class TestRenderPetTimePeriod:
         monkeypatch.setattr(services, "_PET_DEFAULT_IMAGE", root_default)
 
         path = render_pet(
-            None, "happy",
+            None, "neutral",
             now_local=datetime(2026, 6, 2, 14, 0),
         )
         assert path == root_default
@@ -179,7 +196,6 @@ class TestRenderPetTimePeriod:
         night_png = night_dir / "sad_orange_none.png"
         night_png.write_bytes(b"png")
 
-        # 14:00 would be "day", but explicit period wins
         path = render_pet(
             None, "sad",
             now_local=datetime(2026, 6, 2, 14, 0),
@@ -189,26 +205,10 @@ class TestRenderPetTimePeriod:
 
 
 class TestRenderPetMissingAssets:
-    """
-    Тестировать «assets dir пустая» без удаления реальных файлов сложно.
-    Стандартный pytest tmp_path может пересоздать пустую структуру, но
-    render_pet смотрит абсолютный путь, не настраиваемый. Поэтому здесь
-    тестируем только саму сигнатуру raise для несуществующей эмоции —
-    единственная гарантия что fallback chain в конце концов raise'нет.
-    """
-
-    def test_unknown_emotion_raises_eventually(self, monkeypatch):
+    def test_unknown_emotion_falls_back_to_neutral_orange_none(self, monkeypatch):
         if PET_SINGLE_IMAGE_MODE:
             monkeypatch.setattr(services, "PET_SINGLE_IMAGE_MODE", False)
-        # 'invalid_emotion_xyz' не в каталоге → primary missing →
-        # fallback на 'invalid_emotion_xyz_orange_none.png' missing →
-        # fallback на 'happy_orange_none.png' — этот СУЩЕСТВУЕТ.
-        # Поэтому пути:
-        #   1. invalid_emotion_xyz_pink_crown.png → missing
-        #   2. invalid_emotion_xyz_orange_none.png → missing
-        #   3. happy_orange_none.png → EXISTS
-        # Возвращает happy_orange_none.png. raise не происходит.
-        path = render_pet({"color": "pink", "accessory": "crown"},
+        path = render_pet({"color": "rainbow", "accessory": "topHat"},
                           "invalid_emotion_xyz")
         assert path.exists()
-        assert path.name == "happy_orange_none.png"
+        assert path.name == "neutral_orange_none.png"

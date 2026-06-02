@@ -1396,7 +1396,7 @@ class PetRepository:
     async def mark_excited(self, user_id: int) -> None:
         """
         Помечает last_excited_at = now. Используется derive_emotion для
-        приоритета 'excited' в течение ~5 минут после ачивки или level-up.
+        приоритета 'joy' в течение ~5 минут после ачивки или level-up.
         Тихий no-op, если pet ещё не создан.
         """
         await self.db.execute(

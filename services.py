@@ -17,7 +17,11 @@ from aiogram.exceptions import (
 
 from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
 from i18n import t, DEFAULT_LOCALE, SUPPORTED_LOCALES
-from file_upload_security import sanitize_pet_asset_keys, sanitize_pet_time_period
+from file_upload_security import (
+    pet_emotion_file_stems,
+    sanitize_pet_asset_keys,
+    sanitize_pet_time_period,
+)
 
 logger = logging.getLogger("studybuddy_bot")
 
@@ -396,7 +400,7 @@ class AchievementService:
 #
 # Эмоция НЕ хранится в БД; каждый render-call перевычисляет её из
 # текущего состояния пользователя. См. TODO #16:
-# "5 эмоций выводятся из состояния пользователя в момент рендера
+# "3 эмоции выводятся из состояния пользователя в момент рендера
 # (не хранятся)".
 #
 # Caller-обязательства:
@@ -417,26 +421,19 @@ def derive_emotion(
     now_local: datetime,
 ) -> str:
     """
-    Возвращает одну из 5 эмоций (priority по убыванию):
-        1. "studying" — активный учебный таймер
-        2. "excited"  — level-up или ачивка ≤ 5 минут назад
-        3. "sad"      — пользователь сегодня ещё не учился
-        4. "sleepy"   — локальное время в окне [22:00, 06:00)
-                        (22:00 включительно, 06:00 исключительно)
-        5. "happy"    — дефолт
+    Возвращает одну из 3 эмоций (priority по убыванию):
+        1. "joy"     — активный таймер или level-up/ачивка ≤ 5 минут назад
+        2. "sad"     — пользователь сегодня ещё не учился
+        3. "neutral" — дефолт (в т.ч. ночные часы)
 
     Все аргументы keyword-only: каждый caller-сайт обязан явно
     назвать что подаёт, чтобы не было перепутанных bool-аргументов.
     """
-    if is_studying:
-        return "studying"
-    if recently_excited:
-        return "excited"
+    if is_studying or recently_excited:
+        return "joy"
     if not has_studied_today:
         return "sad"
-    if now_local.hour >= 22 or now_local.hour < 6:
-        return "sleepy"
-    return "happy"
+    return "neutral"
 
 
 # ------------------------------------------------------------
@@ -473,7 +470,7 @@ def get_pet_time_period(now_local: datetime) -> str:
 #   Then legacy flat assets/pet/:
 #   4. <emotion>_<color>_<accessory>.png
 #   5. <emotion>_orange_none.png
-#   6. happy_orange_none.png
+#   6. neutral_orange_none.png (+ legacy happy_orange_none.png)
 #   7. default.png
 #   8. raise FileNotFoundError
 # ------------------------------------------------------------
@@ -549,10 +546,12 @@ def render_pet(
 
     if animated:
         gif_candidates: list[Path] = []
-        if period:
-            gif_candidates.append(_pet_period_dir(period) / f"{emotion}.gif")
+        for stem in pet_emotion_file_stems(emotion):
+            if period:
+                gif_candidates.append(_pet_period_dir(period) / f"{stem}.gif")
+            gif_candidates.append(_ASSETS_PET_DIR / f"{stem}.gif")
         gif_candidates.extend([
-            _ASSETS_PET_DIR / f"{emotion}.gif",
+            _ASSETS_PET_DIR / "neutral.gif",
             _ASSETS_PET_DIR / "happy.gif",
         ])
         found = _first_existing_path(gif_candidates)
@@ -566,14 +565,19 @@ def render_pet(
     png_candidates: list[Path] = []
     if period:
         period_dir = _pet_period_dir(period)
+        for stem in pet_emotion_file_stems(emotion):
+            png_candidates.extend([
+                period_dir / f"{stem}_{color}_{accessory}.png",
+                period_dir / f"{stem}_orange_none.png",
+            ])
+        png_candidates.append(period_dir / "default.png")
+    for stem in pet_emotion_file_stems(emotion):
         png_candidates.extend([
-            period_dir / f"{emotion}_{color}_{accessory}.png",
-            period_dir / f"{emotion}_orange_none.png",
-            period_dir / "default.png",
+            _ASSETS_PET_DIR / f"{stem}_{color}_{accessory}.png",
+            _ASSETS_PET_DIR / f"{stem}_orange_none.png",
         ])
     png_candidates.extend([
-        _ASSETS_PET_DIR / f"{emotion}_{color}_{accessory}.png",
-        _ASSETS_PET_DIR / f"{emotion}_orange_none.png",
+        _ASSETS_PET_DIR / "neutral_orange_none.png",
         _ASSETS_PET_DIR / "happy_orange_none.png",
         _PET_DEFAULT_IMAGE,
     ])
@@ -916,8 +920,7 @@ class ReminderService:
         """
         Evening reminders с sad-pet интеграцией (TODO #16, последний остаток).
         Per-user now_local + derive_emotion → выбор копи. По спеке reminder
-        фильтрует на has_studied_today=0, и derive_emotion вернёт 'sad'
-        (или 'sleepy' если ≥22:00, но reminder обычно стреляет в 21:00).
+        фильтрует на has_studied_today=0, и derive_emotion вернёт 'sad'.
         """
         import pytz
         users = await self.user_repo.get_users_due_for_evening(tz, hhmm)

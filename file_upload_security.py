@@ -35,7 +35,20 @@ MAX_NUL_RATIO = 0.05
 TASK_IMAGE_RE = re.compile(r"^[\w.-]+\.png$", re.IGNORECASE)
 
 # --- Pet asset keys (DB → filesystem) ---
-PET_EMOTIONS = frozenset({"happy", "sad", "excited", "sleepy", "studying"})
+PET_EMOTIONS = frozenset({"neutral", "joy", "sad"})
+# Legacy emotion names → new asset stems (backward compat for old PNG/GIF files)
+PET_EMOTION_LEGACY_FILES: dict[str, tuple[str, ...]] = {
+    "joy": ("happy", "excited"),
+    "neutral": ("sleepy", "studying"),
+    "sad": (),
+}
+# Legacy input names → normalized emotion (derive_emotion / caller strings)
+PET_EMOTION_LEGACY_INPUT: dict[str, str] = {
+    "happy": "joy",
+    "excited": "joy",
+    "sleepy": "neutral",
+    "studying": "neutral",
+}
 PET_COLORS = frozenset({"orange", "grey", "blue", "green", "pink"})
 PET_ACCESSORIES = frozenset({"none", "hat", "glasses", "scarf", "crown"})
 PET_TIME_PERIODS = frozenset({"morning", "day", "evening", "night"})
@@ -165,14 +178,28 @@ def resolve_path_under(directory: Path, filename: str) -> Path | None:
     return candidate
 
 
+def normalize_pet_emotion(emotion: str) -> str:
+    """Map legacy emotion names to the current 3-emotion set."""
+    if emotion in PET_EMOTIONS:
+        return emotion
+    return PET_EMOTION_LEGACY_INPUT.get(emotion, "neutral")
+
+
+def pet_emotion_file_stems(emotion: str) -> tuple[str, ...]:
+    """Asset filename stems: new name first, then legacy fallbacks."""
+    normalized = normalize_pet_emotion(emotion)
+    stems = [normalized]
+    stems.extend(PET_EMOTION_LEGACY_FILES.get(normalized, ()))
+    return tuple(dict.fromkeys(stems))
+
+
 def sanitize_pet_asset_keys(
     emotion: str,
     color: str,
     accessory: str,
 ) -> tuple[str, str, str]:
     """Clamp pet render keys to known catalog values."""
-    if emotion not in PET_EMOTIONS:
-        return "happy", "orange", "none"
+    emotion = normalize_pet_emotion(emotion)
     if color not in PET_COLORS:
         color = "orange"
     if accessory not in PET_ACCESSORIES:
