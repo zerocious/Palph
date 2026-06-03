@@ -214,6 +214,8 @@ dp: Dispatcher = None
 # Держим строгие ссылки, чтобы задачи не были собраны GC,
 # и чтобы их можно было отменить при остановке/перезапуске.
 active_timers: dict[int, asyncio.Task] = {}
+# Pomodoro metadata when user studies (quiz flow) while timer asyncio task still runs.
+pending_timer_sessions: dict[int, dict] = {}
 _timer_completion_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -274,17 +276,68 @@ async def _clear_custom_timer_duration_wait(state: FSMContext) -> None:
         await state.clear()
 
 
-async def _claim_active_timer(state: FSMContext, user_id: int) -> dict | None:
+async def _claim_timer_session(state: FSMContext, user_id: int) -> dict | None:
     """
-    Атомарно забирает активный таймер из FSM (clear state).
-    Второй concurrent caller (stop vs natural finish) получит None.
+    Атомарно забирает данные таймера для завершения сессии: из
+    pending_timer_sessions (фон во время «Подготовка») или из FSM active.
+    Второй concurrent caller получит None.
     """
     async with _timer_completion_lock(user_id):
+        pending = pending_timer_sessions.pop(user_id, None)
+        if pending is not None:
+            return pending
         if await state.get_state() != TimerStates.active.state:
             return None
         data = await state.get_data()
         await state.clear()
         return data
+
+
+async def _claim_active_timer(state: FSMContext, user_id: int) -> dict | None:
+    """Alias for timer completion paths."""
+    return await _claim_timer_session(state, user_id)
+
+
+async def _detach_timer_for_study_flow(
+    state: FSMContext, user_id: int, chat_id: int,
+) -> bool:
+    """
+    Сохраняет таймер в pending_timer_sessions, чтобы FSM можно было
+    переключить на квизы без остановки asyncio-задачи.
+    """
+    async with _timer_completion_lock(user_id):
+        if user_id in pending_timer_sessions:
+            return True
+        if await state.get_state() != TimerStates.active.state:
+            return user_id in active_timers
+        data = await state.get_data()
+        start_time = data.get("start_time")
+        if not isinstance(start_time, datetime):
+            return False
+        duration = _normalize_timer_duration(data.get("duration", 25)) or 25
+        pending_timer_sessions[user_id] = {
+            "duration": duration,
+            "start_time": start_time,
+            "chat_id": chat_id,
+        }
+        return True
+
+
+def _timer_remaining_minutes(session: dict) -> float:
+    duration = _normalize_timer_duration(session.get("duration", 25)) or 25
+    start_time = session.get("start_time")
+    if not isinstance(start_time, datetime):
+        return 0.0
+    elapsed = (datetime.now() - start_time).total_seconds() / 60
+    return max(0.0, duration - elapsed)
+
+
+async def _preserve_pending_timer_across_clear(user_id: int, state: FSMContext) -> None:
+    """state.clear() не должен терять pending_timer_sessions."""
+    pending = pending_timer_sessions.get(user_id)
+    await state.clear()
+    if pending is not None:
+        pending_timer_sessions[user_id] = pending
 
 
 def _ensure_timer_task_running(
@@ -3354,9 +3407,17 @@ async def run_timer_task(chat_id: int, state: FSMContext, user_id: int, duration
         if stored_duration is not None:
             duration = stored_duration
         if not isinstance(start_time, datetime):
-            logger.warning("timer.invalid_start_time user_id=%s", user_id)
-            await _claim_active_timer(state, user_id)
-            return
+            pending = pending_timer_sessions.get(user_id)
+            if pending and isinstance(pending.get("start_time"), datetime):
+                start_time = pending["start_time"]
+                duration = (
+                    _normalize_timer_duration(pending.get("duration", duration))
+                    or duration
+                )
+            else:
+                logger.warning("timer.invalid_start_time user_id=%s", user_id)
+                await _claim_timer_session(state, user_id)
+                return
         deadline = start_time + timedelta(minutes=duration)
         remaining_sec = max(0, (deadline - datetime.now()).total_seconds())
         await asyncio.sleep(remaining_sec)
@@ -3481,6 +3542,13 @@ async def handle_standard_timer(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state == TimerStates.waiting_for_duration.state:
         await state.clear()
+    pending = pending_timer_sessions.get(user_id)
+    if pending is not None:
+        await message.answer(
+            t("timer.already_running", locale, remaining=_timer_remaining_minutes(pending)),
+            reply_markup=get_timer_active_keyboard(locale),
+        )
+        return
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
@@ -3493,10 +3561,8 @@ async def handle_standard_timer(message: Message, state: FSMContext):
             return
         duration_running = _normalize_timer_duration(data.get("duration", 25)) or 25
         _ensure_timer_task_running(message.chat.id, state, user_id, duration_running)
-        elapsed = (datetime.now() - start_time).total_seconds() / 60
-        remaining = max(0, duration_running - elapsed)
         await message.answer(
-            t("timer.already_running", locale, remaining=remaining),
+            t("timer.already_running", locale, remaining=_timer_remaining_minutes(data)),
             reply_markup=get_timer_active_keyboard(locale),
         )
         return
@@ -3517,6 +3583,13 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state == TimerStates.waiting_for_duration.state:
         await state.clear()
+    pending = pending_timer_sessions.get(user_id)
+    if pending is not None:
+        await message.answer(
+            t("timer.already_running", locale, remaining=_timer_remaining_minutes(pending)),
+            reply_markup=get_timer_active_keyboard(locale),
+        )
+        return
     if current_state == TimerStates.active.state:
         data = await state.get_data()
         start_time = data.get("start_time")
@@ -3529,10 +3602,8 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
             return
         duration_running = _normalize_timer_duration(data.get("duration", 25)) or 25
         _ensure_timer_task_running(message.chat.id, state, user_id, duration_running)
-        elapsed = (datetime.now() - start_time).total_seconds() / 60
-        remaining = max(0, duration_running - elapsed)
         await message.answer(
-            t("timer.already_running", locale, remaining=remaining),
+            t("timer.already_running", locale, remaining=_timer_remaining_minutes(data)),
             reply_markup=get_timer_active_keyboard(locale),
         )
         return
@@ -3556,7 +3627,7 @@ async def stop_active_timer(message: Message, state: FSMContext) -> bool:
             await task
         except asyncio.CancelledError:
             pass
-    claimed = await _claim_active_timer(state, user_id)
+    claimed = await _claim_timer_session(state, user_id)
     if claimed is None:
         return False
     start_time = claimed.get("start_time")
@@ -3730,6 +3801,7 @@ async def handle_delete_account_confirm(callback: CallbackQuery, state: FSMConte
     # и на user_id и после удаления продолжила бы пытаться писать
     # в стертую БД-строку.
     timer_task = active_timers.pop(user_id, None)
+    pending_timer_sessions.pop(user_id, None)
     if timer_task is not None and not timer_task.done():
         timer_task.cancel()
 
@@ -3786,14 +3858,14 @@ async def handle_quiz_menu(message: Message, state: FSMContext):
             reply_markup=get_main_keyboard(locale),
         )
         return
-    if await state.get_state() == TimerStates.active.state or user_id in active_timers:
-        await stop_active_timer(message, state)
-        if user_id in active_timers:
-            await _cancel_timer_task(user_id)
+    timer_hint = ""
+    if user_id in active_timers or await state.get_state() == TimerStates.active.state:
+        if await _detach_timer_for_study_flow(state, user_id, message.chat.id):
+            timer_hint = f"\n\n{t('timer.still_running_hint', locale)}"
     await state.update_data(subject_id=None, subject_label=None, mode_id=None, mode_label=None)
     await state.set_state(QuizStates.choosing_subject)
     await message.answer(
-        t("nav.pick_subject", locale),
+        t("nav.pick_subject", locale) + timer_hint,
         reply_markup=await get_subject_keyboard(user_id, locale),
     )
 
@@ -3802,7 +3874,7 @@ async def handle_quiz_menu(message: Message, state: FSMContext):
 async def handle_subject_back_to_main(message: Message, state: FSMContext):
     user_id = message.from_user.id
     locale = await loc(user_id)
-    await state.clear()
+    await _preserve_pending_timer_across_clear(user_id, state)
     await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
 
 
@@ -7583,8 +7655,8 @@ async def handle_back_to_study(message: Message, state: FSMContext):
 async def handle_back_to_main(message: Message, state: FSMContext):
     await _clear_custom_timer_duration_wait(state)
     # Не срабатывает во время TimerStates.active — отдельный handler выше.
-    await state.clear()
     user_id = message.from_user.id
+    await _preserve_pending_timer_across_clear(user_id, state)
     locale = await loc(user_id)
     await message.answer(t("nav.main_menu", locale), reply_markup=get_main_keyboard(locale))
 

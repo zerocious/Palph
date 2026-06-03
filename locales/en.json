@@ -79,6 +79,7 @@
     "already_done": "Timer already finished.",
     "no_active": "No active timer right now.",
     "back_menu": "🐾 You're back in the main menu.\nThe timer keeps running in the background — the session will finish automatically.\n\nTo stop early, send /stop.",
+    "still_running_hint": "⏱ The timer is still running in the background. To stop early: /stop",
     "reconcile_finished": "🎉 Your {duration}-minute timer finished while the bot was offline.\n🪙 Earned: {duration} coins",
     "reconcile_resumed": "♻️ The bot restarted — your timer is still running!\n⏱️ Remaining: {remaining} min"
   },

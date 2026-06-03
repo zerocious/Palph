@@ -222,6 +222,9 @@ def ru_bundle():
                 "Таймер продолжает работать в фоне — сессия завершится автоматически.\n\n"
                 "Чтобы остановить досрочно, отправь /stop."
             ),
+            "still_running_hint": (
+                "⏱ Таймер продолжает идти в фоне. Остановить досрочно: /stop"
+            ),
             "reconcile_finished": (
                 "🎉 Таймер на {duration} мин завершился, пока бот был офлайн.\n"
                 "🪙 Получено: {duration} монет"
@@ -1109,6 +1112,9 @@ def en_bundle():
         "🐾 You're back in the main menu.\n"
         "The timer keeps running in the background — the session will finish automatically.\n\n"
         "To stop early, send /stop."
+    )
+    b["timer"]["still_running_hint"] = (
+        "⏱ The timer is still running in the background. To stop early: /stop"
     )
     b["timer"]["reconcile_finished"] = (
         "🎉 Your {duration}-minute timer finished while the bot was offline.\n"

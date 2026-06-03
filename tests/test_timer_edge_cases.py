@@ -19,9 +19,11 @@ from services import AchievementService, StudyService
 @pytest.fixture(autouse=True)
 def _reset_active_timers():
     bot.active_timers.clear()
+    bot.pending_timer_sessions.clear()
     bot._timer_completion_locks.clear()
     yield
     bot.active_timers.clear()
+    bot.pending_timer_sessions.clear()
     bot._timer_completion_locks.clear()
 
 
@@ -476,8 +478,8 @@ async def test_reconcile_invalid_duration_is_broken(db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_quiz_menu_stops_active_timer(study_stack, fsm_state, monkeypatch):
-    """Opening quizzes while timer is active should stop timer (award coins) instead of silent cancel."""
+async def test_quiz_menu_preserves_active_timer(study_stack, fsm_state, monkeypatch):
+    """Opening Preparation while timer runs should detach to background, not stop session."""
     user_repo, _, _ = study_stack
     uid = 42
     await user_repo.create_user(uid)
@@ -485,6 +487,7 @@ async def test_quiz_menu_stops_active_timer(study_stack, fsm_state, monkeypatch)
     start_time = datetime.now() - timedelta(minutes=10)
     await fsm_state.set_state(bot.TimerStates.active)
     await fsm_state.update_data(duration=25, start_time=start_time)
+    bot.active_timers[uid] = MagicMock(done=MagicMock(return_value=False))
 
     stop_timer = AsyncMock(return_value=True)
     monkeypatch.setattr(bot, "loc", AsyncMock(return_value="ru"))
@@ -496,9 +499,32 @@ async def test_quiz_menu_stops_active_timer(study_stack, fsm_state, monkeypatch)
 
     message = MagicMock()
     message.from_user.id = uid
+    message.chat.id = uid
     message.answer = AsyncMock()
 
     await bot.handle_quiz_menu(message, fsm_state)
 
-    stop_timer.assert_awaited_once_with(message, fsm_state)
+    stop_timer.assert_not_awaited()
+    assert uid in bot.pending_timer_sessions
     assert await fsm_state.get_state() == bot.QuizStates.choosing_subject.state
+
+
+@pytest.mark.asyncio
+async def test_claim_timer_session_from_pending(study_stack, fsm_state):
+    """Natural completion after prep detach uses pending_timer_sessions."""
+    uid = 99
+    start_time = datetime.now() - timedelta(minutes=5)
+    bot.pending_timer_sessions[uid] = {
+        "duration": 25,
+        "start_time": start_time,
+        "chat_id": 100,
+    }
+    await fsm_state.set_state(bot.QuizStates.choosing_subject)
+
+    claimed = await bot._claim_timer_session(fsm_state, uid)
+    assert claimed is not None
+    assert claimed["start_time"] == start_time
+    assert uid not in bot.pending_timer_sessions
+
+    second = await bot._claim_timer_session(fsm_state, uid)
+    assert second is None
