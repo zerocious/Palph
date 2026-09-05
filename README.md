@@ -320,6 +320,7 @@ study_materials/    # Учебные материалы — data-driven дере
 | [admin_commands.md](admin_commands.md) | Справочник по админским командам |
 | [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
 | [user-flows.md](user-flows.md) | Стандартные user flows, подсчёт кликов, mermaid-диаграммы, идеи сокращения навигации |
+| [DESKTOP.md](DESKTOP.md) | Дизайн-развилка по Windows-приложению в дополнение к боту (данные / стек UI / связка аккаунта, фазы поставки) |
 | [tips/README.md](tips/README.md) | Формат JSON-советов, tags, поведение бота (контекст, cooldown, совет дня) |
 
 ## Файлы инфраструктуры
