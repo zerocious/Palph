@@ -9,6 +9,7 @@ DeviceRepository: коды привязки desktop-клиента и токен
 """
 from __future__ import annotations
 
+import pytest
 import pytest_asyncio
 
 from repository import DeviceRepository, UserRepository
@@ -211,3 +212,43 @@ class TestRevocation:
             outsider.commit()
         finally:
             outsider.close()
+
+    async def test_failed_code_generation_rolls_back(self, db, device_repo, two_users):
+        """
+        Регрессия: исчерпание попыток генерации не должно оставлять
+        открытую транзакцию.
+
+        Реальный триггер — не коллизия кодов (шанс ничтожен), а исчезнувший
+        user_id: INSERT падает по внешнему ключу на каждой попытке. Раньше
+        после этого файл БД оставался заблокированным до рестарта бота.
+        """
+        import os
+        import sqlite3
+
+        alice, bob = two_users
+        taken = await device_repo.create_link_code(bob)
+
+        original = DeviceRepository._generate_code
+        DeviceRepository._generate_code = classmethod(lambda cls: taken)
+        try:
+            with pytest.raises(RuntimeError):
+                await device_repo.create_link_code(alice)
+        finally:
+            DeviceRepository._generate_code = original
+
+        path = None
+        async with db.execute("PRAGMA database_list") as c:
+            for row in await c.fetchall():
+                if row[1] == "main":
+                    path = row[2]
+        assert path and os.path.exists(path)
+
+        outsider = sqlite3.connect(path, timeout=2)
+        try:
+            outsider.execute("UPDATE users SET total_coins = 1 WHERE user_id = ?", (alice,))
+            outsider.commit()
+        finally:
+            outsider.close()
+
+        # Откат не должен был стереть чужой код.
+        assert await device_repo.exchange_code(taken) is not None

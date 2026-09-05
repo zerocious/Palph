@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { finishTimer, startTimer, type FinishResult, type TimerState } from "../api";
+import {
+  ApiError,
+  finishTimer,
+  startTimer,
+  type FinishResult,
+  type TimerState,
+} from "../api";
 import { formatCountdown } from "../format";
 import { notifySessionDone } from "../notify";
 
@@ -66,7 +72,15 @@ export function TimerCard({ token, timer, onChanged }: Props) {
         }
         onChanged();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Не удалось завершить сессию");
+        // 409 — таймер уже закрыт: чаще всего вторым кликом или
+        // автозавершением, случившимся параллельно. Сервер засчитал
+        // сессию ровно один раз, показывать человеку ошибку не за что —
+        // просто подтягиваем актуальное состояние.
+        if (e instanceof ApiError && e.status === 409) {
+          onChanged();
+        } else {
+          setError(e instanceof Error ? e.message : "Не удалось завершить сессию");
+        }
       } finally {
         setBusy(false);
       }

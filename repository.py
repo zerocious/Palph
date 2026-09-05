@@ -5,6 +5,8 @@ import math
 import aiosqlite
 from typing import Any, Dict, NamedTuple, Optional
 
+from db import write_transaction
+
 class UserRepository:
     """
     Асинхронный репозиторий для работы с пользователями и их настройками.
@@ -2455,7 +2457,7 @@ class DeviceRepository:
 
         Возвращает код в каноничном виде (без дефиса).
         """
-        async with self.db.lock:
+        async with write_transaction(self.db):
             await self.db.execute(
                 "DELETE FROM device_link_codes WHERE user_id = ?", (user_id,)
             )
@@ -2478,6 +2480,11 @@ class DeviceRepository:
                 await self.db.commit()
                 self._logger.info("devices.link_code_created user_id=%s", user_id)
                 return code
+            # Ни одна попытка не прошла: коллизия кодов (шанс ничтожен) или,
+            # реальнее, исчезнувший user_id — тогда INSERT падает по внешнему
+            # ключу на каждой попытке. DELETE'ы выше уже открыли транзакцию;
+            # откатывает её write_transaction, поймав этот raise, — без отката
+            # открытая транзакция заперла бы файл БД до рестарта бота.
             raise RuntimeError("device link code generation failed")
 
     async def exchange_code(
@@ -2496,7 +2503,7 @@ class DeviceRepository:
         name = (device_name or "Desktop").strip()[:64] or "Desktop"
 
         import secrets
-        async with self.db.lock:
+        async with write_transaction(self.db):
             async with self.db.execute(
                 "SELECT user_id FROM device_link_codes "
                 "WHERE code = ? AND expires_at > datetime('now')",
@@ -2589,7 +2596,7 @@ class DeviceRepository:
         Отзыв всех устройств пользователя (/unlink_app в боте).
         Заодно удаляет висящий код привязки. Возвращает число устройств.
         """
-        async with self.db.lock:
+        async with write_transaction(self.db):
             cursor = await self.db.execute(
                 "DELETE FROM device_tokens WHERE user_id = ?", (user_id,)
             )
@@ -2665,10 +2672,25 @@ class DesktopTimerRepository:
             "remaining_seconds": max(0, total - elapsed),
         }
 
-    async def clear(self, user_id: int) -> bool:
-        """Снимает таймер. True, если строка была."""
-        cursor = await self.db.execute(
-            "DELETE FROM desktop_timers WHERE user_id = ?", (user_id,)
-        )
-        await self.db.commit()
-        return cursor.rowcount > 0
+    async def claim(self, user_id: int) -> Optional[dict]:
+        """
+        Атомарно забирает таймер: возвращает его состояние и тем же
+        локом удаляет строку. Второй одновременный вызов получит None.
+
+        Это единственный способ закрыть таймер, и он же — защита от
+        двойного начисления: без атомарного «забрать» двойной клик по
+        «Завершить» (или ручное завершение вместе с автоматическим по
+        истечении времени) успевал прочитать одно и то же состояние
+        дважды и засчитывал одну сессию два раза.
+        """
+        async with write_transaction(self.db):
+            state = await self.get(user_id)
+            if state is None:
+                return None
+            cursor = await self.db.execute(
+                "DELETE FROM desktop_timers WHERE user_id = ?", (user_id,)
+            )
+            await self.db.commit()
+            if cursor.rowcount == 0:
+                return None
+        return state

@@ -1,6 +1,7 @@
 import asyncio
 import aiosqlite
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -78,6 +79,32 @@ async def get_db(db_path: str = DB_PATH) -> aiosqlite.Connection:
     await db.execute("PRAGMA foreign_keys=ON")
     await db.execute("PRAGMA busy_timeout=5000")
     return db
+
+
+@asynccontextmanager
+async def write_transaction(db: aiosqlite.Connection):
+    """
+    Блок записи под db.lock с гарантированным откатом при исключении.
+
+    sqlite открывает транзакцию на первом же write-стейтменте. Если между
+    ним и commit'ом что-то падает, транзакция остаётся открытой и держит
+    write-лок на файле БД: ночной бэкап и любой внешний процесс упрутся
+    в «database is locked», и лечится это только рестартом бота.
+
+    Использование:
+        async with write_transaction(self.db):
+            await self.db.execute(...)
+            await self.db.commit()
+    """
+    async with db.lock:
+        try:
+            yield
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass  # соединение уже нерабочее — откатывать нечего
+            raise
 
 
 async def execute_with_db_retry(coro_factory, *, retries: int = 3, base_delay: float = 0.05):

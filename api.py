@@ -427,12 +427,13 @@ async def handle_pomodoro_finish(request: web.Request, auth: AuthContext) -> web
     XP питомца, очки лидерборда и флаг has_studied_today для стрика.
     """
     deps = request.app[APP_DEPS]
-    state = await deps["timer_repo"].get(auth.user_id)
+    # claim атомарно забирает таймер: параллельный второй запрос получит
+    # None и уйдёт в 409, а не засчитает ту же сессию повторно.
+    state = await deps["timer_repo"].claim(auth.user_id)
     if state is None:
         return _error("no timer is running", 409)
 
     minutes = min(state["elapsed_seconds"] // 60, state["duration_minutes"])
-    await deps["timer_repo"].clear(auth.user_id)
     if minutes < 1:
         return _json({"counted": False, "minutes": 0, "coins_earned": 0, "achievements": []})
 

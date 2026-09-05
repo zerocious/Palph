@@ -400,3 +400,31 @@ class TestPomodoro:
             "/api/pomodoro", headers={"Authorization": f"Bearer {other_token}"},
         )
         assert (await resp.json())["timer"] is None
+
+    async def test_concurrent_finish_credits_one_session(self, api_env, db):
+        """
+        Регрессия: двойной клик по «Завершить» (или ручное завершение
+        одновременно с автоматическим по истечении времени) засчитывал
+        одну сессию дважды — это и портило статистику, и позволяло
+        накручивать монеты.
+        """
+        import asyncio
+
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
+        await db.execute(
+            "UPDATE desktop_timers SET started_at = datetime('now', '-30 minutes')"
+        )
+        await db.commit()
+
+        responses = await asyncio.gather(*[
+            client.post("/api/pomodoro/finish", headers=headers) for _ in range(5)
+        ])
+        statuses = sorted(r.status for r in responses)
+        assert statuses == [200, 409, 409, 409, 409]
+
+        user = await UserRepository(db).get_user(user_id)
+        assert user["total_sessions"] == 1
+        assert await SessionRepository(db).get_total_minutes(user_id) == 25
