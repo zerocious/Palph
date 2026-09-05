@@ -356,6 +356,16 @@ class AchievementService:
         await self._update_progress(user_id, ach_id, progress=tips_views, target=target)
         return [], 0
 
+    async def list_progress(self, user_id: int) -> dict:
+        """
+        Публичное read-only состояние достижений пользователя для внешних
+        клиентов (desktop API). Формат совпадает с внутренним
+        _load_user_achievements: {ach_id: {completed, progress, target}}.
+        Достижения, к которым пользователь ещё не приступал, в словаре
+        отсутствуют — caller дополняет их из каталога определений.
+        """
+        return await self._load_user_achievements(user_id)
+
     def _get_reward(self, ach_id: str) -> int:
         return self.definitions[ach_id]["reward"]
 

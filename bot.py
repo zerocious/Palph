@@ -45,7 +45,7 @@ from repository import (
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
-    PlanRepository,
+    PlanRepository, DeviceRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -54,6 +54,7 @@ from services import (
     _send_with_retry_after, send_with_telegram_bulkhead,
 )
 from tasks import streak_scheduler, reminder_scheduler, leaderboard_scheduler
+from api import api_enabled, create_app as create_api_app, start_api_server
 from user_task_txt import parse_user_tasks_txt
 from file_upload_security import (
     decode_task_upload,
@@ -202,6 +203,7 @@ subject_stats_repo: SubjectStatsRepository = None
 event_repo: EventRepository = None
 plan_repo: PlanRepository = None
 tips_repo: TipsRepository = None
+device_repo: DeviceRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -7217,6 +7219,54 @@ async def friend_share_link(callback: CallbackQuery):
         await callback.message.answer(invite_text, parse_mode="HTML")
 
 
+# ------------------------------------------------------------
+# Desktop-приложение: привязка устройства (api.py)
+# ------------------------------------------------------------
+@router.message(Command("link_app"))
+async def cmd_link_app(message: Message):
+    """
+    Выдаёт одноразовый код для входа в desktop-приложение. Код меняется
+    на долгоживущий токен через POST /auth/link (см. api.py), поэтому
+    паролей у пользователя нет — аккаунт остаётся телеграмным.
+    """
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    if not await user_repo.user_exists(user_id):
+        await message.answer(t("devices.needs_start", locale))
+        return
+    try:
+        code = await device_repo.create_link_code(user_id)
+        devices = await device_repo.list_devices(user_id)
+    except Exception as e:
+        logger.warning(
+            "devices.link_code_failed user=%s reason=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+        await message.answer(t("devices.link_failed", locale))
+        return
+
+    text = t(
+        "devices.link_intro", locale,
+        code=DeviceRepository.format_code(code),
+        minutes=DeviceRepository.CODE_TTL_MINUTES,
+    )
+    if devices:
+        text += t("devices.linked_count", locale, count=len(devices))
+    await message.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("unlink_app"))
+async def cmd_unlink_app(message: Message):
+    """Отзывает все токены устройств пользователя (и висящий код привязки)."""
+    user_id = message.from_user.id
+    locale = await loc(user_id)
+    count = await device_repo.revoke_all(user_id)
+    if count:
+        await message.answer(t("devices.unlink_done", locale, count=count))
+    else:
+        await message.answer(t("devices.unlink_none", locale))
+
+
 @router.message(Command("friends"))
 async def cmd_friends(message: Message):
     """Friends-tab: weekly-ранжированный список друзей + меню действий."""
@@ -7905,7 +7955,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, plan_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, plan_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, device_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -7923,6 +7973,7 @@ async def main():
     pet_repo = PetRepository(db)
     leaderboard_repo = LeaderboardRepository(db)
     friend_repo = FriendRepository(db)
+    device_repo = DeviceRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     session = AiohttpSession(timeout=TELEGRAM_TIMEOUT)
     bot = Bot(token=BOT_TOKEN, session=session)
@@ -8039,11 +8090,41 @@ async def main():
             type(e).__name__,
         )
 
+    # HTTP API для desktop-клиента (см. api.py). Поднимается в этом же
+    # event loop, чтобы делить с ботом одно соединение с SQLite; выключен,
+    # пока в окружении нет API_ENABLED=1.
+    api_runner = None
+    if api_enabled():
+        try:
+            api_runner = await start_api_server(create_api_app(
+                user_repo=user_repo,
+                session_repo=session_repo,
+                pet_repo=pet_repo,
+                device_repo=device_repo,
+                ach_service=ach_service,
+                achievements=ACHIEVEMENTS,
+            ))
+        except Exception as e:
+            # Занятый порт не должен ронять бота: Telegram-часть важнее,
+            # приложение переживёт отсутствие API до следующего рестарта.
+            logger.error(
+                "api.start_failed reason=%s detail=%s — бот работает без API",
+                type(e).__name__, e,
+            )
+
     logger.info("✅ Palph запущен")
     try:
         await dp.start_polling(bot)
     finally:
         logger.info("app.shutdown")
+        if api_runner is not None:
+            try:
+                await api_runner.cleanup()
+            except Exception as e:
+                logger.warning(
+                    "api.shutdown_failed reason=%s detail=%s",
+                    type(e).__name__, e,
+                )
         for t in background_tasks:
             t.cancel()
         try:

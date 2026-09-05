@@ -243,6 +243,59 @@ bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подста
 
 ---
 
+## Desktop-приложение (Windows) и HTTP API
+
+Приложение на компьютере — второй UI к тому же аккаунту, а не отдельный
+продукт: монеты, стрик, ачивки и питомец общие с Telegram. Клиент ходит
+в `api.py` — aiohttp-сервер, который поднимается **в том же процессе**, что
+и бот, и переиспользует те же репозитории/сервисы и то же соединение с SQLite
+(один writer, общий `db.lock` — нет гонки двух процессов за файл БД).
+Новых зависимостей нет: aiohttp уже тянет aiogram.
+
+**Привязка устройства** — без паролей и отдельной регистрации; единственный
+источник идентичности остаётся Telegram:
+
+1. Пользователь шлёт боту `/link_app` → получает код вида `4PQ3-84DM`
+   (10 минут, одноразовый; новый код гасит предыдущий).
+2. Код вводится в приложении → `POST /auth/link` меняет его на долгоживущий
+   Bearer-токен. В БД лежит только SHA-256 токена.
+3. `/unlink_app` в боте отзывает все устройства, `POST /api/logout` — только
+   текущее. Удаление аккаунта сносит токены по CASCADE.
+
+**Эндпоинты:**
+
+| Метод | Путь | Что делает |
+|-------|------|-------------|
+| GET | `/health` | liveness, без авторизации |
+| POST | `/auth/link` | код привязки → токен (rate-limit по IP) |
+| GET | `/api/me` | монеты, стрик, сессии, минуты, питомец |
+| GET | `/api/pet` | питомец + купленный инвентарь |
+| GET | `/api/pet/image` | PNG-арт питомца (тот же, что в чате) |
+| GET | `/api/achievements` | каталог ачивок + прогресс |
+| GET | `/api/devices` | привязанные устройства |
+| POST | `/api/logout` | отозвать текущий токен |
+
+Всё под `/api/*` требует `Authorization: Bearer <token>` (декоратор
+`@require_auth`; тест `test_all_api_routes_require_auth` падает, если новый
+эндпоинт забыли защитить).
+
+**Включение** (по умолчанию API выключен):
+
+```env
+API_ENABLED=1
+API_HOST=0.0.0.0        # в Docker — 0.0.0.0, compose публикует только на 127.0.0.1
+API_PORT=8080
+API_TRUST_PROXY=0       # 1 только если впереди реальный reverse-proxy
+API_CORS_ORIGINS=*      # или список origin'ов через запятую
+```
+
+TLS терминируется снаружи (reverse-proxy / панель хостинга): WebView
+клиента ходит по https везде, кроме localhost при разработке. Сам клиент
+(Tauri + веб-фронтенд) живёт отдельно и ещё не написан — этот репозиторий
+даёт ему только серверную часть.
+
+---
+
 ## Архитектура
 
 Слоистая: репозиторий → сервис → бот. Никаких прямых SQL-запросов в
@@ -253,8 +306,8 @@ bot.py              # Хендлеры aiogram, FSM, study flow (предмет�
                     # 4 учебных режима, user flashcards UI, main()
 db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
 repository.py       # User/Session/Admin/Flashcard/UserFlashcard/Tips/
-                    # Mcq/Task/SubjectStats/Pet/Leaderboard/Friend/Event
-                    # repositories (CRUD only)
+                    # Mcq/Task/SubjectStats/Pet/Leaderboard/Friend/Event/
+                    # Device repositories (CRUD only)
 plan_service.py     # Sprint plan generator (catalog, diagnostic, 14-day plan)
 plan_handlers.py    # Sprint plan handlers (PLAN_UI_ENABLED=False by default)
 task_answer_match.py # Text task answer normalization
@@ -264,6 +317,9 @@ services.py         # Achievement, Study, Streak, Reminder, Backup,
                     # derive_emotion, freeze_cost, parse_friend_query
 tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
                     # утро/вечер раз в минуту)
+api.py              # HTTP API для desktop-клиента (aiohttp): /auth/link,
+                    # /api/me, /api/pet, /api/achievements, /api/devices.
+                    # Поднимается в процессе бота при API_ENABLED=1
 fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
                     # квизов и мастеров переживает рестарт
 achievements.json   # Каталог ачивок (id, иконка, описание, награда)
@@ -305,6 +361,8 @@ study_materials/    # Учебные материалы — data-driven дере
 - `weekly_scores`, `weekly_badges`, `streak_freezes` — лидерборд и freeze
 - `friend_requests`, `friendships` — друзья
 - `friend_invite_tokens` — deep-link invite (30-day TTL)
+- `device_link_codes`, `device_tokens` — привязка desktop-приложения:
+  одноразовый код (10 мин) → Bearer-токен устройства (в БД только SHA-256)
 - `admins` — список админов (источник истины; in-memory кеш для is_admin())
 - `fsm_storage` — постоянное FSM хранилище для aiogram
 

@@ -3,7 +3,7 @@ import json
 import math
 
 import aiosqlite
-from typing import Optional, Dict, Any
+from typing import Any, Dict, NamedTuple, Optional
 
 class UserRepository:
     """
@@ -387,7 +387,8 @@ class UserRepository:
               weekly_scores, streak_freezes, weekly_badges,
               friend_requests (from+to), friendships (a+b),
               friend_invite_tokens, user_flashcards, user_tasks,
-              user_tips_stats, user_tips_seen.
+              user_tips_stats, user_tips_seen,
+              device_link_codes, device_tokens.
           • Таблицы БЕЗ FK на users — стираем вручную:
               quiz_progress, flashcard_progress, mcq_progress,
               task_progress, user_subject_stats, events.
@@ -2371,3 +2372,227 @@ class PlanRepository:
             ),
         )
         await self.db.commit()
+
+
+class DeviceLink(NamedTuple):
+    """Результат обмена кода: сам токен (plaintext, показывается один раз) + владелец."""
+
+    token: str
+    user_id: int
+
+
+class DeviceRepository:
+    """
+    Привязка desktop-клиента (Windows-приложение) к Telegram-аккаунту.
+
+    Flow:
+      1. Пользователь шлёт боту /link_app → create_link_code() отдаёт
+         одноразовый код (TTL 10 минут), бот показывает его в чате.
+      2. Пользователь вводит код в приложении → exchange_code() меняет его
+         на долгоживущий токен. Код при этом удаляется (single-use).
+      3. Приложение шлёт токен в заголовке Authorization: Bearer <token>;
+         resolve_token() возвращает user_id и обновляет last_seen_at.
+
+    Токены в БД хранятся только как SHA-256 hash — plaintext видит лишь
+    клиент, один раз, в ответе на обмен кода.
+    """
+
+    # Алфавит кода: без 0/O/1/I/L/U — чтобы код нельзя было списать
+    # неверно с экрана телефона. 30 символов ** 8 позиций ≈ 6.5e11 —
+    # brute-force за 10-минутный TTL нереален даже без rate-limit.
+    CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+    CODE_LENGTH = 8
+    CODE_TTL_MINUTES = 10
+    # Как часто разрешено переписывать last_seen_at (см. resolve_token).
+    LAST_SEEN_THROTTLE_MINUTES = 5
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+        import logging
+        self._logger = logging.getLogger("studybuddy_bot")
+
+    # ------------------------------------------------------------
+    # Хелперы
+    # ------------------------------------------------------------
+    @staticmethod
+    def hash_token(token: str) -> str:
+        """SHA-256 hex токена — то, что реально лежит в device_tokens."""
+        import hashlib
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _generate_code(cls) -> str:
+        import secrets
+        return "".join(
+            secrets.choice(cls.CODE_ALPHABET) for _ in range(cls.CODE_LENGTH)
+        )
+
+    @staticmethod
+    def normalize_code(raw: str) -> str:
+        """
+        Приводит введённый пользователем код к каноничному виду: убирает
+        пробелы и дефисы (код показывается как ABCD-EFGH), апперкейсит.
+        """
+        if not raw:
+            return ""
+        return "".join(ch for ch in raw.strip().upper() if ch.isalnum())
+
+    @staticmethod
+    def format_code(code: str) -> str:
+        """ABCDEFGH → ABCD-EFGH (для показа в чате)."""
+        if len(code) == 8:
+            return f"{code[:4]}-{code[4:]}"
+        return code
+
+    # ------------------------------------------------------------
+    # Коды привязки
+    # ------------------------------------------------------------
+    async def create_link_code(self, user_id: int) -> str:
+        """
+        Создаёт новый код привязки для пользователя. Предыдущий
+        неиспользованный код этого же пользователя удаляется — активный
+        код всегда один, «старый код из прошлого сообщения» не работает.
+
+        Возвращает код в каноничном виде (без дефиса).
+        """
+        async with self.db.lock:
+            await self.db.execute(
+                "DELETE FROM device_link_codes WHERE user_id = ?", (user_id,)
+            )
+            # Протухшие чужие коды заодно — таблица не растёт бесконечно.
+            await self.db.execute(
+                "DELETE FROM device_link_codes WHERE expires_at <= datetime('now')"
+            )
+            # Коллизия по PK практически невозможна, но цикл дешевле,
+            # чем необработанный IntegrityError на проде.
+            for _ in range(5):
+                code = self._generate_code()
+                try:
+                    await self.db.execute(
+                        "INSERT INTO device_link_codes (code, user_id, expires_at) "
+                        "VALUES (?, ?, datetime('now', ?))",
+                        (code, user_id, f"+{self.CODE_TTL_MINUTES} minutes"),
+                    )
+                except aiosqlite.IntegrityError:
+                    continue
+                await self.db.commit()
+                self._logger.info("devices.link_code_created user_id=%s", user_id)
+                return code
+            raise RuntimeError("device link code generation failed")
+
+    async def exchange_code(
+        self, raw_code: str, device_name: str = "Desktop",
+    ) -> Optional[DeviceLink]:
+        """
+        Меняет одноразовый код на долгоживущий токен устройства.
+        Возвращает DeviceLink(token, user_id) или None, если код
+        неверный/протух/уже использован. Код удаляется в той же
+        транзакции, что и создание токена — повторный обмен тем же
+        кодом невозможен.
+        """
+        code = self.normalize_code(raw_code)
+        if not code:
+            return None
+        name = (device_name or "Desktop").strip()[:64] or "Desktop"
+
+        import secrets
+        async with self.db.lock:
+            async with self.db.execute(
+                "SELECT user_id FROM device_link_codes "
+                "WHERE code = ? AND expires_at > datetime('now')",
+                (code,),
+            ) as c:
+                row = await c.fetchone()
+            if not row:
+                return None
+            user_id = row["user_id"]
+            await self.db.execute(
+                "DELETE FROM device_link_codes WHERE code = ?", (code,)
+            )
+            token = secrets.token_urlsafe(32)
+            await self.db.execute(
+                "INSERT INTO device_tokens (token_hash, user_id, device_name) "
+                "VALUES (?, ?, ?)",
+                (self.hash_token(token), user_id, name),
+            )
+            await self.db.commit()
+        self._logger.info(
+            "devices.linked user_id=%s device=%s", user_id, name,
+        )
+        return DeviceLink(token=token, user_id=user_id)
+
+    # ------------------------------------------------------------
+    # Токены
+    # ------------------------------------------------------------
+    async def resolve_token(self, token: str) -> Optional[int]:
+        """
+        Токен → user_id. None, если токен неизвестен (не выдавался или
+        отозван). Вызывается на КАЖДЫЙ запрос приложения, поэтому
+        читающая часть — один индексный lookup по PK.
+
+        last_seen_at обновляется не чаще раза в LAST_SEEN_THROTTLE_MINUTES:
+        поле нужно только чтобы человек в списке устройств видел «когда
+        заходили», а write-транзакция на каждый polling-запрос отбирала бы
+        у бота общий db.lock и писала бы в WAL впустую. Условие живёт в
+        самом UPDATE — лишнего SELECT нет, а commit делаем только если
+        строка реально обновилась.
+        """
+        if not token:
+            return None
+        token_hash = self.hash_token(token)
+        async with self.db.execute(
+            "SELECT user_id FROM device_tokens WHERE token_hash = ?",
+            (token_hash,),
+        ) as c:
+            row = await c.fetchone()
+        if not row:
+            return None
+        cursor = await self.db.execute(
+            "UPDATE device_tokens SET last_seen_at = datetime('now') "
+            "WHERE token_hash = ? AND (last_seen_at IS NULL "
+            "     OR last_seen_at <= datetime('now', ?))",
+            (token_hash, f"-{self.LAST_SEEN_THROTTLE_MINUTES} minutes"),
+        )
+        if cursor.rowcount:
+            await self.db.commit()
+        return row["user_id"]
+
+    async def list_devices(self, user_id: int) -> list[dict]:
+        """Список привязанных устройств (без токенов) для UI бота/приложения."""
+        async with self.db.execute(
+            "SELECT token_hash, device_name, created_at, last_seen_at "
+            "FROM device_tokens WHERE user_id = ? ORDER BY created_at",
+            (user_id,),
+        ) as c:
+            rows = await c.fetchall()
+        return [dict(row) for row in rows]
+
+    async def revoke_token(self, token: str) -> bool:
+        """Отзыв конкретного токена (кнопка «выйти» в самом приложении)."""
+        if not token:
+            return False
+        cursor = await self.db.execute(
+            "DELETE FROM device_tokens WHERE token_hash = ?",
+            (self.hash_token(token),),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def revoke_all(self, user_id: int) -> int:
+        """
+        Отзыв всех устройств пользователя (/unlink_app в боте).
+        Заодно удаляет висящий код привязки. Возвращает число устройств.
+        """
+        async with self.db.lock:
+            cursor = await self.db.execute(
+                "DELETE FROM device_tokens WHERE user_id = ?", (user_id,)
+            )
+            await self.db.execute(
+                "DELETE FROM device_link_codes WHERE user_id = ?", (user_id,)
+            )
+            await self.db.commit()
+        if cursor.rowcount:
+            self._logger.info(
+                "devices.revoked_all user_id=%s count=%s", user_id, cursor.rowcount,
+            )
+        return cursor.rowcount

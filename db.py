@@ -446,6 +446,39 @@ async def init_db(db: aiosqlite.Connection):
             PRIMARY KEY (user_id, subject_id)
         );
 
+        -- Одноразовые коды привязки desktop-клиента (Windows-приложение)
+        -- к Telegram-аккаунту. Создаются командой /link_app, TTL 10 минут,
+        -- single-use: строка удаляется при успешном обмене на токен.
+        -- Код — 8 символов Crockford-подобного алфавита без похожих глифов
+        -- (см. DeviceRepository._generate_code): keyspace ~1e12 против
+        -- brute-force, при этом читается и набирается вручную.
+        -- На пользователя живёт максимум один активный код — новый /link_app
+        -- затирает предыдущий.
+        CREATE TABLE IF NOT EXISTS device_link_codes (
+            code TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_link_codes_user
+            ON device_link_codes(user_id);
+
+        -- Долгоживущие токены устройств (Bearer-авторизация desktop-клиента).
+        -- В БД хранится ТОЛЬКО SHA-256 hash токена: сам токен показывается
+        -- клиенту один раз в ответе POST /auth/link. Утечка дампа БД не даёт
+        -- доступа к аккаунтам. last_seen_at обновляется на каждый
+        -- авторизованный запрос — по нему пользователь в /devices видит,
+        -- какое устройство активно, и может отозвать доступ.
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            device_name TEXT NOT NULL DEFAULT 'Desktop',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_tokens_user
+            ON device_tokens(user_id);
+
         -- UX flags for plan onboarding per subject.
         CREATE TABLE IF NOT EXISTS user_plan_meta (
             user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,

@@ -31,6 +31,13 @@ services:
     volumes:
       - ./data:/app/data
 
+    # HTTP API для desktop-приложения (api.py). Порт публикуется только
+    # когда в .env стоит API_ENABLED=1 — иначе внутри контейнера никто
+    # не слушает и маппинг просто ничего не отдаёт. Наружу — через
+    # reverse-proxy с TLS: WebView Tauri ходит по https.
+    ports:
+      - "127.0.0.1:8080:8080"
+
     # Лог-драйвер Docker'а ловит stdout — `docker compose logs` работает.
     # Файл-логи всё равно остаются в /app/data для post-mortem.
     logging:

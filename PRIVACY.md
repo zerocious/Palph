@@ -84,6 +84,13 @@ Bot. We persist only the fields marked **[stored]**:
   involved.
 - **Friend invite tokens** — short-lived (3-day) tokens used in
   `t.me/<bot>?start=friend_<token>` deep links.
+- **Linked desktop devices** — if you connect the Windows app with
+  `/link_app`: a device name you choose (or "Desktop"), the SHA-256 hash of
+  the access token (never the token itself), and when the device was linked
+  and last used. `/unlink_app` disconnects every device; deleting your
+  account removes these records too. The IP address of a device-linking
+  attempt is used in memory for rate-limiting only and is not stored in the
+  database.
 - **Tip view history** — which productivity tip you've already seen
   (per-tip), the daily tip-of-the-day selected for you, total tip views and
   whether today's coin reward was granted.
@@ -190,6 +197,8 @@ before using the Bot.
 | Study sessions, progress, achievements | Until you request deletion |
 | Event log | Until you request deletion |
 | Friend requests / friendships / invite tokens | Until you delete the friendship or the token expires (3 days) |
+| Linked device tokens | Until `/unlink_app`, logout in the app, or account deletion |
+| Device link codes | 10 minutes, or until first use |
 | Application log (`bot.log`) | Rotated automatically at 25 MB total |
 | Database backups | 30 days, then auto-deleted |
 

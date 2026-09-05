@@ -362,7 +362,9 @@
     "leaderboard": "Weekly leaderboard",
     "friends": "Friends and rankings",
     "share_friend": "Friend invite link",
-    "delete_account": "🗑 Delete my account and all data"
+    "delete_account": "🗑 Delete my account and all data",
+    "link_app": "Windows app link code",
+    "unlink_app": "Disconnect desktop apps"
   },
   "support": {
     "message_sent": "✅ Your message was sent! An admin will reply soon.\n\nMeanwhile, keep studying — tap Study in the menu below 👇",
@@ -531,5 +533,13 @@
     "purchased": "❄️ Freeze purchased for <b>{cost}</b> 🪙.\n\n🔥 Streak: <b>{streak}</b> days — saved on the next missed day.",
     "not_enough_coins": "❌ Not enough coins.",
     "cooldown_active": "⏳ A freeze was bought in the last 7 days."
+  },
+  "devices": {
+    "needs_start": "Send /start first.",
+    "link_intro": "🖥 <b>Palph app for Windows</b>\n\nLink code: <code>{code}</code>\n\nEnter it in the desktop app — it will connect to this account: same coins, streak, achievements and pet.\n\n⏳ The code is valid for {minutes} minutes and works only once.\n🔒 Do not share it: whoever enters the code gets into your profile.\n\nDisconnect all devices: /unlink_app",
+    "linked_count": "\n\n📱 Linked devices: {count}",
+    "link_failed": "Could not create a code. Try again later.",
+    "unlink_done": "🔌 Devices disconnected: {count}. The app will ask for a new code next time.",
+    "unlink_none": "No linked devices."
   }
 }
