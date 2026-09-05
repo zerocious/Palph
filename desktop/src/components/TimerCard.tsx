@@ -15,8 +15,8 @@ const DURATIONS = [25, 45, 60];
 interface Props {
   token: string;
   timer: TimerState | null;
-  /** Перечитать профиль/таймер с сервера после изменения состояния. */
-  onChanged: () => void;
+  /** Перечитать состояние; sessionCounted → обновить и достижения. */
+  onChanged: (sessionCounted: boolean) => void;
 }
 
 /**
@@ -70,14 +70,14 @@ export function TimerCard({ token, timer, onChanged }: Props) {
         if (natural && outcome.counted) {
           await notifySessionDone(outcome.minutes, outcome.coins_earned);
         }
-        onChanged();
+        onChanged(outcome.counted);
       } catch (e) {
         // 409 — таймер уже закрыт: чаще всего вторым кликом или
         // автозавершением, случившимся параллельно. Сервер засчитал
         // сессию ровно один раз, показывать человеку ошибку не за что —
         // просто подтягиваем актуальное состояние.
         if (e instanceof ApiError && e.status === 409) {
-          onChanged();
+          onChanged(true);
         } else {
           setError(e instanceof Error ? e.message : "Не удалось завершить сессию");
         }
@@ -100,9 +100,15 @@ export function TimerCard({ token, timer, onChanged }: Props) {
     setResult(null);
     try {
       await startTimer(token, minutes);
-      onChanged();
+      onChanged(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось запустить таймер");
+      // 409 — в Telegram уже идёт таймер. Сервер отвечает по-английски,
+      // человеку нужна понятная причина и что с ней делать.
+      if (e instanceof ApiError && e.status === 409) {
+        setError("Таймер уже идёт в Telegram — заверши сессию там.");
+      } else {
+        setError(e instanceof Error ? e.message : "Не удалось запустить таймер");
+      }
     } finally {
       setBusy(false);
     }

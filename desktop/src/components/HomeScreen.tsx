@@ -1,20 +1,15 @@
 import { useEffect, useState } from "react";
 
-import {
-  fetchPetImage,
-  type Achievement,
-  type Profile,
-  type TimerState,
-} from "../api";
+import { fetchPetImage, type Achievement, type Profile } from "../api";
 import { formatMinutes, plural } from "../format";
 import { TimerCard } from "./TimerCard";
 
 interface Props {
   token: string;
   profile: Profile;
-  timer: TimerState | null;
   achievements: Achievement[];
-  onChanged: () => void;
+  /** sessionCounted=true → перечитать и достижения: они могли открыться. */
+  onChanged: (sessionCounted: boolean) => void;
   onLogout: () => void;
 }
 
@@ -22,11 +17,11 @@ interface Props {
 export function HomeScreen({
   token,
   profile,
-  timer,
   achievements,
   onChanged,
   onLogout,
 }: Props) {
+  const timer = profile.timer;
   const petImage = usePetImage(token, profile.pet.emotion, profile.pet.level);
   const done = achievements.filter((a) => a.completed).length;
 

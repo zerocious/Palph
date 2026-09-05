@@ -18,11 +18,10 @@ Telegram.
 Эндпоинты:
     GET  /health              — liveness, без авторизации
     POST /auth/link           — код привязки → токен устройства
-    GET  /api/me              — профиль: монеты, стрик, сессии, питомец
+    GET  /api/me              — профиль, питомец и таймер одним ответом
     GET  /api/pet             — питомец + инвентарь
     GET  /api/pet/image       — PNG-арт питомца (тот же asset, что в боте)
     GET  /api/achievements    — каталог достижений + прогресс пользователя
-    GET  /api/pomodoro        — состояние таймера (отсчёт на сервере)
     POST /api/pomodoro/start  — запустить таймер
     POST /api/pomodoro/finish — закрыть таймер и начислить время учёбы
     GET  /api/devices         — привязанные устройства
@@ -79,22 +78,36 @@ class LinkAttemptLimiter:
     def __init__(self, max_attempts: int = 10, window_seconds: int = 300):
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
+        # defaultdict, но записи не копятся: _prune удаляет опустевшие.
         self._buckets: dict[str, deque] = defaultdict(deque)
 
-    def _prune(self, ip: str) -> deque:
-        bucket = self._buckets[ip]
+    def _prune(self, ip: str) -> int:
+        """
+        Выкидывает протухшие отметки и возвращает, сколько осталось.
+
+        Пустые бакеты удаляются: иначе словарь рос бы на каждый новый
+        IP и никогда не уменьшался — при переборе с меняющихся адресов
+        это утечка памяти в процессе, который живёт месяцами.
+        """
+        bucket = self._buckets.get(ip)
+        if bucket is None:
+            return 0
         cutoff = monotonic() - self.window_seconds
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
-        return bucket
+        if not bucket:
+            del self._buckets[ip]
+            return 0
+        return len(bucket)
 
     def is_blocked(self, ip: str) -> bool:
         """Исчерпан ли лимит неудач для этого IP (без регистрации попытки)."""
-        return len(self._prune(ip)) >= self.max_attempts
+        return self._prune(ip) >= self.max_attempts
 
     def register_failure(self, ip: str) -> None:
         """Отмечает неверный код — только такие попытки приближают блок."""
-        self._prune(ip).append(monotonic())
+        self._prune(ip)
+        self._buckets[ip].append(monotonic())
 
 
 # Ключи app-словаря: зависимости живут в самом Application, чтобы handler'ы
@@ -287,7 +300,16 @@ async def handle_auth_link(request: web.Request) -> web.Response:
 
 @require_auth
 async def handle_me(request: web.Request, auth: AuthContext) -> web.Response:
-    """Профиль для главного экрана приложения: монеты, стрик, сессии, питомец."""
+    """
+    Всё состояние главного экрана одним ответом: профиль, питомец и
+    таймер.
+
+    Таймер здесь, а не отдельным эндпоинтом, именно ради опроса: клиент
+    дёргает этот адрес раз в 15 секунд, и три запроса вместо одного
+    означали бы три резолва токена и втрое больше SQL на ровном месте.
+    Достижения приложение перечитывает только после засчитанной сессии —
+    между сессиями они не меняются.
+    """
     deps = request.app[APP_DEPS]
     user_id = auth.user_id
 
@@ -312,6 +334,7 @@ async def handle_me(request: web.Request, auth: AuthContext) -> web.Response:
         "last_session": user["last_session"],
         "local_time": now_local.isoformat(),
         "pet": _pet_payload(pet, emotion),
+        "timer": await deps["timer_repo"].get(user_id),
     })
 
 
@@ -379,14 +402,6 @@ async def handle_achievements(request: web.Request, auth: AuthContext) -> web.Re
 
 
 @require_auth
-async def handle_pomodoro(request: web.Request, auth: AuthContext) -> web.Response:
-    """Текущее состояние таймера: сколько прошло и сколько осталось."""
-    deps = request.app[APP_DEPS]
-    state = await deps["timer_repo"].get(auth.user_id)
-    return _json({"timer": state})
-
-
-@require_auth
 async def handle_pomodoro_start(request: web.Request, auth: AuthContext) -> web.Response:
     """
     Запускает таймер. Body: {"minutes": 25}.
@@ -405,6 +420,11 @@ async def handle_pomodoro_start(request: web.Request, auth: AuthContext) -> web.
         return _error("field 'minutes' must be an integer", 400)
 
     deps = request.app[APP_DEPS]
+    # Симметрично боту: два таймера одновременно давали бы монеты и очки
+    # лидерборда за одно и то же время дважды.
+    if await deps["timer_repo"].telegram_timer_active(auth.user_id):
+        return _error("a Pomodoro is already running in Telegram", 409)
+
     state = await deps["timer_repo"].start(auth.user_id, minutes)
     logger.info(
         "api.pomodoro_started user_id=%s minutes=%s",
@@ -596,7 +616,6 @@ def create_app(
         web.get("/api/pet", handle_pet),
         web.get("/api/pet/image", handle_pet_image),
         web.get("/api/achievements", handle_achievements),
-        web.get("/api/pomodoro", handle_pomodoro),
         web.post("/api/pomodoro/start", handle_pomodoro_start),
         web.post("/api/pomodoro/finish", handle_pomodoro_finish),
         web.get("/api/devices", handle_devices),

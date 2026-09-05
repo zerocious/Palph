@@ -15,8 +15,17 @@ export interface Pet {
   emotion: "joy" | "sad" | "neutral";
 }
 
+export interface TimerState {
+  started_at: string;
+  duration_minutes: number;
+  elapsed_seconds: number;
+  remaining_seconds: number;
+}
+
 export interface Profile {
   user_id: number;
+  /** Таймер приходит вместе с профилем: клиент опрашивает один адрес. */
+  timer: TimerState | null;
   coins: number;
   streak: number;
   total_sessions: number;
@@ -38,13 +47,6 @@ export interface Achievement {
   completed: boolean;
   progress: number;
   target: number;
-}
-
-export interface TimerState {
-  started_at: string;
-  duration_minutes: number;
-  elapsed_seconds: number;
-  remaining_seconds: number;
 }
 
 export interface FinishResult {
@@ -142,9 +144,6 @@ export const getAchievements = (token: string) =>
 
 export const getDevices = (token: string) =>
   request<{ devices: Device[] }>("/api/devices", { token }).then((r) => r.devices);
-
-export const getTimer = (token: string) =>
-  request<{ timer: TimerState | null }>("/api/pomodoro", { token }).then((r) => r.timer);
 
 export const startTimer = (token: string, minutes: number) =>
   request<{ timer: TimerState }>("/api/pomodoro/start", {

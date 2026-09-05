@@ -2672,6 +2672,29 @@ class DesktopTimerRepository:
             "remaining_seconds": max(0, total - elapsed),
         }
 
+    async def is_running(self, user_id: int) -> bool:
+        """
+        Идёт ли прямо сейчас таймер приложения (с незакончившимся временем).
+
+        Используется ботом, чтобы не запускать второй Pomodoro поверх
+        десктопного. Именно «незакончившийся»: если время вышло, а
+        приложение ещё не прислало finish (закрыли ноутбук), строка
+        висит — блокировать из-за неё Telegram-таймер нельзя, иначе
+        человек остался бы без таймера до следующего запуска приложения.
+        """
+        state = await self.get(user_id)
+        return bool(state and state["remaining_seconds"] > 0)
+
+    async def telegram_timer_active(self, user_id: int) -> bool:
+        """
+        Идёт ли таймер, запущенный в Telegram (зеркальная проверка).
+
+        Делегирует в fsm_storage: формат FSM-ключа принадлежит ему, а не
+        этому репозиторию.
+        """
+        from fsm_storage import telegram_timer_active as _active
+        return await _active(self.db, user_id)
+
     async def claim(self, user_id: int) -> Optional[dict]:
         """
         Атомарно забирает таймер: возвращает его состояние и тем же

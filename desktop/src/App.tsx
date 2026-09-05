@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
   getAchievements,
   getProfile,
-  getTimer,
   logout as revokeToken,
   type Achievement,
   type Profile,
-  type TimerState,
 } from "./api";
 import { HomeScreen } from "./components/HomeScreen";
 import { LinkScreen } from "./components/LinkScreen";
@@ -19,7 +17,6 @@ const POLL_INTERVAL = 15_000;
 
 interface Data {
   profile: Profile;
-  timer: TimerState | null;
   achievements: Achievement[];
 }
 
@@ -28,21 +25,36 @@ export function App() {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Получен ли уже каталог достижений (см. refresh).
+  const achievementsLoaded = useRef(false);
+
   const forget = useCallback(() => {
     clearToken();
     setToken(null);
     setData(null);
+    achievementsLoaded.current = false;
   }, []);
 
-  const refresh = useCallback(async () => {
+  /**
+   * Перечитывает состояние. Достижения тянем только когда они могли
+   * измениться (первая загрузка и засчитанная сессия) — между сессиями
+   * каталог тот же, а на опросе раз в 15 секунд это лишний запрос,
+   * лишний резолв токена и лишние два килобайта.
+   */
+  const refresh = useCallback(async (withAchievements = false) => {
     if (!token) return;
     try {
-      const [profile, timer, achievements] = await Promise.all([
-        getProfile(token),
-        getTimer(token),
-        getAchievements(token),
-      ]);
-      setData({ profile, timer, achievements });
+      const profile = await getProfile(token);
+      // Тянем их также, если ещё ни разу не получили: первая загрузка
+      // могла упасть по сети, и без этого условия экран остался бы с
+      // пустым списком до ближайшей засчитанной сессии.
+      const needAchievements = withAchievements || !achievementsLoaded.current;
+      const achievements = needAchievements ? await getAchievements(token) : null;
+      if (achievements) achievementsLoaded.current = true;
+      setData((prev) => ({
+        profile,
+        achievements: achievements ?? prev?.achievements ?? [],
+      }));
       setError(null);
     } catch (e) {
       // 401 — токен отозвали через /unlink_app или «Отключить» на другом
@@ -57,7 +69,7 @@ export function App() {
 
   useEffect(() => {
     if (!token) return;
-    void refresh();
+    void refresh(true);  // первая загрузка — вместе с достижениями
     const id = window.setInterval(() => void refresh(), POLL_INTERVAL);
     return () => window.clearInterval(id);
   }, [token, refresh]);
@@ -95,9 +107,8 @@ export function App() {
       <HomeScreen
         token={token}
         profile={data.profile}
-        timer={data.timer}
         achievements={data.achievements}
-        onChanged={() => void refresh()}
+        onChanged={(sessionCounted) => void refresh(sessionCounted)}
         onLogout={() => void onLogout()}
       />
     </>

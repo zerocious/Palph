@@ -268,9 +268,10 @@ class TestPomodoro:
     """
 
     async def test_no_timer_initially(self, api_env):
+        """Состояние таймера приходит вместе с профилем — отдельного опроса нет."""
         client, device_repo, user_id = api_env
         token = await _link(client, device_repo, user_id)
-        resp = await client.get("/api/pomodoro", headers={"Authorization": f"Bearer {token}"})
+        resp = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
         assert resp.status == 200
         assert (await resp.json())["timer"] is None
 
@@ -379,7 +380,7 @@ class TestPomodoro:
         await db.commit()
 
         await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
-        timer = (await (await client.get("/api/pomodoro", headers=headers)).json())["timer"]
+        timer = (await (await client.get("/api/me", headers=headers)).json())["timer"]
         assert timer["elapsed_seconds"] <= 5
 
     async def test_timer_is_per_user(self, api_env, db):
@@ -397,7 +398,7 @@ class TestPomodoro:
             headers={"Authorization": f"Bearer {token}"},
         )
         resp = await client.get(
-            "/api/pomodoro", headers={"Authorization": f"Bearer {other_token}"},
+            "/api/me", headers={"Authorization": f"Bearer {other_token}"},
         )
         assert (await resp.json())["timer"] is None
 
@@ -428,3 +429,110 @@ class TestPomodoro:
         user = await UserRepository(db).get_user(user_id)
         assert user["total_sessions"] == 1
         assert await SessionRepository(db).get_total_minutes(user_id) == 25
+
+
+class TestTimerMutualExclusion:
+    """
+    Таймер в Telegram и таймер в приложении не должны идти одновременно:
+    иначе одно и то же время оплачивается дважды — монетами, XP питомца
+    и очками недельного лидерборда, где люди соревнуются друг с другом.
+    """
+
+    @staticmethod
+    async def _set_telegram_timer(db, user_id: int, state: str) -> None:
+        """Пишет FSM-строку так же, как её пишет aiogram-хранилище бота."""
+        await db.execute(
+            "INSERT OR REPLACE INTO fsm_storage (key, state, data) VALUES (?, ?, '{}')",
+            (f"12345:{user_id}:{user_id}:0", state),
+        )
+        await db.commit()
+
+    def test_telegram_timer_state_constant_matches_bot(self):
+        """
+        fsm_storage дублирует строку состояния, чтобы не импортировать
+        bot.py (циклический импорт). Этот тест ловит рассинхрон: если
+        TimerStates переименуют, защита молча перестанет работать.
+        """
+        import bot
+        from fsm_storage import TELEGRAM_TIMER_STATE
+
+        assert bot.TimerStates.active.state == TELEGRAM_TIMER_STATE
+
+    async def test_start_blocked_while_telegram_timer_runs(self, api_env, db):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await self._set_telegram_timer(db, user_id, "TimerStates:active")
+
+        resp = await client.post(
+            "/api/pomodoro/start", json={"minutes": 25}, headers=headers,
+        )
+        assert resp.status == 409
+        async with db.execute("SELECT COUNT(*) AS n FROM desktop_timers") as c:
+            assert (await c.fetchone())["n"] == 0
+
+    async def test_start_allowed_once_telegram_timer_ends(self, api_env, db):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await self._set_telegram_timer(db, user_id, "TimerStates:active")
+        assert (await client.post(
+            "/api/pomodoro/start", json={"minutes": 25}, headers=headers,
+        )).status == 409
+
+        # Бот завершил сессию — состояние очищено.
+        await db.execute("DELETE FROM fsm_storage")
+        await db.commit()
+        assert (await client.post(
+            "/api/pomodoro/start", json={"minutes": 25}, headers=headers,
+        )).status == 200
+
+    async def test_other_fsm_states_do_not_block(self, api_env, db):
+        """Человек в мастере создания карточки — это не таймер."""
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await self._set_telegram_timer(db, user_id, "FlashcardCreateStates:waiting_for_term")
+
+        resp = await client.post(
+            "/api/pomodoro/start", json={"minutes": 25}, headers=headers,
+        )
+        assert resp.status == 200
+
+    async def test_someone_elses_telegram_timer_does_not_block(self, api_env, db):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await self._set_telegram_timer(db, 999999, "TimerStates:active")
+
+        resp = await client.post(
+            "/api/pomodoro/start", json={"minutes": 25}, headers=headers,
+        )
+        assert resp.status == 200
+
+
+class TestPollShape:
+    """
+    Форма опроса: приложение дёргает сервер раз в 15 секунд, поэтому
+    состояние главного экрана обязано приходить одним ответом.
+    """
+
+    async def test_me_carries_everything_the_home_screen_needs(self, api_env, db):
+        client, device_repo, user_id = api_env
+        await PetRepository(db).create_pet_with_defaults(user_id)
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 45}, headers=headers)
+
+        body = await (await client.get("/api/me", headers=headers)).json()
+        assert {"coins", "streak", "total_sessions", "pet", "timer"} <= set(body)
+        assert body["timer"]["duration_minutes"] == 45
+
+    async def test_no_separate_timer_endpoint(self, api_env):
+        """Отдельный GET таймера убран — не возвращаем мёртвую поверхность."""
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        resp = await client.get(
+            "/api/pomodoro", headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 404

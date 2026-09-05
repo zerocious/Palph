@@ -252,3 +252,41 @@ class TestRevocation:
 
         # Откат не должен был стереть чужой код.
         assert await device_repo.exchange_code(taken) is not None
+
+
+class TestDesktopTimerGuard:
+    """is_running — то, чем бот решает, не запускать ли второй таймер."""
+
+    @pytest_asyncio.fixture
+    async def timer_repo(self, db):
+        from repository import DesktopTimerRepository
+        return DesktopTimerRepository(db)
+
+    async def test_no_timer_is_not_running(self, timer_repo, created_user):
+        assert await timer_repo.is_running(created_user) is False
+
+    async def test_fresh_timer_is_running(self, timer_repo, created_user):
+        await timer_repo.start(created_user, 25)
+        assert await timer_repo.is_running(created_user) is True
+
+    async def test_expired_timer_does_not_block_the_bot(
+        self, db, timer_repo, created_user,
+    ):
+        """
+        Время вышло, а приложение не прислало finish (закрыли ноутбук).
+        Строка висит, но блокировать из-за неё Telegram-таймер нельзя —
+        иначе человек останется без таймера до запуска приложения.
+        """
+        await timer_repo.start(created_user, 25)
+        await db.execute(
+            "UPDATE desktop_timers SET started_at = datetime('now', '-30 minutes')"
+        )
+        await db.commit()
+        assert await timer_repo.is_running(created_user) is False
+
+    async def test_timer_of_another_user_does_not_block(
+        self, timer_repo, two_users,
+    ):
+        alice, bob = two_users
+        await timer_repo.start(bob, 25)
+        assert await timer_repo.is_running(alice) is False

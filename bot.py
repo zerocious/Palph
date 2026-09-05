@@ -3569,6 +3569,8 @@ async def handle_standard_timer(message: Message, state: FSMContext):
             reply_markup=get_timer_active_keyboard(locale),
         )
         return
+    if await _desktop_timer_blocks_start(message, locale):
+        return
     duration = 25
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
@@ -3610,8 +3612,40 @@ async def handle_custom_timer_start(message: Message, state: FSMContext):
             reply_markup=get_timer_active_keyboard(locale),
         )
         return
+    if await _desktop_timer_blocks_start(message, locale):
+        return
     await message.answer(t("timer.custom_ask", locale))
     await state.set_state(TimerStates.waiting_for_duration)
+
+async def _desktop_timer_blocks_start(message: Message, locale: str) -> bool:
+    """
+    True, если таймер уже идёт в desktop-приложении — тогда не запускаем
+    второй в Telegram и объясняем почему.
+
+    Зеркало проверки в api.handle_pomodoro_start: два параллельных таймера
+    начисляли бы монеты, XP и очки лидерборда за одно и то же время дважды.
+    Ошибка чтения не должна ронять запуск таймера — в худшем случае просто
+    не сработает защита, это лучше, чем неработающая кнопка.
+    """
+    if desktop_timer_repo is None:
+        return False  # main() ещё не отработал (в тестах импорта)
+    try:
+        state = await desktop_timer_repo.get(message.from_user.id)
+    except Exception as e:
+        logger.warning(
+            "timer.desktop_check_failed user=%s reason=%s",
+            message.from_user.id, type(e).__name__,
+        )
+        return False
+    if not state or state["remaining_seconds"] <= 0:
+        return False
+    remaining_min = max(1, -(-state["remaining_seconds"] // 60))  # ceil
+    await message.answer(
+        t("timer.desktop_running", locale, remaining=remaining_min),
+        reply_markup=get_study_keyboard(locale),
+    )
+    return True
+
 
 async def stop_active_timer(message: Message, state: FSMContext) -> bool:
     """
@@ -7739,6 +7773,9 @@ async def process_duration(message: Message, state: FSMContext):
             user_id, username=message.from_user.username
         )
         await apply_user_bot_commands(user_id)
+    if await _desktop_timer_blocks_start(message, locale):
+        await state.clear()
+        return
     await state.set_state(TimerStates.active)
     await state.update_data(duration=duration, start_time=datetime.now())
     await message.answer(

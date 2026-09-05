@@ -46,6 +46,31 @@ def _key_str(key: StorageKey) -> str:
     return f"{key.bot_id}:{key.chat_id}:{key.user_id}:{key.thread_id or 0}"
 
 
+# Строковое значение bot.TimerStates.active. Дублируется здесь, а не
+# импортируется, потому что bot.py импортирует api.py, а тот — этот модуль:
+# импорт в обратную сторону замкнул бы цикл. Расхождение с bot.py ловит
+# тест test_telegram_timer_state_constant_matches_bot.
+TELEGRAM_TIMER_STATE = "TimerStates:active"
+
+
+async def telegram_timer_active(db: aiosqlite.Connection, user_id: int) -> bool:
+    """
+    Идёт ли прямо сейчас Pomodoro, запущенный в Telegram.
+
+    Нужно desktop-части: без этой проверки можно было бы держать таймер
+    в боте и в приложении одновременно и получать монеты и очки
+    лидерборда за одно и то же время дважды.
+
+    Ключ приватного чата — "<bot_id>:<uid>:<uid>:<thread>", тот же
+    LIKE-паттерн использует UserRepository.delete_user_completely.
+    """
+    async with db.execute(
+        "SELECT 1 FROM fsm_storage WHERE key LIKE ? AND state = ? LIMIT 1",
+        (f"%:{user_id}:{user_id}:%", TELEGRAM_TIMER_STATE),
+    ) as cursor:
+        return await cursor.fetchone() is not None
+
+
 class SQLiteStorage(BaseStorage):
     def __init__(self, db: aiosqlite.Connection):
         self.db = db
