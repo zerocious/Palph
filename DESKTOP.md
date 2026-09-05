@@ -30,7 +30,7 @@
 
 ```
 bot.py (8057 строк, aiogram)  ─┐
-plan_handlers.py (791)         ├─→ services.py (2858) ─→ repository.py (2373) ─→ SQLite
+plan_handlers.py (791)         ├─→ services.py (2896) ─→ repository.py (2373) ─→ SQLite
 tasks.py (планировщик, 147)   ─┘        ↑                      ↑
                                   единственная связь      чистый aiosqlite,
                                   с aiogram — импорт      ноль зависимостей
@@ -401,7 +401,7 @@ Palph/
 │   ├── palph.spec            # PyInstaller (--onedir: старт быстрее --onefile)
 │   ├── installer.iss         # Inno Setup → Palph-Setup-x.y.z.exe
 │   └── tests/
-└── tests/                    # существующие 787, не трогаем
+└── tests/                    # существующие 791, не трогаем
 ```
 
 - **aiohttp** — уже транзитивная зависимость aiogram, для `sync_api.py`

@@ -24,7 +24,9 @@ from services import LeaderboardService, user_calendar_keys
 
 
 NOW = datetime(2026, 5, 18, 14, 30)   # Monday, mid-day
-WEEK = "2026-W21"
+# TODAY/WEEK выводятся из NOW тем же хелпером, что и прод-код, — так они
+# не могут разъехаться с ним при правке NOW. Здесь = 2026-05-18 / 2026-W21.
+TODAY, WEEK = user_calendar_keys(NOW)
 
 
 @pytest_asyncio.fixture
@@ -58,12 +60,17 @@ async def _make_user(user_repo, db, uid, age_days, *, streak=0, hidden=False, us
 
 
 async def _grant(lb_repo, uid, *, time=0, task=0, quiz=0, card=0, week_iso=WEEK):
-    """Прямой write в weekly_scores для теста; обходит cap-логику."""
-    if week_iso is None:
-        local_date, week_iso = user_calendar_keys(datetime.now())
-    else:
-        local_date = "2026-05-18"
-    await lb_repo._ensure_rows(uid, local_date, week_iso)
+    """
+    Прямой write в weekly_scores для теста; обходит cap-логику.
+
+    Пишет всегда в пришпиленную WEEK, а рендеры вызываются с
+    now_local=NOW — обе стороны смотрят в одну неделю независимо от
+    настенных часов. Раньше здесь была ветка week_iso=None, которая
+    брала naive datetime.now(): рендер при этом резолвил неделю в
+    Europe/Moscow, и по воскресеньям после 21:00 UTC это были РАЗНЫЕ
+    ISO-недели, отчего тесты падали. Ветка снята вместе с причиной.
+    """
+    await lb_repo._ensure_rows(uid, TODAY, week_iso)
     await lb_repo.db.execute(
         "UPDATE weekly_scores SET time_pts=?, task_pts=?, quiz_pts=?, card_pts=? "
         "WHERE user_id=? AND week_iso=?",
@@ -239,7 +246,7 @@ class TestRenderLeaderboard:
     ):
         await _make_user(user_repo, db, 1, age_days=2)
         await _grant(lb_repo, 1, task=80)
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "Новички" in text
 
     async def test_main_segment_for_old_user(
@@ -247,20 +254,20 @@ class TestRenderLeaderboard:
     ):
         await _make_user(user_repo, db, 1, age_days=30)
         await _grant(lb_repo, 1, task=80)
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "Основной" in text
 
     async def test_empty_segment_message(self, lb_service, user_repo, db):
         await _make_user(user_repo, db, 1, age_days=30)
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "никто не набрал" in text.lower() or "пока без очков" in text.lower()
 
     async def test_user_marked_in_top(
         self, lb_service, user_repo, lb_repo, db
     ):
         await _make_user(user_repo, db, 1, age_days=30)
-        await _grant(lb_repo, 1, task=200, week_iso=None)
-        text = await lb_service.render_leaderboard(1)
+        await _grant(lb_repo, 1, task=200)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         # Маркер для собственной строки
         assert "👤" in text
         assert "id=1" in text
@@ -269,8 +276,8 @@ class TestRenderLeaderboard:
         self, lb_service, user_repo, lb_repo, db
     ):
         await _make_user(user_repo, db, 1, age_days=30, username="alice")
-        await _grant(lb_repo, 1, task=200, week_iso=None)
-        text = await lb_service.render_leaderboard(1)
+        await _grant(lb_repo, 1, task=200)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "@alice" in text
         assert "id=1" not in text
 
@@ -278,8 +285,8 @@ class TestRenderLeaderboard:
         self, lb_service, user_repo, lb_repo, db
     ):
         await _make_user(user_repo, db, 1, age_days=30, hidden=True)
-        await _grant(lb_repo, 1, task=100, week_iso=None)
-        text = await lb_service.render_leaderboard(1)
+        await _grant(lb_repo, 1, task=100)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         # Hidden user НЕ в публичном топе, но видит свой ранг с пометкой
         assert "Вы скрыты" in text
 
@@ -288,10 +295,10 @@ class TestRenderLeaderboard:
     ):
         await _make_user(user_repo, db, 1, age_days=30, hidden=False)
         await _make_user(user_repo, db, 2, age_days=30, hidden=True)
-        await _grant(lb_repo, 1, task=50, week_iso=None)
-        await _grant(lb_repo, 2, task=500, week_iso=None)  # Топ-1 по очкам, но скрытый
+        await _grant(lb_repo, 1, task=50)
+        await _grant(lb_repo, 2, task=500)  # Топ-1 по очкам, но скрытый
         # User 1 рендерит лидерборд — должен видеть себя первым, без user 2
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "id=1" in text
         assert "id=2" not in text
 
@@ -671,7 +678,7 @@ class TestRenderFriendsTab:
         self, lb_service_with_friends, user_repo, db
     ):
         await _make_user(user_repo, db, 1, age_days=30)
-        text = await lb_service_with_friends.render_friends_tab(1)
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
         assert "нет добавленных друзей" in text
         assert "/friends" in text
 
@@ -684,10 +691,10 @@ class TestRenderFriendsTab:
         fr = lb_service_with_friends.friend_repo
         await _add_friend_pair(db, fr, 1, 2)
         # Дать счёт на текущей неделе
-        await _grant(lb_repo, 1, task=100, week_iso=None)
-        await _grant(lb_repo, 2, task=200, week_iso=None)
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=200)
 
-        text = await lb_service_with_friends.render_friends_tab(1)
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
         # Обе строки присутствуют
         assert "id=1" in text
         assert "id=2" in text
@@ -710,11 +717,11 @@ class TestRenderFriendsTab:
         fr = lb_service_with_friends.friend_repo
         await _add_friend_pair(db, fr, 1, 2)
         await _add_friend_pair(db, fr, 1, 3)
-        await _grant(lb_repo, 1, task=100, week_iso=None)
-        await _grant(lb_repo, 2, task=100, week_iso=None)
-        await _grant(lb_repo, 3, task=200, week_iso=None)
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=100)
+        await _grant(lb_repo, 3, task=200)
 
-        text = await lb_service_with_friends.render_friends_tab(1)
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
         # Порядок в тексте: 3 → 2 → 1 (200, 120, 100)
         pos_3 = text.find("@usr3")
         pos_2 = text.find("@usr2")
@@ -723,5 +730,5 @@ class TestRenderFriendsTab:
 
     async def test_no_friend_repo_returns_message(self, lb_service):
         """Если LeaderboardService построен без friend_repo — graceful message."""
-        text = await lb_service.render_friends_tab(1)
+        text = await lb_service.render_friends_tab(1, now_local=NOW)
         assert "не настроен" in text.lower()
