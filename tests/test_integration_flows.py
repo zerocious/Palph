@@ -25,6 +25,13 @@ NOW = datetime(2026, 5, 18, 14, 30)  # Monday, mid-day
 TODAY = "2026-05-18"
 WEEK = "2026-W21"
 
+# NOW передаётся и в grant_-методы, и в render_-методы. Это обязательно:
+# grant_ пишет очки в неделю из своего now_local (здесь — W21), а render_
+# без явного now_local берёт РЕАЛЬНОЕ текущее время из users.timezone и
+# показывает текущую неделю. Раньше NOW уходил только в grant_, поэтому
+# тесты проходили ровно одну календарную неделю (18–24 мая 2026), а потом
+# рендер начинал показывать пустую текущую неделю. См. коммит с фиксом.
+
 
 @pytest_asyncio.fixture
 async def lb_repo(db):
@@ -98,7 +105,7 @@ class TestFullLeaderboardJourney:
         assert ws["card_pts"] == 34
 
         # Render должен показать user'а
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "id=1" in text
         # multiplier 10-day streak = 1.10 → total_final = 254 × 1.10 = 279.4 → display "279"
         # (наш render использует :.0f)
@@ -147,7 +154,7 @@ class TestFriendsFullLifecycle:
         await lb_repo.grant_task_pts(1, now_local=NOW)
         await lb_repo.grant_task_pts(1, now_local=NOW)  # 80 pts
         await lb_repo.grant_task_pts(2, now_local=NOW)  # 40 pts
-        text = await lb_service.render_friends_tab(1)
+        text = await lb_service.render_friends_tab(1, now_local=NOW)
         # Alice впереди, sorted DESC
         pos_1 = text.find("id=1")
         pos_2 = text.find("id=2")
@@ -230,12 +237,12 @@ class TestPrivacyEndToEnd:
             await lb_repo.grant_task_pts(2, now_local=NOW)  # 120
 
         # Public render для User 1 — User 2 не показывается, User 1 топ
-        text_for_1 = await lb_service.render_leaderboard(1)
+        text_for_1 = await lb_service.render_leaderboard(1, now_local=NOW)
         assert "id=1" in text_for_1
         assert "id=2" not in text_for_1
 
         # Render для User 2 (он сам) — показывает свой rank с маркером "Вы скрыты"
-        text_for_2 = await lb_service.render_leaderboard(2)
+        text_for_2 = await lb_service.render_leaderboard(2, now_local=NOW)
         assert "Вы скрыты" in text_for_2
         # User 2 видит себя в собственном render'е (как rank-info)
         assert "id=2" in text_for_2 or "Ваш ранг" in text_for_2
@@ -342,7 +349,7 @@ class TestMultiUserMultiplierReordering:
         await db.commit()
 
         # Render: B должен быть выше A
-        text = await lb_service.render_leaderboard(1)
+        text = await lb_service.render_leaderboard(1, now_local=NOW)
         pos_2 = text.find("id=2")
         pos_1 = text.find("id=1")
         pos_3 = text.find("id=3")

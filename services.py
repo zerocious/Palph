@@ -1266,13 +1266,25 @@ class LeaderboardService:
             return "newbie"  # defensive
         return "newbie" if row["age_days"] < 7 else "main"
 
-    async def _current_week_iso(self, user_id: int) -> str:
-        """Текущая ISO-неделя в TZ пользователя."""
-        now_local = await self.leaderboard_repo._now_local_for_user(user_id)
+    async def _current_week_iso(
+        self, user_id: int, now_local: datetime | None = None
+    ) -> str:
+        """
+        Текущая ISO-неделя в TZ пользователя.
+
+        now_local — тот же необязательный шов, что у grant_-методов
+        LeaderboardRepository: caller может передать своё «сейчас» ради
+        детерминизма. Прод (bot.py) его не передаёт и получает реальное
+        время из users.timezone.
+        """
+        if now_local is None:
+            now_local = await self.leaderboard_repo._now_local_for_user(user_id)
         _, week_iso = user_calendar_keys(now_local)
         return week_iso
 
-    async def render_leaderboard(self, user_id: int) -> str:
+    async def render_leaderboard(
+        self, user_id: int, now_local: datetime | None = None
+    ) -> str:
         """
         Текст leaderboard'а для отправки в Telegram (HTML parse_mode).
         Показывает:
@@ -1284,7 +1296,7 @@ class LeaderboardService:
         UsernameSyncMiddleware), иначе fallback id=...
         """
         segment = await self._user_segment(user_id)
-        week_iso = await self._current_week_iso(user_id)
+        week_iso = await self._current_week_iso(user_id, now_local)
 
         # Публичный топ (исключая hidden)
         public_top = await self.leaderboard_repo.get_ranked_segment(
@@ -1446,7 +1458,9 @@ class LeaderboardService:
     # ------------------------------------------------------------
     # Friends-tab (Phase 4 / LEADERBOARD.md §Segments → Friends)
     # ------------------------------------------------------------
-    async def render_friends_tab(self, user_id: int) -> str:
+    async def render_friends_tab(
+        self, user_id: int, now_local: datetime | None = None
+    ) -> str:
         """
         Telegram-friendly текст friends-tab: viewer + его friends, отсортированы
         по total_final текущей недели (с применением streak_multiplier).
@@ -1460,7 +1474,7 @@ class LeaderboardService:
         if self.friend_repo is None:
             return "Friends-функционал не настроен."
 
-        week_iso = await self._current_week_iso(user_id)
+        week_iso = await self._current_week_iso(user_id, now_local)
         friend_ids = await self.friend_repo.get_friends(user_id)
 
         if not friend_ids:
