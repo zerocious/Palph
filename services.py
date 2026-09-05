@@ -9,11 +9,31 @@ from pathlib import Path
 from time import monotonic
 
 import aiosqlite
-from aiogram.exceptions import (
-    TelegramForbiddenError,
-    TelegramRetryAfter,
-    TelegramBadRequest,
-)
+
+# Домен (services + repository) переиспользуется десктоп-клиентом, который
+# ставится БЕЗ aiogram — тянуть в оффлайн-приложение aiogram+pydantic+
+# magic-filter ради трёх классов исключений незачем. Когда aiogram есть
+# (бот, тесты) — ловятся настоящие классы, поведение не меняется. Когда
+# его нет, заглушки недостижимы: все три упоминаются только на путях
+# отправки в Telegram, а они выполняются лишь при bot is not None.
+# См. DESKTOP.md §2.1.
+try:
+    from aiogram.exceptions import (
+        TelegramForbiddenError,
+        TelegramRetryAfter,
+        TelegramBadRequest,
+    )
+except ModuleNotFoundError:  # pragma: no cover - ветка десктоп-клиента
+    class TelegramForbiddenError(Exception):
+        """Заглушка: без aiogram отправки в Telegram не бывает."""
+
+    class TelegramRetryAfter(Exception):
+        """Заглушка: без aiogram отправки в Telegram не бывает."""
+
+        retry_after = 1
+
+    class TelegramBadRequest(Exception):
+        """Заглушка: без aiogram отправки в Telegram не бывает."""
 
 from repository import UserRepository, SessionRepository, PetRepository, LeaderboardRepository
 from i18n import t, DEFAULT_LOCALE, SUPPORTED_LOCALES

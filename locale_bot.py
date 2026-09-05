@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from aiogram.types import BotCommand
-
 from i18n import (
     DEFAULT_LOCALE,
     SUPPORTED_LOCALES,
@@ -102,7 +100,14 @@ def tip_categories(locale: str) -> dict[str, dict]:
     }
 
 
-def commands_for_locale(locale: str) -> list[BotCommand]:
+def commands_for_locale(locale: str) -> list["BotCommand"]:
+    # aiogram импортируется здесь, а не на уровне модуля: locale_bot —
+    # общий модуль (его тянет services.py через file_upload_security), а
+    # десктоп-клиент ставится без aiogram. Единственное место в файле,
+    # которому нужен Telegram-тип, и вызывается оно только ботом при
+    # старте (setMyCommands). См. DESKTOP.md §2.1.
+    from aiogram.types import BotCommand
+
     loc = normalize_locale(locale)
     return [
         BotCommand(command="start", description=t("commands.start", loc)),
