@@ -181,11 +181,21 @@ def test_timer_reconcile_resumed_translated():
 
 def test_bot_handlers_no_undefined_user_id_for_loc():
     """Regression: handlers must define user_id before await loc(user_id)."""
+    NEEDLE = "await loc(user_id)"
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
+    # ast.get_source_segment заново режет весь исходник на строки при каждом
+    # вызове, а bot.py — 8000+ строк с сотнями async-функций. Режем один раз
+    # и используем диапазон строк как дешёвый предфильтр: он заведомо
+    # надмножество точного сегмента, поэтому функция без совпадения в
+    # диапазоне не может иметь его и в сегменте. Точный (и медленный)
+    # get_source_segment зовём только для кандидатов.
+    lines = src.splitlines(keepends=True)
     issues = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if NEEDLE not in "".join(lines[node.lineno - 1:node.end_lineno]):
             continue
         assigned = {a.arg for a in node.args.args}
         for n in ast.walk(node):
@@ -198,7 +208,7 @@ def test_bot_handlers_no_undefined_user_id_for_loc():
             elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
                 assigned.add(n.target.id)
         code = ast.get_source_segment(src, node) or ""
-        if "await loc(user_id)" in code and "user_id" not in assigned:
+        if NEEDLE in code and "user_id" not in assigned:
             issues.append(node.name)
     assert issues == [], f"handlers with undefined user_id: {issues}"
 

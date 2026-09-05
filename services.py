@@ -183,6 +183,8 @@ class UserRateLimiter:
         # user_id → last warning sent (чтобы не спамить warnings)
         self._warned_at: dict[int, float] = {}
         self._lock = threading.Lock()
+        # Время последней уборки протухших бакетов (см. _sweep).
+        self._last_sweep = monotonic()
 
     def check(self, user_id: int) -> str:
         """Регистрирует event и возвращает ok/warn/block."""
@@ -215,7 +217,46 @@ class UserRateLimiter:
                     self._warned_at[user_id] = now
                     return "warn"
 
+            # Уборка не чаще раза в окно: чистить чаще бессмысленно, т.к.
+            # раньше окна ни один бакет не может опустеть.
+            if now - self._last_sweep >= self.window_seconds:
+                self._sweep(now)
+
             return "ok"
+
+    def _sweep(self, now: float) -> None:
+        """
+        Выбрасывает пользователей, чьё окно полностью истекло.
+
+        Без этого _buckets и _warned_at растут монотонно: запись заводится
+        на каждый user_id, прошедший через middleware, и не удаляется
+        никогда. Замер: ~864 байта на пользователя (deque преаллоцирует
+        блок), т.е. 50k пользователей — 41 МБ, которые не возвращаются до
+        рестарта бота.
+
+        Семантику не меняет: удаляются только записи, которые и так пусты
+        по смыслу — окно истекло, и cooldown предупреждения истёк тоже.
+        Повторный check() того же пользователя восстановит их через
+        defaultdict с тем же результатом. Вызывать под self._lock.
+        """
+        self._last_sweep = now
+        cutoff = now - self.window_seconds
+        stale = []
+        for uid, bucket in self._buckets.items():
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+            if bucket:
+                continue  # пользователь ещё в окне
+            warned_at = self._warned_at.get(uid)
+            if (
+                warned_at is not None
+                and now - warned_at < self.warn_cooldown_seconds
+            ):
+                continue  # cooldown ещё идёт — состояние нужно
+            stale.append(uid)
+        for uid in stale:
+            del self._buckets[uid]
+            self._warned_at.pop(uid, None)
 
     def reset(self, user_id: int) -> None:
         """Сбросить state для пользователя (для тестов / админ-команд)."""

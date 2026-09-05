@@ -59,6 +59,87 @@ class TestWarning:
         assert rl.check(user_id=1) == "ok"
 
 
+def _backdate(rl, seconds):
+    """
+    Сдвигает всё состояние лимитера на `seconds` в прошлое.
+
+    Второй приём из докстринга модуля — прямое тыкание во внутренности
+    вместо time.sleep. Для sweep-тестов это принципиально: иначе каждый
+    из них стоил бы секунду реального ожидания.
+    """
+    for bucket in rl._buckets.values():
+        for i in range(len(bucket)):
+            bucket[i] -= seconds
+    for uid in rl._warned_at:
+        rl._warned_at[uid] -= seconds
+    rl._last_sweep -= seconds
+
+
+class TestBucketSweep:
+    """
+    Уборка протухших бакетов. Без неё _buckets/_warned_at растут монотонно:
+    запись заводится на каждый user_id, прошедший через middleware, и живёт
+    до рестарта бота (~864 байта на пользователя).
+    """
+
+    def test_expired_buckets_are_evicted(self):
+        rl = UserRateLimiter(max_actions=5, window_seconds=60, warn_threshold=1.0)
+        for uid in range(100):
+            rl.check(user_id=uid)
+        assert len(rl._buckets) == 100
+
+        _backdate(rl, 120)  # всё окно истекло
+        rl.check(user_id=999)  # любой check после окна запускает уборку
+
+        # Остался только тот, кто активен прямо сейчас
+        assert len(rl._buckets) == 1
+        assert 999 in rl._buckets
+
+    def test_active_user_survives_sweep(self):
+        rl = UserRateLimiter(max_actions=5, window_seconds=60, warn_threshold=1.0)
+        rl.check(user_id=1)
+        _backdate(rl, 120)
+        rl.check(user_id=1)  # снова активен — уборка не должна его тронуть
+        assert 1 in rl._buckets
+
+    def test_sweep_preserves_warn_cooldown(self):
+        """
+        Ключевая семантика: бакет протухает через окно (60с), а cooldown
+        длится 3600с. Если уборка выметет _warned_at вместе с бакетом,
+        пользователь получит повторный warn раньше срока.
+        """
+        rl = UserRateLimiter(
+            max_actions=4, window_seconds=60,
+            warn_threshold=0.5, warn_cooldown_seconds=3600,
+        )
+        assert rl.check(user_id=1) == "ok"
+        assert rl.check(user_id=1) == "warn"  # warn_at = int(4 * 0.5) = 2
+
+        _backdate(rl, 120)  # окно истекло, cooldown — нет
+        rl.check(user_id=2)  # триггерим уборку чужим запросом
+
+        assert 1 in rl._warned_at, "cooldown-состояние вымыто уборкой"
+        # И повторного warn пользователь не получает — cooldown ещё идёт
+        rl.check(user_id=1)
+        assert rl.check(user_id=1) == "ok"
+
+    def test_sweep_does_not_change_check_semantics(self):
+        """После уборки вернувшийся пользователь считается с нуля, как и должен."""
+        rl = UserRateLimiter(max_actions=3, window_seconds=60, warn_threshold=1.0)
+        for _ in range(3):
+            rl.check(user_id=1)
+        assert rl.check(user_id=1) == "block"
+
+        _backdate(rl, 120)
+        rl.check(user_id=2)  # уборка
+        assert 1 not in rl._buckets
+
+        # Возврат: окно чистое, снова 3 попытки до блока
+        for _ in range(3):
+            assert rl.check(user_id=1) == "ok"
+        assert rl.check(user_id=1) == "block"
+
+
 class TestUserIsolation:
     def test_separate_users_independent(self):
         rl = UserRateLimiter(max_actions=3, window_seconds=60, warn_threshold=1.0)
