@@ -2533,27 +2533,33 @@ class DeviceRepository:
         last_seen_at обновляется не чаще раза в LAST_SEEN_THROTTLE_MINUTES:
         поле нужно только чтобы человек в списке устройств видел «когда
         заходили», а write-транзакция на каждый polling-запрос отбирала бы
-        у бота общий db.lock и писала бы в WAL впустую. Условие живёт в
-        самом UPDATE — лишнего SELECT нет, а commit делаем только если
-        строка реально обновилась.
+        у бота общий db.lock и писала бы в WAL впустую.
+
+        Нужна ли запись — решает тот же SELECT, которым резолвится токен.
+        Выполнить UPDATE и НЕ закоммитить нельзя: sqlite открывает
+        транзакцию на первом же write-стейтменте, и она осталась бы
+        висеть, держа write-лок на файле БД (ночной бэкап и любой
+        внешний инструмент упирались бы в «database is locked»).
         """
         if not token:
             return None
         token_hash = self.hash_token(token)
         async with self.db.execute(
-            "SELECT user_id FROM device_tokens WHERE token_hash = ?",
-            (token_hash,),
+            "SELECT user_id, "
+            "       (last_seen_at IS NULL "
+            "        OR last_seen_at <= datetime('now', ?)) AS needs_touch "
+            "FROM device_tokens WHERE token_hash = ?",
+            (f"-{self.LAST_SEEN_THROTTLE_MINUTES} minutes", token_hash),
         ) as c:
             row = await c.fetchone()
         if not row:
             return None
-        cursor = await self.db.execute(
-            "UPDATE device_tokens SET last_seen_at = datetime('now') "
-            "WHERE token_hash = ? AND (last_seen_at IS NULL "
-            "     OR last_seen_at <= datetime('now', ?))",
-            (token_hash, f"-{self.LAST_SEEN_THROTTLE_MINUTES} minutes"),
-        )
-        if cursor.rowcount:
+        if row["needs_touch"]:
+            await self.db.execute(
+                "UPDATE device_tokens SET last_seen_at = datetime('now') "
+                "WHERE token_hash = ?",
+                (token_hash,),
+            )
             await self.db.commit()
         return row["user_id"]
 
@@ -2596,3 +2602,73 @@ class DeviceRepository:
                 "devices.revoked_all user_id=%s count=%s", user_id, cursor.rowcount,
             )
         return cursor.rowcount
+
+
+class DesktopTimerRepository:
+    """
+    Pomodoro-таймер desktop-приложения (см. api.py `/api/pomodoro/*`).
+
+    Отсчёт ведёт СЕРВЕР: started_at ставит SQLite, и заработанные минуты
+    считаются от него же, поэтому клиент не может «завершить» двухчасовую
+    сессию через секунду после старта. Прошедшее время вычисляется прямо
+    в SQL (julianday от той же БД), чтобы не сравнивать UTC-метку SQLite
+    с локальным временем процесса.
+
+    Одна строка на пользователя: повторный start перезаписывает
+    незакрытый таймер. Таймер бота живёт отдельно, в FSM.
+    """
+
+    MAX_DURATION_MINUTES = 120
+    MIN_DURATION_MINUTES = 5
+
+    def __init__(self, db: aiosqlite.Connection):
+        self.db = db
+
+    async def start(self, user_id: int, duration_minutes: int) -> dict:
+        """Запускает (или перезапускает) таймер. Возвращает его состояние."""
+        duration = max(
+            self.MIN_DURATION_MINUTES,
+            min(int(duration_minutes), self.MAX_DURATION_MINUTES),
+        )
+        await self.db.execute(
+            "INSERT INTO desktop_timers (user_id, started_at, duration_minutes) "
+            "VALUES (?, datetime('now'), ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "started_at = datetime('now'), duration_minutes = excluded.duration_minutes",
+            (user_id, duration),
+        )
+        await self.db.commit()
+        return await self.get(user_id)
+
+    async def get(self, user_id: int) -> Optional[dict]:
+        """
+        Состояние таймера или None, если не запущен. elapsed_seconds
+        считается в SQL от started_at — переживает рестарт и бота,
+        и самого приложения.
+        """
+        async with self.db.execute(
+            "SELECT started_at, duration_minutes, "
+            "       CAST((julianday('now') - julianday(started_at)) * 86400 AS INTEGER) "
+            "           AS elapsed_seconds "
+            "FROM desktop_timers WHERE user_id = ?",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+        if not row:
+            return None
+        elapsed = max(0, row["elapsed_seconds"])
+        total = row["duration_minutes"] * 60
+        return {
+            "started_at": row["started_at"],
+            "duration_minutes": row["duration_minutes"],
+            "elapsed_seconds": elapsed,
+            "remaining_seconds": max(0, total - elapsed),
+        }
+
+    async def clear(self, user_id: int) -> bool:
+        """Снимает таймер. True, если строка была."""
+        cursor = await self.db.execute(
+            "DELETE FROM desktop_timers WHERE user_id = ?", (user_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0

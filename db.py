@@ -446,6 +446,19 @@ async def init_db(db: aiosqlite.Connection):
             PRIMARY KEY (user_id, subject_id)
         );
 
+        -- Pomodoro-таймер, запущенный из desktop-приложения. Отсчёт ведёт
+        -- сервер, а не клиент: started_at ставит SQLite, и заработанные
+        -- минуты считаются от него же. Иначе приложение могло бы
+        -- "завершить" 120-минутную сессию через секунду после старта.
+        -- Одна строка на пользователя (PK): второй /pomodoro/start просто
+        -- перезаписывает предыдущий незакрытый таймер.
+        -- Таймер бота живёт отдельно, в FSM — они не мешают друг другу.
+        CREATE TABLE IF NOT EXISTS desktop_timers (
+            user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            duration_minutes INTEGER NOT NULL
+        );
+
         -- Одноразовые коды привязки desktop-клиента (Windows-приложение)
         -- к Telegram-аккаунту. Создаются командой /link_app, TTL 10 минут,
         -- single-use: строка удаляется при успешном обмене на токен.

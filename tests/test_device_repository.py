@@ -179,3 +179,35 @@ class TestRevocation:
         assert await device_repo.resolve_token(token) is None
         async with db.execute("SELECT COUNT(*) AS n FROM device_link_codes") as c:
             assert (await c.fetchone())["n"] == 0
+
+    async def test_throttled_resolve_leaves_no_open_transaction(
+        self, db, device_repo, created_user,
+    ):
+        """
+        Регрессия: троттлинг не должен оставлять висящую write-транзакцию.
+
+        Если выполнить UPDATE и не закоммитить, sqlite держит write-лок на
+        файле, и любой другой процесс (ночной бэкап, внешний скрипт)
+        падает с «database is locked».
+        """
+        import os
+        import sqlite3
+
+        code = await device_repo.create_link_code(created_user)
+        token = (await device_repo.exchange_code(code)).token
+        await device_repo.resolve_token(token)   # запись проходит
+        await device_repo.resolve_token(token)   # троттлинг — записи нет
+
+        path = None
+        async with db.execute("PRAGMA database_list") as c:
+            for row in await c.fetchall():
+                if row[1] == "main":
+                    path = row[2]
+        assert path and os.path.exists(path)
+
+        outsider = sqlite3.connect(path, timeout=2)
+        try:
+            outsider.execute("UPDATE users SET total_coins = 1 WHERE user_id = ?", (created_user,))
+            outsider.commit()
+        finally:
+            outsider.close()

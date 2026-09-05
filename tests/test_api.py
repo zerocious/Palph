@@ -13,9 +13,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from api import APP_LIMITER, LinkAttemptLimiter, create_app
 from repository import (
-    DeviceRepository, PetRepository, SessionRepository, UserRepository,
+    DesktopTimerRepository, DeviceRepository, PetRepository, SessionRepository,
+    UserRepository,
 )
-from services import AchievementService
+from services import AchievementService, StudyService
 
 
 @pytest_asyncio.fixture
@@ -24,14 +25,18 @@ async def api_env(db, achievements_catalog):
     user_repo = UserRepository(db)
     device_repo = DeviceRepository(db)
     pet_repo = PetRepository(db)
+    session_repo = SessionRepository(db)
+    ach_service = AchievementService(user_repo, achievements_catalog)
     await user_repo.create_user(77)
 
     app = create_app(
         user_repo=user_repo,
-        session_repo=SessionRepository(db),
+        session_repo=session_repo,
         pet_repo=pet_repo,
         device_repo=device_repo,
-        ach_service=AchievementService(user_repo, achievements_catalog),
+        timer_repo=DesktopTimerRepository(db),
+        ach_service=ach_service,
+        study_service=StudyService(user_repo, session_repo, ach_service, pet_repo),
         achievements=achievements_catalog,
     )
     client = TestClient(TestServer(app))
@@ -254,3 +259,144 @@ class TestCors:
         client, _, _ = api_env
         resp = await client.get("/health", headers={"Origin": "tauri://localhost"})
         assert resp.headers["Access-Control-Allow-Origin"] == "*"
+
+
+class TestPomodoro:
+    """
+    Таймер desktop-приложения. Главное свойство: время считает сервер,
+    поэтому клиент не может «завершить» длинную сессию мгновенно.
+    """
+
+    async def test_no_timer_initially(self, api_env):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        resp = await client.get("/api/pomodoro", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status == 200
+        assert (await resp.json())["timer"] is None
+
+    async def test_start_returns_countdown(self, api_env):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        resp = await client.post(
+            "/api/pomodoro/start",
+            json={"minutes": 25},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 200
+        timer = (await resp.json())["timer"]
+        assert timer["duration_minutes"] == 25
+        assert 1490 <= timer["remaining_seconds"] <= 1500
+
+    async def test_duration_is_clamped(self, api_env):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        for requested, expected in ((1, 5), (9999, 120)):
+            resp = await client.post(
+                "/api/pomodoro/start", json={"minutes": requested}, headers=headers,
+            )
+            assert (await resp.json())["timer"]["duration_minutes"] == expected
+
+    async def test_bad_minutes_is_400(self, api_env):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        for payload in ({"minutes": "25"}, {"minutes": True}, {"minutes": 12.5}):
+            resp = await client.post("/api/pomodoro/start", json=payload, headers=headers)
+            assert resp.status == 400
+
+    async def test_finish_without_timer_is_409(self, api_env):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        resp = await client.post(
+            "/api/pomodoro/finish", headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 409
+
+    async def test_instant_finish_earns_nothing(self, api_env, db):
+        """Старт и сразу финиш — прошло 0 минут, монет быть не должно."""
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
+
+        resp = await client.post("/api/pomodoro/finish", headers=headers)
+        body = await resp.json()
+        assert body["counted"] is False
+        assert body["coins_earned"] == 0
+        assert (await UserRepository(db).get_user(user_id))["total_coins"] == 0
+        # Таймер снят — повторный финиш уже 409.
+        assert (await client.post("/api/pomodoro/finish", headers=headers)).status == 409
+
+    async def test_elapsed_time_is_credited_like_in_the_bot(self, api_env, db):
+        """
+        Отматываем started_at на 30 минут назад при заявленных 25 —
+        засчитаться должны 25 (не больше длительности), с монетами,
+        сессией, XP питомца и флагом стрика, как у телеграмного таймера.
+        """
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
+        await db.execute(
+            "UPDATE desktop_timers SET started_at = datetime('now', '-30 minutes')"
+        )
+        await db.commit()
+
+        body = await (await client.post("/api/pomodoro/finish", headers=headers)).json()
+        assert body["counted"] is True
+        assert body["minutes"] == 25
+
+        user = await UserRepository(db).get_user(user_id)
+        assert user["total_coins"] == body["coins_earned"]
+        assert user["total_sessions"] == 1
+        assert bool(user["has_studied_today"]) is True
+        assert (await PetRepository(db).get_pet(user_id))["xp"] == 25
+        assert await SessionRepository(db).get_total_minutes(user_id) == 25
+
+    async def test_partial_session_credits_only_elapsed(self, api_env, db):
+        """Досрочная остановка засчитывает реально прошедшее время."""
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 60}, headers=headers)
+        await db.execute(
+            "UPDATE desktop_timers SET started_at = datetime('now', '-7 minutes')"
+        )
+        await db.commit()
+
+        body = await (await client.post("/api/pomodoro/finish", headers=headers)).json()
+        assert body["minutes"] == 7
+
+    async def test_restart_resets_the_countdown(self, api_env, db):
+        client, device_repo, user_id = api_env
+        token = await _link(client, device_repo, user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
+        await db.execute(
+            "UPDATE desktop_timers SET started_at = datetime('now', '-20 minutes')"
+        )
+        await db.commit()
+
+        await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
+        timer = (await (await client.get("/api/pomodoro", headers=headers)).json())["timer"]
+        assert timer["elapsed_seconds"] <= 5
+
+    async def test_timer_is_per_user(self, api_env, db):
+        """Таймер одного пользователя не виден другому."""
+        client, device_repo, user_id = api_env
+        other = 88
+        await UserRepository(db).create_user(other)
+        token = await _link(client, device_repo, user_id)
+        other_token = (await device_repo.exchange_code(
+            await device_repo.create_link_code(other)
+        )).token
+
+        await client.post(
+            "/api/pomodoro/start", json={"minutes": 25},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp = await client.get(
+            "/api/pomodoro", headers={"Authorization": f"Bearer {other_token}"},
+        )
+        assert (await resp.json())["timer"] is None

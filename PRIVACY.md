@@ -198,6 +198,7 @@ before using the Bot.
 | Event log | Until you request deletion |
 | Friend requests / friendships / invite tokens | Until you delete the friendship or the token expires (3 days) |
 | Linked device tokens | Until `/unlink_app`, logout in the app, or account deletion |
+| Running desktop timer | Until the session is finished or a new timer is started |
 | Device link codes | 10 minutes, or until first use |
 | Application log (`bot.log`) | Rotated automatically at 25 MB total |
 | Database backups | 30 days, then auto-deleted |

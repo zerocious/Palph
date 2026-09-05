@@ -22,6 +22,9 @@ Telegram.
     GET  /api/pet             — питомец + инвентарь
     GET  /api/pet/image       — PNG-арт питомца (тот же asset, что в боте)
     GET  /api/achievements    — каталог достижений + прогресс пользователя
+    GET  /api/pomodoro        — состояние таймера (отсчёт на сервере)
+    POST /api/pomodoro/start  — запустить таймер
+    POST /api/pomodoro/finish — закрыть таймер и начислить время учёбы
     GET  /api/devices         — привязанные устройства
     POST /api/logout          — отзыв текущего токена
 
@@ -376,6 +379,94 @@ async def handle_achievements(request: web.Request, auth: AuthContext) -> web.Re
 
 
 @require_auth
+async def handle_pomodoro(request: web.Request, auth: AuthContext) -> web.Response:
+    """Текущее состояние таймера: сколько прошло и сколько осталось."""
+    deps = request.app[APP_DEPS]
+    state = await deps["timer_repo"].get(auth.user_id)
+    return _json({"timer": state})
+
+
+@require_auth
+async def handle_pomodoro_start(request: web.Request, auth: AuthContext) -> web.Response:
+    """
+    Запускает таймер. Body: {"minutes": 25}.
+
+    Длительность зажимается репозиторием в те же 5–120 минут, что и в
+    боте, а точка отсчёта ставится сервером — клиенту остаётся только
+    рисовать обратный отсчёт.
+    """
+    try:
+        body = await _read_json(request)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    minutes = body.get("minutes", 25)
+    if isinstance(minutes, bool) or not isinstance(minutes, int):
+        return _error("field 'minutes' must be an integer", 400)
+
+    deps = request.app[APP_DEPS]
+    state = await deps["timer_repo"].start(auth.user_id, minutes)
+    logger.info(
+        "api.pomodoro_started user_id=%s minutes=%s",
+        auth.user_id, state["duration_minutes"],
+    )
+    return _json({"timer": state})
+
+
+@require_auth
+async def handle_pomodoro_finish(request: web.Request, auth: AuthContext) -> web.Response:
+    """
+    Закрывает таймер и засчитывает учёбу.
+
+    Начисляем ровно то время, которое реально прошло по серверным часам
+    (не больше заявленной длительности) — так же, как бот поступает при
+    досрочной остановке. Меньше минуты — сессия не засчитывается, как и
+    в Telegram.
+
+    Дальше работает тот же StudyService, что и у бота: монеты, ачивки,
+    XP питомца, очки лидерборда и флаг has_studied_today для стрика.
+    """
+    deps = request.app[APP_DEPS]
+    state = await deps["timer_repo"].get(auth.user_id)
+    if state is None:
+        return _error("no timer is running", 409)
+
+    minutes = min(state["elapsed_seconds"] // 60, state["duration_minutes"])
+    await deps["timer_repo"].clear(auth.user_id)
+    if minutes < 1:
+        return _json({"counted": False, "minutes": 0, "coins_earned": 0, "achievements": []})
+
+    earned, bonus, session_id = await deps["study_service"].complete_session(
+        auth.user_id, minutes,
+    )
+    logger.info(
+        "session.complete user_id=%s duration=%s coins=%s bonus=%s "
+        "session_id=%s achievements=%s source=desktop",
+        auth.user_id, minutes, minutes, bonus, session_id, len(earned),
+    )
+    event_repo = deps.get("event_repo")
+    if event_repo is not None:
+        await event_repo.log(auth.user_id, "session_completed", {
+            "duration": minutes, "coins": minutes, "bonus_coins": bonus,
+            "session_id": session_id, "achievements_earned": len(earned),
+            "source": "desktop",
+        })
+        for ach_id in earned:
+            await event_repo.log(
+                auth.user_id, "achievement_unlocked", {"achievement_id": ach_id},
+            )
+
+    return _json({
+        "counted": True,
+        "minutes": minutes,
+        "coins_earned": minutes + bonus,
+        "bonus_coins": bonus,
+        "session_id": session_id,
+        "achievements": earned,
+    })
+
+
+@require_auth
 async def handle_devices(request: web.Request, auth: AuthContext) -> web.Response:
     """
     Список привязанных устройств. token_hash наружу не отдаём —
@@ -469,8 +560,11 @@ def create_app(
     session_repo,
     pet_repo,
     device_repo,
+    timer_repo,
     ach_service,
+    study_service,
     achievements: dict,
+    event_repo=None,
 ) -> web.Application:
     """
     Собирает aiohttp-приложение с уже созданными репозиториями/сервисами
@@ -485,8 +579,13 @@ def create_app(
         "session_repo": session_repo,
         "pet_repo": pet_repo,
         "device_repo": device_repo,
+        "timer_repo": timer_repo,
         "ach_service": ach_service,
+        "study_service": study_service,
         "achievements": achievements,
+        # event_repo опционален: без него API работает, просто не пишет
+        # в аналитический лог (тестам он не нужен).
+        "event_repo": event_repo,
     }
     app[APP_LIMITER] = LinkAttemptLimiter()
     app.add_routes([
@@ -496,6 +595,9 @@ def create_app(
         web.get("/api/pet", handle_pet),
         web.get("/api/pet/image", handle_pet_image),
         web.get("/api/achievements", handle_achievements),
+        web.get("/api/pomodoro", handle_pomodoro),
+        web.post("/api/pomodoro/start", handle_pomodoro_start),
+        web.post("/api/pomodoro/finish", handle_pomodoro_finish),
         web.get("/api/devices", handle_devices),
         web.post("/api/logout", handle_logout),
     ])

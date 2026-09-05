@@ -45,7 +45,7 @@ from repository import (
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
     McqProgressRepository, TaskProgressRepository, SubjectStatsRepository,
     EventRepository, PetRepository, LeaderboardRepository, FriendRepository,
-    PlanRepository, DeviceRepository,
+    PlanRepository, DeviceRepository, DesktopTimerRepository,
 )
 from services import (
     AchievementService, StudyService, StreakService, ReminderService,
@@ -204,6 +204,7 @@ event_repo: EventRepository = None
 plan_repo: PlanRepository = None
 tips_repo: TipsRepository = None
 device_repo: DeviceRepository = None
+desktop_timer_repo: DesktopTimerRepository = None
 ach_service: AchievementService = None
 study_service: StudyService = None
 streak_service: StreakService = None
@@ -7955,7 +7956,7 @@ async def reconcile_stale_timers():
 # Запуск приложения
 # ------------------------------------------------------------
 async def main():
-    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, plan_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, device_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
+    global db, user_repo, session_repo, admin_repo, flashcard_repo, user_flashcard_repo, user_task_repo, mcq_repo, task_repo, subject_stats_repo, event_repo, plan_repo, tips_repo, pet_repo, leaderboard_repo, friend_repo, device_repo, desktop_timer_repo, ach_service, study_service, streak_service, backup_service, analytics_service, leaderboard_service, rate_limiter, bot, dp, bot_username
     db = await get_db()
     await init_db(db)
     user_repo = UserRepository(db)
@@ -7974,6 +7975,7 @@ async def main():
     leaderboard_repo = LeaderboardRepository(db)
     friend_repo = FriendRepository(db)
     device_repo = DeviceRepository(db)
+    desktop_timer_repo = DesktopTimerRepository(db)
     ach_service = AchievementService(user_repo, ACHIEVEMENTS)
     session = AiohttpSession(timeout=TELEGRAM_TIMEOUT)
     bot = Bot(token=BOT_TOKEN, session=session)
@@ -8101,8 +8103,11 @@ async def main():
                 session_repo=session_repo,
                 pet_repo=pet_repo,
                 device_repo=device_repo,
+                timer_repo=desktop_timer_repo,
                 ach_service=ach_service,
+                study_service=study_service,
                 achievements=ACHIEVEMENTS,
+                event_repo=event_repo,
             ))
         except Exception as e:
             # Занятый порт не должен ронять бота: Telegram-часть важнее,
