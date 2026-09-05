@@ -206,8 +206,16 @@ class UserRateLimiter:
             # пустой → warn'и выключены (для unit-тестов и тонкого тюнинга).
             warn_at = int(self.max_actions * self.warn_threshold)
             if warn_at <= new_count < self.max_actions:
-                last_warn = self._warned_at.get(user_id, 0.0)
-                if now - last_warn >= self.warn_cooldown_seconds:
+                # None (а не 0.0) как «ещё ни разу не предупреждали»: monotonic()
+                # отсчитывается от старта машины, а в контейнере — от старта
+                # контейнера. С sentinel'ом 0.0 первое предупреждение глохло
+                # всё время, пока monotonic() < warn_cooldown_seconds, т.е.
+                # первые 30 секунд после каждого рестарта бота в Docker.
+                last_warn = self._warned_at.get(user_id)
+                if (
+                    last_warn is None
+                    or now - last_warn >= self.warn_cooldown_seconds
+                ):
                     self._warned_at[user_id] = now
                     return "warn"
 

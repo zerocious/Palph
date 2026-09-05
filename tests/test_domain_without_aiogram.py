@@ -26,9 +26,6 @@ def _run_without_aiogram(body: str) -> subprocess.CompletedProcess:
         import sys
 
         class _BlockAiogram:
-            def find_module(self, name, path=None):
-                return None
-
             def find_spec(self, name, path=None, target=None):
                 if name == "aiogram" or name.startswith("aiogram."):
                     raise ModuleNotFoundError("No module named 'aiogram'")

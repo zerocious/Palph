@@ -47,9 +47,9 @@ tasks.py (планировщик, 147)   ─┘        ↑                      
   `render_pet`, `streak_multiplier`, `freeze_cost`, `piecewise_time_pts`,
   `user_calendar_keys`. Детерминированы → критично для реплея (§4.3).
 - **`i18n.py` + `locales/{ru,en}.json`** — интерфейс сразу двуязычный.
-- **`assets/pet/`** — ~500 PNG (эмоция × цвет × аксессуар) + подпапки
+- **`assets/pet/`** — 192 PNG (эмоция × цвет × аксессуар) + подпапки
   времени суток + GIF.
-- **`study_materials/`** — 102 JSON-файла контента.
+- **`study_materials/`** — 102 файла контента, из них 76 JSON.
 - **`db.py`** — схема; `resolve_env_path` читает `DB_PATH` из env, поэтому
   десктопу достаточно выставить `DB_PATH=%LOCALAPPDATA%\Palph\palph.db`
   **до** импорта `db`, и схема разворачивается локально без правок.
@@ -148,12 +148,19 @@ magic-filter (~30 МБ и странная зависимость), убраны
 Все 28 таблиц из `db.py` разнесены по классам. Это ядро спеки: **новая
 таблица обязана получить класс до того, как попадёт в схему.**
 
+> Классификацию нельзя собирать одним лишь чтением `CREATE TABLE`: часть
+> колонок добавлена `ALTER TABLE`-миграциями ниже по файлу
+> (`users.hidden_from_leaderboards`, `users.username`, `users.locale`,
+> `users.last_streak_check_date`, `notification_settings.flashcard_source`,
+> `study_sessions.score`, `events.subject_id/mode/tip_id`). При ревизии
+> этой таблицы сверяться с `PRAGMA table_info`, а не с исходником схемы.
+
 | Класс | Правило слияния | Таблицы |
 |---|---|---|
 | **Append-only** | Объединение по uuid. Конфликтов не бывает | `study_sessions`, `events`, `user_flashcards`, `user_tasks`, `user_pet_inventory`, `user_tips_seen`, `streak_freezes` |
 | **Derived** (свёртка) | Пересчёт реплеем событий в тотальном порядке | `users.total_coins/total_sessions/current_streak/last_session/has_studied_today`, `user_pet.level/xp`, `flashcard_progress` (SM-2), `quiz_progress`, `mcq_progress`, `task_progress`, `user_subject_stats.visits`, `daily_score_counters`, `weekly_scores`, `user_achievements`, `user_tips_stats.total_views` |
-| **Register** (LWW) | Побеждает большее `(occurred_at, lamport, device_id)` | `users.timezone`, все поля `notification_settings`, `user_pet.name/color/accessory`, `user_skill_map`, `user_active_plan.plan_json` (целиком, как один документ), `user_plan_meta`, `user_tips_stats.tip_of_day_*` |
-| **Server-only** | Локально read-only кэш; менять можно только онлайн | `friend_requests`, `friendships`, `friend_invite_tokens`, `weekly_badges`, `admins`, ранги лидерборда |
+| **Register** (LWW) | Побеждает большее `(occurred_at, lamport, device_id)` | `users.timezone`, `users.locale`, `users.hidden_from_leaderboards`, все поля `notification_settings`, `user_pet.name/color/accessory`, `user_skill_map`, `user_active_plan.plan_json` (целиком, как один документ), `user_plan_meta`, `user_tips_stats.tip_of_day_*` |
+| **Server-only** | Локально read-only кэш; менять можно только онлайн | `friend_requests`, `friendships`, `friend_invite_tokens`, `weekly_badges`, `admins`, ранги лидерборда, `users.username` (его синкает из Telegram UsernameSyncMiddleware — десктоп его знать не может), `users.last_streak_check_date` (idempotency-маркер ночного планировщика бота) |
 | **Local-only** | Не синкается вообще | `fsm_storage` (у десктопа своё UI-состояние) |
 
 Почему Derived сходится: все свёртки — **чистые детерминированные
@@ -441,9 +448,9 @@ UI ещё не написан.
 4. **Миграция `coin_ledger` на живых данных.** Только с бэкапом
    (`BackupService.force_backup()` уже есть) и проверкой инварианта
    `SUM(delta) == total_coins` до и после.
-5. **Размер дистрибутива.** `assets/pet/default.png` — 2 МБ, всего ~500
-   PNG. Прогнать через `scripts/build_pet_assets.py` и ужать, иначе
-   установщик распухнет.
+5. **Размер дистрибутива.** `assets/pet/default.png` — 2 МБ, всего 192
+   PNG (~11 МБ). Прогнать через `scripts/build_pet_assets.py` и ужать,
+   иначе установщик распухнет.
 6. **Приватность.** Трекинг активного окна (фаза 5) — сбор чувствительных
    данных: строго opt-in, только локально, обязательный апдейт
    [PRIVACY.md](PRIVACY.md) / [PRIVACY.ru.md](PRIVACY.ru.md). Локальная БД
