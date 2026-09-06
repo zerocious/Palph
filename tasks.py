@@ -89,6 +89,7 @@ async def streak_scheduler(
     while True:
         try:
             tzs = await user_repo.get_distinct_timezones()
+            processed_any = False
             for tz_name in tzs:
                 try:
                     tz = pytz.timezone(tz_name)
@@ -101,10 +102,18 @@ async def streak_scheduler(
                     if last_check_date.get(tz_name) != today:
                         await streak_service.process_users_in_timezone(tz_name)
                         last_check_date[tz_name] = today
-                        # Backup БД после streak processing. Dedupe внутри сервиса
-                        # — один файл на server-local день.
-                        if backup_service is not None:
-                            await backup_service.maybe_backup_for_today()
+                        processed_any = True
+
+            # Backup БД после streak processing, но ЗА пределами обхода зон.
+            # Внутри цикла он съедал окно у остальных: VACUUM INTO копирует
+            # базу целиком и на большой БД идёт дольше, чем окно 23:58–23:59,
+            # а now_local пересчитывается для каждой зоны заново. Зоны с тем
+            # же смещением (только UTC+3 делят 25 штук) попадают в окно
+            # одновременно, и те, до кого очередь дошла после бэкапа, теряли
+            # сутки обработки стриков. Dedupe остаётся внутри сервиса — один
+            # файл на server-local день.
+            if processed_any and backup_service is not None:
+                await backup_service.maybe_backup_for_today()
         except Exception as e:
             logger.error(f"streak_scheduler failed: {e}")
         await asyncio.sleep(60)
