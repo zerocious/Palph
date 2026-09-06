@@ -65,10 +65,22 @@ def _fractions_from_accepted(accepted: list[str]) -> list[Fraction]:
 
 
 def _fraction_close(a: Fraction, b: Fraction, *, places: int = 6) -> bool:
+    """
+    Сравнение с допуском 0.5 * 10^-places, но в точной арифметике.
+
+    Раньше допуск считался как abs(float(a) - float(b)). Ответ пользователя
+    парсится регуляркой (-?\d+), то есть число цифр ничем не ограничено, а
+    Telegram пропускает сообщение до 4096 символов. На ответе примерно от
+    400 цифр float() падал с OverflowError прямо в handle_task_answer —
+    обработчик его не ловит, и пользователь не получал вообще никакого
+    ответа на свою попытку.
+
+    Fraction считает точно и не переполняется, а заодно даёт корректный
+    результат там, где float терял точность на больших числах.
+    """
     if a == b:
         return True
-    diff = abs(float(a) - float(b))
-    return diff <= 0.5 * 10 ** (-places)
+    return abs(a - b) <= Fraction(1, 2 * 10 ** places)
 
 
 def task_answer_matches(user_text: str, accepted: list[str]) -> bool:
