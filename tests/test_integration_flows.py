@@ -16,14 +16,47 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+import pytz
 
 from repository import FriendRepository, LeaderboardRepository
-from services import LeaderboardService, StreakService
+from services import LeaderboardService, StreakService, user_calendar_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)  # Monday, mid-day
-TODAY = "2026-05-18"
-WEEK = "2026-W21"
+# Дефолт users.timezone — им же оперирует LeaderboardService при рендере.
+USER_TZ = "Europe/Moscow"
+
+
+def _this_weeks_monday() -> datetime:
+    """
+    Понедельник ТЕКУЩЕЙ недели, середина дня.
+
+    Раньше здесь стояла фиксированная дата, и тесты работали ровно до
+    конца той недели: очки начислялись в неделю из константы, а render
+    показывает неделю по реальным часам — начиная со следующего
+    понедельника четыре теста падали и с тех пор не проходили.
+    Привязка к текущей неделе делает их независимыми от календаря.
+
+    Часы берём в TZ пользователя, а не машины: неделю для рендера
+    считает LeaderboardService в часовом поясе пользователя (по умолчанию
+    Europe/Moscow). От UTC это отличается на три часа, и в воскресенье
+    после 21:00 UTC тест начислял бы очки в одну неделю, а рендер смотрел
+    бы уже в следующую — падение раз в неделю на три часа.
+
+    Середина дня — чтобы запас до границы суток был с обеих сторон;
+    понедельник — потому что сценарии описывают неделю с её начала
+    (ISO-неделя начинается с понедельника, как и rollover по спеке).
+    """
+    now = datetime.now(pytz.timezone(USER_TZ))
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=14, minute=30, second=0, microsecond=0
+    )
+    return monday.replace(tzinfo=None)  # репозитории работают с наивным
+
+
+NOW = _this_weeks_monday()
+# Ключи выводим той же функцией, что и продакшн-код: расхождение формата
+# сразу сломало бы тесты, а не тихо разошлось бы с реальностью.
+TODAY, WEEK = user_calendar_keys(NOW)
 
 
 @pytest_asyncio.fixture
@@ -51,6 +84,24 @@ async def _setup_user(user_repo, db, uid, age_days=30, streak=0, hidden=False, u
         (created_at, streak, 1 if hidden else 0, uid),
     )
     await db.commit()
+
+
+# ============================================================
+# 0. Сторож самих тестов
+# ============================================================
+class TestWeekAnchor:
+    async def test_anchor_matches_the_week_the_service_renders(
+        self, lb_service, user_repo, db,
+    ):
+        """
+        Очки в тестах начисляются на NOW/WEEK, а render читает неделю по
+        реальным часам в TZ пользователя. Если эти два представления
+        разойдутся, сценарии ниже начнут падать с невнятным «id не найден»
+        — этот тест называет причину прямо.
+        """
+        await _setup_user(user_repo, db, 1)
+        assert await lb_service._current_week_iso(1) == WEEK
+        assert TODAY == NOW.strftime("%Y-%m-%d")
 
 
 # ============================================================
