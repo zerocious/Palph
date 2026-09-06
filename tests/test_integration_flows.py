@@ -19,11 +19,11 @@ import pytest_asyncio
 
 from repository import FriendRepository, LeaderboardRepository
 from services import LeaderboardService, StreakService
+from tests.conftest import current_week_anchor, current_week_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)  # Monday, mid-day
-TODAY = "2026-05-18"
-WEEK = "2026-W21"
+NOW = current_week_anchor()
+TODAY, WEEK = current_week_keys()
 
 
 @pytest_asyncio.fixture
@@ -51,6 +51,24 @@ async def _setup_user(user_repo, db, uid, age_days=30, streak=0, hidden=False, u
         (created_at, streak, 1 if hidden else 0, uid),
     )
     await db.commit()
+
+
+# ============================================================
+# 0. Сторож самих тестов
+# ============================================================
+class TestWeekAnchor:
+    async def test_anchor_matches_the_week_the_service_renders(
+        self, lb_service, user_repo, db,
+    ):
+        """
+        Очки в тестах начисляются на NOW/WEEK, а render читает неделю по
+        реальным часам в TZ пользователя. Если эти два представления
+        разойдутся, сценарии ниже начнут падать с невнятным «id не найден»
+        — этот тест называет причину прямо.
+        """
+        await _setup_user(user_repo, db, 1)
+        assert await lb_service._current_week_iso(1) == WEEK
+        assert TODAY == NOW.strftime("%Y-%m-%d")
 
 
 # ============================================================

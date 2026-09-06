@@ -11,9 +11,11 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
+import pytz
 
 # Делаем корень проекта импортируемым (без устанавливания пакета)
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -28,6 +30,43 @@ os.environ.setdefault("BOT_TOKEN", "test-token-for-pytest-imports")
 
 from db import get_db, init_db  # noqa: E402
 from repository import UserRepository, SessionRepository  # noqa: E402
+from services import user_calendar_keys  # noqa: E402
+
+
+# Дефолт users.timezone — в нём же LeaderboardService считает неделю.
+USER_TZ = "Europe/Moscow"
+
+
+def current_week_anchor() -> datetime:
+    """
+    Понедельник ТЕКУЩЕЙ недели, середина дня — точка отсчёта для тестов
+    лидерборда.
+
+    Зачем: сценарии начисляют очки на этот момент, а render читает неделю
+    по реальным часам. Фиксированная дата в константе работала ровно до
+    конца своей недели — четыре теста падали с конца мая именно поэтому.
+
+    Часы берём в TZ пользователя, а не машины. Разница с UTC — три часа,
+    и в воскресенье после 21:00 UTC начисление уходило бы в одну неделю,
+    а рендер смотрел бы уже в следующую: тест падал бы раз в неделю на
+    три часа.
+
+    Возвращается наивный datetime — с такими работают репозитории.
+    """
+    now = datetime.now(pytz.timezone(USER_TZ))
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=14, minute=30, second=0, microsecond=0
+    )
+    return monday.replace(tzinfo=None)
+
+
+def current_week_keys() -> tuple[str, str]:
+    """(local_date, week_iso) для current_week_anchor().
+
+    Ключи выводим той же функцией, что и продакшн-код: изменение формата
+    сломает тесты сразу, а не разойдётся с реальностью незаметно.
+    """
+    return user_calendar_keys(current_week_anchor())
 
 
 @pytest_asyncio.fixture
