@@ -129,6 +129,17 @@ class TestTokens:
         await device_repo.exchange_code(code, device_name="   ")
         assert (await device_repo.list_devices(created_user))[0]["device_name"] == "Desktop"
 
+    async def test_device_name_is_cleaned_up(self, device_repo, created_user):
+        """Переводы строк и прочие управляющие символы ломают вид списка."""
+        code = await device_repo.create_link_code(created_user)
+        await device_repo.exchange_code(code, device_name="Ноут\n\tАлисы\x00")
+        assert (await device_repo.list_devices(created_user))[0]["device_name"] == "Ноут Алисы"
+
+    async def test_long_device_name_is_truncated(self, device_repo, created_user):
+        code = await device_repo.create_link_code(created_user)
+        await device_repo.exchange_code(code, device_name="П" * 200)
+        assert len((await device_repo.list_devices(created_user))[0]["device_name"]) == 64
+
     async def test_multiple_devices_per_user(self, device_repo, created_user):
         for name in ("Ноутбук", "Домашний ПК"):
             code = await device_repo.create_link_code(created_user)

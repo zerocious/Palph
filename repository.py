@@ -2500,7 +2500,12 @@ class DeviceRepository:
         code = self.normalize_code(raw_code)
         if not code:
             return None
-        name = (device_name or "Desktop").strip()[:64] or "Desktop"
+        # Управляющие символы в имени устройства не бывают намеренными, а
+        # ломают вид списка устройств; схлопываем их в пробелы.
+        raw_name = "".join(
+            ch if ch.isprintable() else " " for ch in (device_name or "")
+        )
+        name = " ".join(raw_name.split())[:64] or "Desktop"
 
         import secrets
         async with write_transaction(self.db):
