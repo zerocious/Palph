@@ -405,6 +405,69 @@ class UsernameSyncMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class UserSerializationMiddleware(BaseMiddleware):
+    """
+    Сериализует обработку апдейтов одного пользователя.
+
+    dp.start_polling запускается с handle_as_tasks=True (дефолт aiogram),
+    поэтому апдейты обрабатываются параллельными задачами — включая два
+    подряд отправленных сообщения одного человека. Хендлеры при этом
+    делают read-modify-write через FSM:
+
+        data = await state.get_data()      # ← чтение
+        ...                                 # любой await = точка переключения
+        await state.update_data(idx + 1)    # ← запись
+
+    Само хранилище атомарно (SQLiteStorage.update_data держит db.lock), но
+    цикл целиком — нет: два хендлера читают одно значение и затирают друг
+    друга. Воспроизведено: 20 параллельных ответов продвигали task_index
+    на 1 вместо 20, а верный ответ, отправленный дважды, начислял монеты
+    дважды (add_coins вызывается до записи прогресса).
+
+    Замок берётся на user_id, а не на chat_id: FSM-ключ включает user_id,
+    и именно он определяет, чьё состояние правится.
+
+    Долгих операций под замком нет: самое длинное ожидание внутри хендлера
+    — asyncio.sleep(1.5). Помидор сюда не попадает, run_timer_task живёт в
+    отдельной задаче через asyncio.create_task, то есть вне middleware
+    (и завершение таймера уже защищено своим _timer_completion_lock).
+
+    Словарь замков чистится по счётчику ожидающих — иначе он рос бы по
+    одной записи на каждого пользователя за всё время работы процесса.
+    """
+
+    def __init__(self):
+        self._locks: dict[int, asyncio.Lock] = {}
+        # user_id → сколько задач держат замок или ждут его
+        self._pending: dict[int, int] = {}
+        super().__init__()
+
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user is None or not user.id:
+            return await handler(event, data)
+        user_id = user.id
+
+        # Получение замка и инкремент счётчика идут без await между ними,
+        # поэтому другая задача не может вклиниться и удалить замок.
+        lock = self._locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[user_id] = lock
+        self._pending[user_id] = self._pending.get(user_id, 0) + 1
+
+        try:
+            async with lock:
+                return await handler(event, data)
+        finally:
+            remaining = self._pending.get(user_id, 1) - 1
+            if remaining > 0:
+                self._pending[user_id] = remaining
+            else:
+                self._pending.pop(user_id, None)
+                self._locks.pop(user_id, None)
+
+
 class RateLimitMiddleware(BaseMiddleware):
     """
     Sliding-window rate-limit на каждое Message/CallbackQuery.
@@ -7952,6 +8015,12 @@ async def main():
     dp.callback_query.middleware(username_sync)
     dp.message.middleware(rl_middleware)
     dp.callback_query.middleware(rl_middleware)
+    # Сериализация по пользователю — ПОСЛЕ rate-limit: спам должен
+    # отсекаться лимитером до того, как встанет в очередь за замком,
+    # иначе один пользователь накопит за ним сотни ждущих задач.
+    user_serialization = UserSerializationMiddleware()
+    dp.message.middleware(user_serialization)
+    dp.callback_query.middleware(user_serialization)
     if PLAN_UI_ENABLED:
         register_plan_handlers(
             router,

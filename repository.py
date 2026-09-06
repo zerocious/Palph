@@ -1,4 +1,5 @@
 # repository.py
+import hashlib
 import json
 import math
 
@@ -706,7 +707,18 @@ class TipsRepository:
                 if stored:
                     return stored
 
-            pick = all_tips[hash(f"{user_id}:{local_date}") % len(all_tips)]
+            # Детерминированный дайджест, а не встроенный hash(): hash() от
+            # строки рандомизирован в каждом процессе (PYTHONHASHSEED), то
+            # есть после рестарта бота тот же пользователь на ту же дату
+            # получал другой индекс. Стабильность держалась только на
+            # записи в user_tips_stats, а сам выбор был невоспроизводим —
+            # по логам нельзя восстановить, какой совет человек видел.
+            # md5 здесь не про безопасность, а про устойчивый ключ
+            # контента, как в plan_service._flashcard_hash.
+            digest = hashlib.md5(
+                f"{user_id}:{local_date}".encode("utf-8")
+            ).hexdigest()
+            pick = all_tips[int(digest, 16) % len(all_tips)]
             tip_id = pick["id"]
             if row:
                 await self.db.execute(

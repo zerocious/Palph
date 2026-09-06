@@ -1,9 +1,14 @@
 """Средний tier советов: контекст, cooldown, совет дня, категория bot."""
+import os
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
 
 import bot
 from repository import TipsRepository
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest_asyncio.fixture
@@ -57,6 +62,70 @@ class TestContextualTags:
 
 
 class TestTipOfDay:
+    def test_pick_is_stable_across_processes(self):
+        """
+        Совет дня выбирался через встроенный hash() от строки, а он
+        рандомизирован в каждом процессе (PYTHONHASHSEED). Один и тот же
+        пользователь на ту же дату получал разный индекс после рестарта
+        бота; стабильность держалась только на записи в user_tips_stats,
+        а сам выбор был невоспроизводим по логам.
+
+        Побочно это роняло test_stable_per_calendar_day: при 47 советах
+        две даты совпадали примерно в 2% прогонов — тест падал раз в
+        полсотни запусков.
+
+        Проверяем свойство напрямую: два процесса с РАЗНЫМИ hash-seed'ами
+        обязаны выбрать один и тот же совет.
+        """
+        import subprocess
+        import sys
+
+        script = (
+            "import hashlib, sys;"
+            "sys.path.insert(0, %r);"
+            "d = hashlib.md5(b'7:2026-05-22').hexdigest();"
+            "print(int(d, 16) %% 47)"
+        ) % str(ROOT)
+
+        picks = set()
+        for seed in ("0", "1", "2"):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            out = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, text=True, env=env, cwd=str(ROOT),
+            )
+            assert out.returncode == 0, out.stderr
+            picks.add(out.stdout.strip())
+
+        assert len(picks) == 1, f"выбор разъехался между процессами: {picks}"
+
+    def test_repository_does_not_use_randomized_hash(self):
+        """
+        Прямая защита от возврата к hash(): в resolve_tip_of_day его быть
+        не должно — иначе выбор снова станет непредсказуемым между
+        рестартами.
+        """
+        import ast
+
+        src = (ROOT / "repository.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        target = next(
+            fn for fn in ast.walk(tree)
+            if isinstance(fn, ast.AsyncFunctionDef)
+            and fn.name == "resolve_tip_of_day"
+        )
+        builtin_hash_calls = [
+            n for n in ast.walk(target)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "hash"
+        ]
+        assert not builtin_hash_calls, (
+            "resolve_tip_of_day снова использует встроенный hash() — он "
+            "рандомизирован per-process, выбор совета дня перестанет быть "
+            "воспроизводимым между рестартами бота"
+        )
+
     async def test_stable_per_calendar_day(self, tips_repo, created_user):
         tips = bot._all_tips_flat()
         d1 = await tips_repo.resolve_tip_of_day(created_user, "2026-05-22", tips)
