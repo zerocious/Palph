@@ -40,6 +40,7 @@ CHECKS = [
     CHECKER.check_locales,
     CHECKER.check_content,
     CHECKER.check_feature_flags,
+    CHECKER.check_balance_constants,
 ]
 
 

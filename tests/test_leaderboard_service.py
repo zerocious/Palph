@@ -18,16 +18,20 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
+import pytz
 
 from repository import LeaderboardRepository
 from services import LeaderboardService, user_calendar_keys
 
 
-# Якорь времени — относительный (docs/testing.md §Время): часть тестов ниже
-# дергает render_leaderboard, который берёт текущую ISO-неделю по системным
-# часам. Абсолютные даты в этом файле встречаются только там, где они
-# передаются в код явным параметром (run_rollover / consume_freeze_if_active).
-NOW = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+# Якорь времени — относительный (docs/testing.md §Время) И в том же часовом
+# поясе, что использует код под тестом: render_leaderboard считает неделю
+# через users.timezone, где дефолт — Europe/Moscow, а не по системным часам.
+# Наивный datetime.now() здесь давал ложные падения в окне, когда UTC и
+# Москва попадают в разные ISO-недели (напр. воскресенье 21:00 UTC —
+# это уже понедельник в Москве).
+_ANCHOR_TZ = pytz.timezone("Europe/Moscow")
+NOW = datetime.now(_ANCHOR_TZ).replace(hour=14, minute=30, second=0, microsecond=0)
 _TODAY, WEEK = user_calendar_keys(NOW)
 
 
@@ -64,7 +68,7 @@ async def _make_user(user_repo, db, uid, age_days, *, streak=0, hidden=False, us
 async def _grant(lb_repo, uid, *, time=0, task=0, quiz=0, card=0, week_iso=WEEK):
     """Прямой write в weekly_scores для теста; обходит cap-логику."""
     if week_iso is None:
-        local_date, week_iso = user_calendar_keys(datetime.now())
+        local_date, week_iso = user_calendar_keys(datetime.now(_ANCHOR_TZ))
     else:
         local_date = _TODAY
     await lb_repo._ensure_rows(uid, local_date, week_iso)

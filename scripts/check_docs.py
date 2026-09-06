@@ -234,6 +234,80 @@ def check_feature_flags() -> None:
         )
 
 
+# ---------------------------------------------------------------- константы
+def check_balance_constants() -> None:
+    """
+    Числа баланса — то, что меняют при ребалансе и забывают в документации.
+
+    ВСЕ значения читаются из кода. Захардкодить ожидаемое число прямо здесь
+    нельзя: тогда проверка сравнивает документ с копией числа внутри самой
+    проверки и переживает любой ребаланс — ровно та ошибка, из-за которой
+    первая версия этой функции пропускала 7 мутаций из 14.
+    """
+    bot_py, services = read("bot.py"), read("services.py")
+    repo, plan = read("repository.py"), read("plan_service.py")
+
+    def const(src: str, name: str) -> str | None:
+        m = re.search(rf"^\s*{name}\s*=\s*(.+?)\s*(?:#.*)?$", src, re.M)
+        return m.group(1).strip().strip("'\"") if m else None
+
+    def grab(src: str, pattern: str) -> str | None:
+        m = re.search(pattern, src)
+        return m.group(1) if m else None
+
+    rewards = const(bot_py, "TASK_REWARDS_BY_ATTEMPT") or ""
+    reward_first, _, reward_second = rewards.strip("[]").partition(",")
+
+    cases: list[tuple[str, str | None, tuple[str, ...], str]] = [
+        ("награда за задачу с 1-й попытки", reward_first.strip(),
+         ("docs/features.md",), r"\*\*{v} 🪙\*\*"),
+        ("награда со 2-й попытки", reward_second.strip(),
+         ("docs/features.md",), r"\*\*{v} 🪙\*\*"),
+        ("MAX_TASK_ATTEMPTS", const(bot_py, "MAX_TASK_ATTEMPTS"),
+         ("docs/features.md",), r"MAX_TASK_ATTEMPTS = {v}\b"),
+        ("QUIZ_INTERVALS", const(bot_py, "QUIZ_INTERVALS"),
+         ("docs/features.md",), r"QUIZ_INTERVALS = {v}"),
+        ("дневной кап задач", grab(repo, r"task_count < (\d+)"),
+         ("docs/features.md",), r"\| {v} задач"),
+        ("дневной кап квизов", grab(repo, r"quiz_count < (\d+)"),
+         ("docs/features.md",), r"\| {v} верных"),
+        ("дневной кап карточек", grab(repo, r"cards_count < (\d+)"),
+         ("docs/features.md",), r"\| {v} успешных"),
+        ("очки за задачу", grab(repo, r"task_pts = task_pts \+ (\d+)"),
+         ("docs/features.md",), r"{v} pts за решённую"),
+        ("очки за новую карточку", grab(repo, r"pts = (\d+) if is_new"),
+         ("docs/features.md",), r"{v} pts за новую"),
+        ("очки за повторную карточку", grab(repo, r"pts = \d+ if is_new else (\d+)"),
+         ("docs/features.md",), r"{v} pts за повторную"),
+        ("TOP_N_DISPLAY", const(services, "TOP_N_DISPLAY"),
+         # «топ-{v}» без уточнения совпало бы с «топ-10 %» из блока наград.
+         ("docs/features.md",), r"Отображается топ-{v} \(`TOP_N_DISPLAY`\)"),
+        ("COIN_BONUS_TOP10_PCT", const(services, "COIN_BONUS_TOP10_PCT"),
+         ("docs/features.md",), r"по {v} 🪙"),
+        ("MIN_SEGMENT_FOR_TOP10_BONUS", const(services, "MIN_SEGMENT_FOR_TOP10_BONUS"),
+         ("docs/features.md",), r"≥ {v} участник"),
+        ("EF_FLOOR", const(services, "EF_FLOOR"),
+         ("docs/features.md",), r"EF >= {v}"),
+        ("TIPS_SEEN_COOLDOWN_DAYS", const(bot_py, "TIPS_SEEN_COOLDOWN_DAYS"),
+         ("docs/features.md",), r"[Cc]ooldown {v} дн"),
+        ("SPRINT_DAYS", const(plan, "SPRINT_DAYS"),
+         ("docs/features.md",), r"{v}-дневный"),
+        ("MIN_PLAN_ITEMS", const(plan, "MIN_PLAN_ITEMS"),
+         ("docs/features.md",), r"минимум {v} элемент"),
+        ("rate limit: действий", grab(bot_py, r"UserRateLimiter\(max_actions=(\d+), window_seconds=60, warn"),
+         ("docs/security.md",), r"max_actions={v}"),
+    ]
+
+    for label, value, docs, pattern in cases:
+        if not value:
+            check(f"константа «{label}» прочитана из кода", False, "не удалось прочитать")
+            continue
+        pat = pattern.replace("{v}", re.escape(value))
+        hit = any(re.search(pat, read(d)) for d in docs)
+        check(f"{label} = {value} отражено в документации", hit,
+              f"шаблон не найден в {', '.join(docs)}")
+
+
 # ---------------------------------------------------------------- tests
 def collect_test_counts() -> dict[str, int] | None:
     try:
@@ -340,7 +414,8 @@ def main() -> int:
     for fn in (
         check_links, check_markdown_hygiene, check_schema, check_events,
         check_export_aliases,
-        check_locales, check_content, check_feature_flags, check_test_counts,
+        check_locales, check_content, check_feature_flags,
+        check_balance_constants, check_test_counts,
     ):
         try:
             fn()

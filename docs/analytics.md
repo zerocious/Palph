@@ -98,7 +98,7 @@ await event_repo.log(user_id, "session_completed", {"duration": 25, ...})
 |-------|---------|-------------|
 | `compute_cohort_retention()` | `/cohort_stats` | Retention D1/D7/D30 по недельным когортам |
 | `compute_funnel()` | `/funnel` | Activation funnel: регистрация → первая сессия → ачивка → возврат |
-| `compute_activation_metrics()` | `/activation` | Time-to-value: медиана и перцентили до первой сессии / первой фичи |
+| `compute_activation_metrics()` | `/activation` | Time-to-value: **медиана и p75** часов от регистрации до каждого из шести первых событий (`session_started`, `subject_picked`, `mode_picked`, `quiz_answered`, `flashcard_reviewed`, `tip_viewed`) + доля зарегистрированных с первой сессией за 24 ч и 7 дней |
 | `compute_product_metrics()` | `/product_metrics` | Разрезы subject/mode, feature retention D7, конверсия «утренний пуш → сессия», лидерборд |
 | `compute_engagement()` | `/dau` | DAU / WAU / MAU + stickiness (обе метрики активности) |
 | `compute_feature_usage()` | `/feature_usage` | % adoption по фичам |

@@ -6,7 +6,7 @@
 (см. [user-flows.md](user-flows.md)), затем sprint-план к экзамену
 ([BACKLOG.md](BACKLOG.md)).
 
-**Тесты:** 802 в suite, все зелёные. Требования к тестам —
+**Тесты:** 803 в suite, все зелёные. Требования к тестам —
 [docs/testing.md](docs/testing.md). Технический справочник —
 [docs/](docs/README.md).
 
@@ -131,7 +131,7 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
 handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На feature-ветке
-**732 теста** в suite на момент закрытия фазы (сейчас в suite 802).
+**732 теста** в suite на момент закрытия фазы (сейчас в suite 803).
 Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
@@ -224,7 +224,7 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`.
 **110 pytest** в аналитических модулях (`test_analytics_service.py` 69,
 `test_event_repository.py` 18, `test_log_parser.py` 20,
-`test_pa_verify_export.py` 3) + **802 total** в suite.
+`test_pa_verify_export.py` 3) + **803 total** в suite.
 Таксономия событий — [docs/analytics.md](docs/analytics.md).
 
 ### ✅ PA launch kit (2026-05-25)

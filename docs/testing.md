@@ -1,6 +1,6 @@
 # Требования к тестам
 
-> **Doc sync:** 2026-09-05 · **802** тест в 52 файлах, все зелёные
+> **Doc sync:** 2026-09-05 · **803** тест в 52 файлах, все зелёные
 > (`python -m pytest -q`, ~24 с).
 
 ## Запуск
@@ -62,7 +62,34 @@ await lb_repo.consume_freeze_if_active(uid, "2026-05-19")           # ✅
 
 Практическая формулировка: **если в цепочке вызовов есть хоть один
 `datetime.now()` внутри продакшн-кода — якорь теста обязан быть
-относительным**. Если весь тракт принимает время параметром — литерал
+относительным И в том же часовом поясе, что использует этот код**.
+
+Второй половиной этого правила я сам пренебрёг, и это стоило ложного
+падения. В `test_integration_flows.py` якорь был привязан к
+`Europe/Moscow` (как `users.timezone` по умолчанию), а в
+`test_leaderboard_service.py` — к наивному `datetime.now()`, то есть к
+системным часам контейнера (UTC). Совпадало ровно до вечера воскресенья:
+в 21:00 UTC в Москве уже понедельник, то есть **следующая ISO-неделя**.
+Тест писал очки в неделю W36, а `render_leaderboard` читал W37 — и пять
+тестов покраснели на ровном месте.
+
+```python
+# ❌ якорь по системным часам, а код читает users.timezone
+NOW = datetime.now().replace(hour=14, minute=30)
+
+# ✅ якорь в том же поясе, что и код под тестом
+_ANCHOR_TZ = pytz.timezone("Europe/Moscow")
+NOW = datetime.now(_ANCHOR_TZ).replace(hour=14, minute=30, second=0, microsecond=0)
+```
+
+Проверить, что тесты не зависят от пояса машины, можно прогоном под
+разными `TZ` — суита должна быть зелёной везде:
+
+```bash
+for tz in UTC Europe/Moscow America/Los_Angeles Asia/Tokyo Pacific/Kiritimati; do
+    TZ=$tz python -m pytest -q | tail -1
+done
+``` Если весь тракт принимает время параметром — литерал
 уместен и даже полезен (проверка границ ISO-недель, високосных дат,
 переходов года).
 
@@ -148,7 +175,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 | UX и настройки | `test_main_menu_ux.py`, `test_profile_ux.py`, `test_settings_fixes.py`, `test_tz_presets.py`, `test_i18n.py` | 39 |
 | Спринт-план (UI выключен) | `test_plan_service.py`, `test_plan_repository.py` | 34 |
 | Ачивки | `test_achievement_service.py` | 14 |
-| Документация | `test_docs_consistency.py` | 9 |
+| Документация | `test_docs_consistency.py` | 10 |
 
 Точные цифры на текущий момент: `pytest --collect-only -q | tail -1`.
 

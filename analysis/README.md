@@ -100,7 +100,7 @@ flowchart LR
 |------|----------|
 | Версия бота | v0.8 |
 | Doc sync | 2026-09-05 |
-| Pytest suite | **802** tests (`pytest --collect-only -q`) |
+| Pytest suite | **803** tests (`pytest --collect-only -q`) |
 | User flows | [user-flows.md](../user-flows.md) |
 | Session log | [session_notes.md](../session_notes.md) |
 

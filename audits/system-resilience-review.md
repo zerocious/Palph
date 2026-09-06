@@ -1,6 +1,6 @@
 # System Resilience Review — Palph (Telegram bot, aiogram 3)
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (pytest suite **802** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (pytest suite **803** tests).
 
 **Date:** 2026-05-24  
 **Scope:** Timeout handling, retry/backoff, circuit breaking, bulkhead/isolation, graceful degradation  
