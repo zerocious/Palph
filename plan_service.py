@@ -287,8 +287,8 @@ def _score_item(
     skill_map: dict[str, int],
     progress: ProgressSnapshot,
     topic_rank: dict[str, int],
-) -> tuple[int, int, int]:
-    """Lower tuple = higher priority."""
+) -> tuple[int, int, int, int]:
+    """Lower tuple = higher priority: (overdue, weak, new, topic_rank)."""
     overdue = 0 if _is_due(item.ref, item.mode, progress) else 1
     weak = 0 if skill_map.get(item.topic, 0) == 0 else 1
     new = 0 if _is_new(item, progress) else 1
