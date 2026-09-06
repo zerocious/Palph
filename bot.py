@@ -811,8 +811,36 @@ async def _migrate_admins_json_to_db() -> int:
 router = Router()
 
 
+# Локаль читается на каждый хендлер, а в некоторых — до пяти раз
+# (start_flashcard_session, handle_mcq_callback, _process_friend_invite_link).
+# Замер: любой вызов к aiosqlite стоит ~0.17 мс round-trip'а к рабочему
+# потоку — тривиальный «SELECT 1» стоит столько же, сколько get_locale.
+# Значит платим не за запрос, а за количество вызовов: пять loc() — это
+# ~0.85 мс на сообщение за значение, которое пользователь меняет раз в
+# жизни.
+#
+# Инвалидация локализована: users.locale пишется ровно в одном месте
+# (обработчик выбора языка) и исчезает при delete_user_completely. Оба
+# зовут _invalidate_locale_cache.
+_LOCALE_CACHE_MAX = 10_000
+_locale_cache: OrderedDict[int, str] = OrderedDict()
+
+
+def _invalidate_locale_cache(user_id: int) -> None:
+    _locale_cache.pop(user_id, None)
+
+
 async def loc(user_id: int) -> str:
-    return await user_locale(user_repo, user_id)
+    cached = _locale_cache.get(user_id)
+    if cached is not None:
+        _locale_cache.move_to_end(user_id)  # держим LRU-порядок
+        return cached
+    value = await user_locale(user_repo, user_id)
+    _locale_cache[user_id] = value
+    _locale_cache.move_to_end(user_id)
+    if len(_locale_cache) > _LOCALE_CACHE_MAX:
+        _locale_cache.popitem(last=False)
+    return value
 
 
 # ------------------------------------------------------------
@@ -1699,6 +1727,7 @@ async def handle_language_choice(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     await user_repo.set_locale(user_id, locale)
+    _invalidate_locale_cache(user_id)
     await apply_user_bot_commands(user_id)
     await callback.answer()
 
@@ -3914,6 +3943,7 @@ async def handle_delete_account_confirm(callback: CallbackQuery, state: FSMConte
         )
 
     counts = await user_repo.delete_user_completely(user_id)
+    _invalidate_locale_cache(user_id)
     logger.info("account.deleted user_id=%s counts=%s", user_id, counts)
 
     try:
