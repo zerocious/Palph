@@ -74,8 +74,14 @@ Regenerate: `python scripts/generate_accounting_theory.py`.
 |---------|:----------------:|--------------------|-------|
 | `math` | yes | tasks (71) | Main subject; 6 exam groups, 36 hints |
 | `accounting` | yes | flashcards (67) | Theory cards + hints file |
-| `industrial-management` | yes | situational (section-i, 15 terms), flashcards (5), mcq (3) | Listed in `PREP_HIDDEN_SUBJECT_IDS` → not reachable from the UI at all; content stays on disk |
+| `industrial-management` | yes | situational (section-i, 15 terms), flashcards (5), mcq (3), tasks (1) | Listed in `PREP_HIDDEN_SUBJECT_IDS` → not reachable from the UI at all; content stays on disk |
 | `english` | yes | none | Empty files → hidden; «🚧 в разработке» in profile |
+
+Because the only `situational/` and `mcq.txt` content belongs to the hidden
+subject, **those two modes are currently unreachable from the menu**. Only
+tasks (math) and flashcards (accounting) are live on official content; user
+content (own cards / imported tasks) can enable those two modes for any
+subject.
 
 ## Diagnostic JSON
 

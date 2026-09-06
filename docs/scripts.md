@@ -14,7 +14,7 @@
 | `audit_i18n_keys.py` | `python scripts/audit_i18n_keys.py` | Сверяет ключи из `t(...)` в `bot.py`, `plan_handlers.py`, `locale_bot.py`, `services.py` с `locales/*.json`. Печатает «Used keys / Missing in ru / Missing in en». **Обязателен после правки строк интерфейса** |
 | `build_locales.py` | `python scripts/build_locales.py` | Генерирует `locales/ru.json` и `locales/en.json`. **Источник истины для строк — этот скрипт**, JSON — артефакт |
 | `check_plan_issues.py` | `python scripts/check_plan_issues.py` | Контент-гейт спринт-плана: хватает ли материала на каталог + прогон юнит-тестов плана |
-| `pa_verify_export.py` | `python scripts/pa_verify_export.py` | Проверяет, что аналитика жива: доступность БД, наличие таблиц, валидность методов `AnalyticsService`, целостность ZIP-экспорта. Прогонять **до** публичного запуска и после изменений в аналитике |
+| `pa_verify_export.py` | `python scripts/pa_verify_export.py [--db path] [--save-baseline]` | Проверяет, что аналитика жива: доступность БД, наличие таблиц, валидность методов `AnalyticsService`, целостность ZIP-экспорта. Прогонять **до** публичного запуска и после изменений в аналитике |
 | `pa_weekly_snapshot.py` | `python scripts/pa_weekly_snapshot.py [--week N] [--db path]` | Еженедельный снимок: экспорт всех таблиц + markdown-сводка в `analysis/exports/` |
 | `build_pet_assets.py` | `python scripts/build_pet_assets.py [--with-periods]` | Pillow-генератор плейсхолдеров питомца: 75 PNG (3 эмоции × 5 цветов × 5 аксессуаров) + 3 GIF. Требует `Pillow` из `requirements-dev.txt` |
 | `backup_offsite.sh.example` | скопировать и настроить | Шаблон offsite-бэкапа: GPG-шифрование снапшота + `rclone` в S3/B2. Ставится в cron на хосте после времени внутреннего бэкапа |
