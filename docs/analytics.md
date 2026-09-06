@@ -69,7 +69,7 @@ await event_repo.log(user_id, "session_completed", {"duration": 25, ...})
 | `pet_purchased` | `item_type`, `item_value` |
 | `pet_equipped` | `item_type`, `item_value` |
 | `pet_renamed` | `name` (обрезано до 20 символов — единственное событие с пользовательским текстом) |
-| `tip_viewed` | `category`, `tip_id`, `total_views`, `coin_granted` |
+| `tip_viewed` | `category`, `tip_id`, `total_views`, `coin_granted`. Пишется только на реальный просмотр (категория или «🔄 Ещё совет»); листание «📋 Все советы» события не создаёт |
 | `settings_changed` | `setting`, `value` |
 | `reminder_sent` | `kind` (`morning` / `evening`), `tz`, `hhmm` |
 

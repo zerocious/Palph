@@ -6,7 +6,7 @@
 (см. [user-flows.md](user-flows.md)), затем sprint-план к экзамену
 ([BACKLOG.md](BACKLOG.md)).
 
-**Тесты:** 787 в suite, все зелёные. Требования к тестам —
+**Тесты:** 792 в suite, все зелёные. Требования к тестам —
 [docs/testing.md](docs/testing.md). Технический справочник —
 [docs/](docs/README.md).
 
@@ -66,7 +66,7 @@ Example:
 Готовность: `tips/*.json` + `tips/README.md`; кэш при старте; inline «Ещё совет» / «Все советы» / пагинация; контекстный pick + cooldown 7д (`user_tips_seen`); `user_tips_stats` + `TipsRepository`; событие `tip_viewed`; ачивка `10_tips_read`; FAQ обновлён; 26 тестов  
 Приоритет: Must — **закрыто**
 
-**Known issue (defer):** пагинация «Все советы» (◀️/▶️) инкрементит `total_views` → можно ускорить ачивку; монета остаётся 1/день. Fix: не вызывать gamification hook на `tips:list` page turns.
+**Known issue — ✅ исправлено 2026-09-05:** пагинация «Все советы» (◀️/▶️) инкрементила `total_views`, что позволяло нафармить ачивку «Любознательный» перелистыванием одной категории. Теперь `handle_tips_list` вызывает рендер с `count_view=False`: листание пишет только `user_tips_seen` (cooldown), не увеличивает `total_views`, не даёт монету, не двигает ачивку и не логирует `tip_viewed`. «🔄 Ещё совет» считается просмотром как раньше. 5 регрессионных тестов в `tests/test_tips_gamification.py`.
 
 ---
 
@@ -131,7 +131,7 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
 handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На feature-ветке
-**732 теста** в suite на момент закрытия фазы (сейчас в suite 787).
+**732 теста** в suite на момент закрытия фазы (сейчас в suite 792).
 Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
@@ -224,7 +224,7 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`.
 **110 pytest** в аналитических модулях (`test_analytics_service.py` 69,
 `test_event_repository.py` 18, `test_log_parser.py` 20,
-`test_pa_verify_export.py` 3) + **787 total** в suite.
+`test_pa_verify_export.py` 3) + **792 total** в suite.
 Таксономия событий — [docs/analytics.md](docs/analytics.md).
 
 ### ✅ PA launch kit (2026-05-25)

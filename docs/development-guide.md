@@ -159,7 +159,7 @@ await event_repo.log(user_id, "my_event", {"subject_id": sid, "value": v})
 
 ## Чеклист перед коммитом
 
-1. `python -m pytest -q` — зелёный (787 тестов).
+1. `python -m pytest -q` — зелёный (792 теста).
 2. `python -m py_compile bot.py services.py repository.py db.py`.
 3. `python -c "import bot"` — ловит ошибки в декораторах и на импорте.
 4. Если трогали строки интерфейса — `python scripts/audit_i18n_keys.py`.

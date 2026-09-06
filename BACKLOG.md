@@ -232,7 +232,7 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 
 ---
 
-## Tips list pagination — achievement farming (2026-05-22)
+## Tips list pagination — achievement farming (2026-05-22) ✅ shipped 2026-09-05
 
 **Идея**: при листании «📋 Все советы» (callback `tips:list` ◀️/▶️) не вызывать `_on_tip_viewed` / не инкрементить `user_tips_stats.total_views` — только `record_seen` для cooldown.
 
@@ -242,7 +242,14 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 
 **Стоимость**: ~30 мин кода + 1–2 теста.
 
-**Решение**: **defer** — зафиксировано в TODO #18 и [tips/README.md](tips/README.md).
+**Решение**: **shipped 2026-09-05.** Реализовано ровно по описанному
+подходу: `_on_tip_viewed(..., count_view: bool)` — при `False` пишется
+только `record_seen`, а `record_view` (и вместе с ним монета, ачивка и
+событие `tip_viewed`) пропускается. `_edit_or_send_tip` прокидывает флаг,
+`handle_tips_list` передаёт `count_view=False`, `handle_tips_more`
+оставлен без изменений. 5 регрессионных тестов в
+`tests/test_tips_gamification.py`, включая проверку, что «Ещё совет»
+по-прежнему считается просмотром.
 
 ---
 

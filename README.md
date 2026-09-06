@@ -6,7 +6,7 @@ Pomodoro-таймер, четыре режима подготовки (ситу�
 питомец), недельный лидерборд с друзьями и продуктовая аналитика.
 
 > **Статус:** v0.8, код на коммите `0ac30af` (2026-06-03).
-> **Тесты:** 787, все зелёные (`python -m pytest -q`, ~24 с).
+> **Тесты:** 792, все зелёные (`python -m pytest -q`, ~24 с).
 > **Документация:** [docs/](docs/README.md) — полный технический справочник.
 
 > **Имя проекта.** Бот переименован из **StudyBuddy** в **Palph**
@@ -210,7 +210,7 @@ assets/pet/                               Арт питомца
 analysis/                                 PA-аналитика: ноутбуки, шаблоны, выгрузки
 audits/                                   Аудиты безопасности и устойчивости
 scripts/                                  Инструменты и генераторы контента
-tests/                                    787 тестов в 51 файле
+tests/                                    792 теста в 51 файле
 ```
 
 Подробно — [docs/architecture.md](docs/architecture.md) и
@@ -261,7 +261,7 @@ tests/                                    787 тестов в 51 файле
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                      # 787 тестов, ~24 с
+python -m pytest -q                      # 792 теста, ~24 с
 python -m pytest tests/test_sm2.py -v    # один файл
 python -m pytest -k leaderboard -q       # по подстроке
 ```

@@ -1,6 +1,6 @@
 # Требования к тестам
 
-> **Doc sync:** 2026-09-05 · **787** тестов в 51 файле, все зелёные
+> **Doc sync:** 2026-09-05 · **792** теста в 51 файле, все зелёные
 > (`python -m pytest -q`, ~24 с).
 
 ## Запуск
@@ -133,7 +133,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 | Планировщики и стрики | `test_streak_service.py`, `test_reminder_service.py`, `test_morning_tip_reminder.py`, `test_backup_service.py` | 34 |
 | Безопасность | `test_file_upload_security.py`, `test_command_input_security.py`, `test_rate_limiter.py`, `test_admin_message_rate_limit.py`, `test_telegram_resilience.py` | 56 |
 | Приватность и данные | `test_delete_user_completely.py`, `test_db_paths.py` | 29 |
-| Советы | `test_tips_gamification.py`, `test_tips_medium_features.py`, `test_tips_content.py`, `test_productivity_tips_files.py` | 25 |
+| Советы | `test_tips_gamification.py`, `test_tips_medium_features.py`, `test_tips_content.py`, `test_productivity_tips_files.py` | 30 |
 | UX и настройки | `test_main_menu_ux.py`, `test_profile_ux.py`, `test_settings_fixes.py`, `test_tz_presets.py`, `test_i18n.py` | 39 |
 | Спринт-план (UI выключен) | `test_plan_service.py`, `test_plan_repository.py` | 34 |
 | Ачивки | `test_achievement_service.py` | 14 |

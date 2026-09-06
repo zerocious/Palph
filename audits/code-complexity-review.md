@@ -1,6 +1,6 @@
 # Code Complexity Review
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **787** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **792** tests).
 > Line counts below are point-in-time snapshots; re-run audit after major refactors.
 
 **Product:** Palph (Telegram bot, aiogram 3)  
@@ -216,7 +216,7 @@ Radon raw SLOC vs physical lines (PowerShell `Measure-Object -Line`):
 | 8 | 163 | `plan_handlers.py:605–767` | `handle_plan_callback` (nested) |
 | 7 | 155 | `bot.py:4190–4344` | `handle_task_answer` |
 | 7 | 142 | `bot.py:7500–7641` | `reconcile_stale_timers` |
-| 7 | 141 | `bot.py:7647–7787` | `main` |
+| 7 | 141 | `bot.py:7647–7792` | `main` |
 | 6 | 143 | `services.py:1866–2008` | `compute_content_stats` |
 | 6 | 127 | `plan_handlers.py:411–537` | `_launch_plan_item` |
 | 6 | 123 | `services.py:901–1023` | `StreakService._process` |

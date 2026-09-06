@@ -1,6 +1,6 @@
 # System Resilience Review — Palph (Telegram bot, aiogram 3)
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (pytest suite **787** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (pytest suite **792** tests).
 
 **Date:** 2026-05-24  
 **Scope:** Timeout handling, retry/backoff, circuit breaking, bulkhead/isolation, graceful degradation  
@@ -436,7 +436,7 @@ Prior `audits/error-handling-review.md` noted this was missing; it is now wired 
 
 ### Shutdown — partial
 
-**Locations:** `bot.py:7782-7787` — `finally: t.cancel()` on background tasks; no `await asyncio.gather(..., return_exceptions=True)` for clean drain; no explicit `bot.session.close()`.
+**Locations:** `bot.py:7782-7792` — `finally: t.cancel()` on background tasks; no `await asyncio.gather(..., return_exceptions=True)` for clean drain; no explicit `bot.session.close()`.
 
 ---
 

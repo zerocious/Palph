@@ -58,3 +58,85 @@ class TestTipsAchievement:
         new_ids, bonus = await ach_service.check_tips_award(created_user, 15)
         assert "10_tips_read" not in new_ids
         assert bonus == 0
+
+
+class TestPaginationDoesNotFarmAchievement:
+    """
+    Регрессия TODO #18: листание «📋 Все советы» (◀️/▶️) раньше вызывало
+    полный gamification-hook, поэтому ачивку «Любознательный» можно было
+    получить перелистыванием одной категории, а total_views переставал
+    отражать число прочитанных советов.
+    """
+
+    @pytest_asyncio.fixture
+    async def wired_bot(self, tips_repo, user_repo, ach_service, created_user, monkeypatch):
+        import bot
+        from repository import EventRepository
+        monkeypatch.setattr(bot, "tips_repo", tips_repo)
+        monkeypatch.setattr(bot, "user_repo", user_repo)
+        monkeypatch.setattr(bot, "ach_service", ach_service)
+        monkeypatch.setattr(bot, "event_repo", EventRepository(user_repo.db))
+        return bot
+
+    async def _tip_events(self, db, uid) -> int:
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM events "
+            "WHERE user_id = ? AND event_name = 'tip_viewed'",
+            (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["n"]
+
+    async def _total_views(self, db, uid) -> int:
+        async with db.execute(
+            "SELECT total_views FROM user_tips_stats WHERE user_id = ?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["total_views"] if row else 0
+
+    async def test_paging_does_not_increment_total_views(
+        self, wired_bot, tips_repo, created_user, db,
+    ):
+        for _ in range(15):
+            suffix = await wired_bot._on_tip_viewed(
+                created_user, "tm", "tm-01", count_view=False,
+            )
+            assert suffix == ""
+        assert await self._total_views(db, created_user) == 0
+        assert await self._tip_events(db, created_user) == 0
+
+    async def test_paging_still_records_seen_for_cooldown(
+        self, wired_bot, tips_repo, created_user,
+    ):
+        await wired_bot._on_tip_viewed(created_user, "tm", "tm-01", count_view=False)
+        seen = await tips_repo.get_recently_seen_tip_ids(created_user, 7)
+        assert "tm-01" in seen
+
+    async def test_paging_does_not_award_achievement(
+        self, wired_bot, created_user, db,
+    ):
+        for _ in range(12):
+            await wired_bot._on_tip_viewed(
+                created_user, "tm", "tm-01", count_view=False,
+            )
+        async with db.execute(
+            "SELECT completed FROM user_achievements "
+            "WHERE user_id = ? AND achievement_id = '10_tips_read'",
+            (created_user,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is None, "ачивка не должна двигаться от листания"
+
+    async def test_real_view_still_counts(self, wired_bot, created_user, db):
+        suffix = await wired_bot._on_tip_viewed(created_user, "tm", "tm-01")
+        assert await self._total_views(db, created_user) == 1
+        assert await self._tip_events(db, created_user) == 1
+        assert suffix != ""
+
+    async def test_list_handler_passes_count_view_false(self, wired_bot, monkeypatch):
+        """`tips:list` обязан звать рендер с count_view=False."""
+        import inspect
+        src = inspect.getsource(wired_bot.handle_tips_list)
+        assert "count_view=False" in src
+        more_src = inspect.getsource(wired_bot.handle_tips_more)
+        assert "count_view" not in more_src, "«Ещё совет» должен считаться просмотром"
