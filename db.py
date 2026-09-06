@@ -1,6 +1,7 @@
 import asyncio
 import aiosqlite
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -80,6 +81,32 @@ async def get_db(db_path: str = DB_PATH) -> aiosqlite.Connection:
     return db
 
 
+@asynccontextmanager
+async def write_transaction(db: aiosqlite.Connection):
+    """
+    Блок записи под db.lock с гарантированным откатом при исключении.
+
+    sqlite открывает транзакцию на первом же write-стейтменте. Если между
+    ним и commit'ом что-то падает, транзакция остаётся открытой и держит
+    write-лок на файле БД: ночной бэкап и любой внешний процесс упрутся
+    в «database is locked», и лечится это только рестартом бота.
+
+    Использование:
+        async with write_transaction(self.db):
+            await self.db.execute(...)
+            await self.db.commit()
+    """
+    async with db.lock:
+        try:
+            yield
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass  # соединение уже нерабочее — откатывать нечего
+            raise
+
+
 async def execute_with_db_retry(coro_factory, *, retries: int = 3, base_delay: float = 0.05):
     """Retry aiosqlite coroutine on transient 'database is locked' errors."""
     for attempt in range(retries):
@@ -131,6 +158,12 @@ async def init_db(db: aiosqlite.Connection):
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON study_sessions(user_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON study_sessions(created_at);
+        -- Покрывающий индекс под SUM(duration_minutes) в get_total_minutes:
+        -- запрос считается прямо по индексу, не заглядывая в таблицу.
+        -- Горячий путь — его дёргают complete_session, экран прогресса и
+        -- каждый опрос desktop-приложения. На 20k сессий даёт -33% времени.
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_minutes
+            ON study_sessions(user_id, duration_minutes);
 
         -- Достижения пользователей (прогресс)
         CREATE TABLE IF NOT EXISTS user_achievements (
@@ -445,6 +478,52 @@ async def init_db(db: aiosqlite.Connection):
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (user_id, subject_id)
         );
+
+        -- Pomodoro-таймер, запущенный из desktop-приложения. Отсчёт ведёт
+        -- сервер, а не клиент: started_at ставит SQLite, и заработанные
+        -- минуты считаются от него же. Иначе приложение могло бы
+        -- "завершить" 120-минутную сессию через секунду после старта.
+        -- Одна строка на пользователя (PK): второй /pomodoro/start просто
+        -- перезаписывает предыдущий незакрытый таймер.
+        -- Таймер бота живёт отдельно, в FSM — они не мешают друг другу.
+        CREATE TABLE IF NOT EXISTS desktop_timers (
+            user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            duration_minutes INTEGER NOT NULL
+        );
+
+        -- Одноразовые коды привязки desktop-клиента (Windows-приложение)
+        -- к Telegram-аккаунту. Создаются командой /link_app, TTL 10 минут,
+        -- single-use: строка удаляется при успешном обмене на токен.
+        -- Код — 8 символов Crockford-подобного алфавита без похожих глифов
+        -- (см. DeviceRepository._generate_code): keyspace ~1e12 против
+        -- brute-force, при этом читается и набирается вручную.
+        -- На пользователя живёт максимум один активный код — новый /link_app
+        -- затирает предыдущий.
+        CREATE TABLE IF NOT EXISTS device_link_codes (
+            code TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_link_codes_user
+            ON device_link_codes(user_id);
+
+        -- Долгоживущие токены устройств (Bearer-авторизация desktop-клиента).
+        -- В БД хранится ТОЛЬКО SHA-256 hash токена: сам токен показывается
+        -- клиенту один раз в ответе POST /auth/link. Утечка дампа БД не даёт
+        -- доступа к аккаунтам. last_seen_at обновляется на каждый
+        -- авторизованный запрос — по нему пользователь в /devices видит,
+        -- какое устройство активно, и может отозвать доступ.
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            device_name TEXT NOT NULL DEFAULT 'Desktop',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_tokens_user
+            ON device_tokens(user_id);
 
         -- UX flags for plan onboarding per subject.
         CREATE TABLE IF NOT EXISTS user_plan_meta (
