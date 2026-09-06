@@ -11,6 +11,76 @@
 пользователя** (`local_date`, `week_iso`) — это осознанное решение, см.
 [LEADERBOARD.md](../LEADERBOARD.md).
 
+## Карта таблиц
+
+28 таблиц проще держать в голове как шесть кластеров вокруг `users`.
+Стрелка — внешний ключ на `users(user_id)` с `ON DELETE CASCADE`;
+пунктир — связь по `user_id` **без** FK (такие таблицы удаляются вручную,
+см. §«Удаление данных пользователя»).
+
+```mermaid
+flowchart TB
+    U[("users")]
+
+    subgraph profile["Профиль и сессии"]
+        NS["notification_settings"]
+        SS["study_sessions"]
+        UA["user_achievements"]
+    end
+
+    subgraph progress["Прогресс по режимам · без FK"]
+        QP["quiz_progress"]
+        FP["flashcard_progress"]
+        MP["mcq_progress"]
+        TP["task_progress"]
+        USS["user_subject_stats"]
+    end
+
+    subgraph lb["Лидерборд"]
+        DSC["daily_score_counters"]
+        WS["weekly_scores"]
+        WB["weekly_badges"]
+        SF["streak_freezes"]
+    end
+
+    subgraph social["Социальное"]
+        FR["friend_requests"]
+        FS["friendships"]
+        FIT["friend_invite_tokens"]
+    end
+
+    subgraph content["Свой контент и советы"]
+        UF["user_flashcards"]
+        UT["user_tasks"]
+        UTS["user_tips_stats"]
+        UTSN["user_tips_seen"]
+    end
+
+    subgraph pet["Питомец и план"]
+        P["user_pet"]
+        PI["user_pet_inventory"]
+        SM["user_skill_map"]
+        AP["user_active_plan"]
+        PM["user_plan_meta"]
+    end
+
+    U --> profile
+    U --> lb
+    U --> social
+    U --> content
+    U --> pet
+    U -.-> progress
+    U -.-> EV["events"]
+    U -.-> FSM["fsm_storage"]
+
+    ADM["admins"]:::standalone
+    classDef standalone stroke-dasharray: 4 3
+```
+
+`admins` ни с чем не связана — это отдельный список идентификаторов.
+`events` и `fsm_storage` тоже без FK: первая append-only и переживает
+пользователя до явного удаления, вторая адресуется составным TEXT-ключом.
+
 ## Обзор таблиц
 
 | # | Таблица | Назначение | Экспорт `/export` |

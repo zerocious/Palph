@@ -133,10 +133,36 @@ class TestPaginationDoesNotFarmAchievement:
         assert await self._tip_events(db, created_user) == 1
         assert suffix != ""
 
-    async def test_list_handler_passes_count_view_false(self, wired_bot, monkeypatch):
-        """`tips:list` обязан звать рендер с count_view=False."""
-        import inspect
-        src = inspect.getsource(wired_bot.handle_tips_list)
-        assert "count_view=False" in src
-        more_src = inspect.getsource(wired_bot.handle_tips_more)
-        assert "count_view" not in more_src, "«Ещё совет» должен считаться просмотром"
+    @staticmethod
+    def _fake_callback(uid: int, data: str):
+        """Минимальный CallbackQuery: хендлеру нужны data, from_user и message."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        message = SimpleNamespace(
+            edit_text=AsyncMock(), answer=AsyncMock(), chat=SimpleNamespace(id=uid),
+        )
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=uid),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+    async def test_list_handler_does_not_count_views(
+        self, wired_bot, created_user, db,
+    ):
+        """Прогон настоящего `tips:list` через хендлер: счётчик не двигается."""
+        for page in range(5):
+            cb = self._fake_callback(created_user, f"tips:list:tm:{page}")
+            await wired_bot.handle_tips_list(cb)
+            assert cb.message.edit_text.await_count == 1, "страница должна отрисоваться"
+        assert await self._total_views(db, created_user) == 0
+        assert await self._tip_events(db, created_user) == 0
+
+    async def test_more_handler_counts_view(self, wired_bot, created_user, db):
+        """«🔄 Ещё совет» через тот же рендер — просмотр засчитывается."""
+        cb = self._fake_callback(created_user, "tips:more:tm")
+        await wired_bot.handle_tips_more(cb)
+        assert cb.message.edit_text.await_count == 1
+        assert await self._total_views(db, created_user) == 1
+        assert await self._tip_events(db, created_user) == 1

@@ -4,7 +4,7 @@
 раздел; ссылки между ними и на корневые файлы репозитория.
 
 > **Doc sync:** 2026-09-05 · код на коммите `0ac30af` (2026-06-03) ·
-> pytest suite **792** теста, все зелёные.
+> pytest suite **793** теста, все зелёные.
 
 ## Карта документации
 
@@ -24,6 +24,7 @@
 | [testing.md](testing.md) | **Требования к тестам** (включая правило о времени), фикстуры, как запускать |
 | [development-guide.md](development-guide.md) | **Рекомендации при создании** нового кода: рецепты, чеклисты, инварианты |
 | [scripts.md](scripts.md) | Справочник по `scripts/` |
+| [glossary.md](glossary.md) | Термины проекта: mastery, rollover, тир, сегмент, фичефлаг, EF |
 
 ### Корневые документы репозитория
 
@@ -44,7 +45,7 @@
 
 **Новому разработчику:** [architecture.md](architecture.md) →
 [data-model.md](data-model.md) → [development-guide.md](development-guide.md) →
-[testing.md](testing.md).
+[testing.md](testing.md). Незнакомые термины — [glossary.md](glossary.md).
 
 **Тому, кто наполняет контент:** [content-authoring.md](content-authoring.md) →
 [../study_materials/README.md](../study_materials/README.md).
@@ -55,9 +56,39 @@
 **Продуктовому аналитику:** [analytics.md](analytics.md) →
 [../analysis/README.md](../analysis/README.md) → [../admin_commands.md](../admin_commands.md).
 
+## Хочу сделать X — куда смотреть
+
+| Задача | Документ |
+|--------|----------|
+| Добавить хендлер, команду, таблицу, событие или строку интерфейса | [development-guide.md](development-guide.md) §Рецепты |
+| Понять, почему нет кнопки / режима / предмета | [architecture.md](architecture.md) §Загрузка учебного контента, §Выключенные фичи |
+| Разобраться, за что начисляются очки и монеты | [features.md](features.md) §4, §6 · [../LEADERBOARD.md](../LEADERBOARD.md) |
+| Добавить задачи, карточки, MCQ или советы | [content-authoring.md](content-authoring.md) |
+| Написать тест, не привязанный к календарю | [testing.md](testing.md) §1 |
+| Развернуть бота или починить пути к БД | [configuration.md](configuration.md) |
+| Восстановить БД из бэкапа, разобрать инцидент | [operations.md](operations.md) |
+| Понять, какие данные о пользователе хранятся | [data-model.md](data-model.md) · [../PRIVACY.ru.md](../PRIVACY.ru.md) |
+| Посчитать метрику или выгрузить данные | [analytics.md](analytics.md) · [../admin_commands.md](../admin_commands.md) |
+| Перевести интерфейс или добавить язык | [i18n.md](i18n.md) |
+| Проверить, что документация не разошлась с кодом | `python scripts/check_docs.py` |
+
 ## Правило актуальности
 
 Документация — часть Definition of Done. Меняешь поведение — в том же
 коммите правишь документ, который это поведение описывает, и обновляешь
 `Doc sync` в его шапке. Детали — в [development-guide.md](development-guide.md)
 §«Чеклист перед коммитом».
+
+Часть этого правила проверяется автоматически:
+
+```bash
+python scripts/check_docs.py          # 25 проверок, только stdlib + pytest
+python scripts/check_docs.py --quiet  # печатать только провалы
+```
+
+Скрипт сверяет с кодом то, что расходилось на практике: количество таблиц
+и индексов, число репозиториев, таксономию событий, алиасы `/export`,
+ключи локалей, счётчики контента, значения фичефлагов, счётчик тестов
+(включая таблицу по областям в [testing.md](testing.md)) и все
+markdown-ссылки. Если проверка упала — **правится документ, а не
+проверка**.

@@ -6,7 +6,7 @@ Pomodoro-таймер, четыре режима подготовки (ситу�
 питомец), недельный лидерборд с друзьями и продуктовая аналитика.
 
 > **Статус:** v0.8, код на коммите `0ac30af` (2026-06-03).
-> **Тесты:** 792, все зелёные (`python -m pytest -q`, ~24 с).
+> **Тесты:** 793, все зелёные (`python -m pytest -q`, ~24 с).
 > **Документация:** [docs/](docs/README.md) — полный технический справочник.
 
 > **Имя проекта.** Бот переименован из **StudyBuddy** в **Palph**
@@ -210,7 +210,7 @@ assets/pet/                               Арт питомца
 analysis/                                 PA-аналитика: ноутбуки, шаблоны, выгрузки
 audits/                                   Аудиты безопасности и устойчивости
 scripts/                                  Инструменты и генераторы контента
-tests/                                    792 теста в 51 файле
+tests/                                    793 теста в 51 файле
 ```
 
 Подробно — [docs/architecture.md](docs/architecture.md) и
@@ -236,6 +236,7 @@ tests/                                    792 теста в 51 файле
 | [docs/testing.md](docs/testing.md) | Требования к тестам |
 | [docs/development-guide.md](docs/development-guide.md) | Рецепты и чеклисты для нового кода |
 | [docs/scripts.md](docs/scripts.md) | Справочник по `scripts/` |
+| [docs/glossary.md](docs/glossary.md) | Термины проекта: mastery, rollover, тир, сегмент, фичефлаг |
 
 ### Продуктовые и рабочие документы
 
@@ -261,7 +262,7 @@ tests/                                    792 теста в 51 файле
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q                      # 792 теста, ~24 с
+python -m pytest -q                      # 793 теста, ~24 с
 python -m pytest tests/test_sm2.py -v    # один файл
 python -m pytest -k leaderboard -q       # по подстроке
 ```
@@ -274,11 +275,17 @@ python -m pytest -k leaderboard -q       # по подстроке
 ### Прочие проверки
 
 ```bash
+python scripts/check_docs.py           # документация против кода (25 проверок)
 python -m py_compile bot.py services.py repository.py db.py
 python -c "import bot"                 # ловит name-errors в декораторах
 python scripts/audit_i18n_keys.py      # ключи t() против locales/*.json
 python scripts/pa_verify_export.py     # аналитика и экспорт живы
 ```
+
+`check_docs.py` существует потому, что документация уже расходилась с
+кодом: счётчики тестов, списки событий и таблиц жили своей жизнью. Теперь
+всё, что можно сверить механически, сверяется одной командой и валится с
+ненулевым кодом выхода.
 
 ### Дебаг через SQLite
 

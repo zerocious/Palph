@@ -5,7 +5,7 @@
 **См. также:** [user-flows.md](../user-flows.md) §9 (клики до совета),
 [TODO.md](../TODO.md) #18, [README.md](../README.md), [../docs/content-authoring.md](../docs/content-authoring.md).
 
-**Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **792** tests).
+**Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **793** tests).
 Форматы и правила наполнения — [../docs/content-authoring.md](../docs/content-authoring.md).
 
 ## Файлы

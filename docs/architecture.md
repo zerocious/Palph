@@ -118,6 +118,30 @@ Palph — однопроцессный Telegram-бот на **aiogram 3.x** + **
 
 ## Восстановление таймеров после рестарта
 
+Жизненный цикл таймера — единственное состояние, которое обязано пережить
+рестарт процесса, поэтому стоит держать его перед глазами целиком:
+
+```mermaid
+stateDiagram-v2
+    [*] --> waiting_for_duration: «Кастомный таймер»
+    waiting_for_duration --> active: ввод 5–120 мин
+    waiting_for_duration --> [*]: /cancel или рестарт (запись чистится)
+
+    [*] --> active: «Стандартный таймер» (25 мин)
+
+    active --> completed: asyncio-таск досчитал
+    active --> completed: «⏹ Стоп» / /stop (зачёт фактического времени)
+    active --> active: «📖 Подготовка» (_detach_timer_for_study_flow)
+
+    state "рестарт бота" as restart
+    active --> restart: процесс упал/передеплоен
+    restart --> completed: elapsed >= duration (source=reconcile)
+    restart --> active: elapsed < duration (start_timer заново)
+    restart --> [*]: битая запись → удаляем
+
+    completed --> [*]: монеты, ачивки, +XP, grant_time_pts, запрос оценки
+```
+
 `reconcile_stale_timers()` читает `fsm_storage` и для каждой записи в
 состоянии `TimerStates.active`:
 

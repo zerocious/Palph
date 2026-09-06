@@ -1,6 +1,6 @@
 # Требования к тестам
 
-> **Doc sync:** 2026-09-05 · **792** теста в 51 файле, все зелёные
+> **Doc sync:** 2026-09-05 · **793** теста в 51 файле, все зелёные
 > (`python -m pytest -q`, ~24 с).
 
 ## Запуск
@@ -133,7 +133,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 | Планировщики и стрики | `test_streak_service.py`, `test_reminder_service.py`, `test_morning_tip_reminder.py`, `test_backup_service.py` | 34 |
 | Безопасность | `test_file_upload_security.py`, `test_command_input_security.py`, `test_rate_limiter.py`, `test_admin_message_rate_limit.py`, `test_telegram_resilience.py` | 56 |
 | Приватность и данные | `test_delete_user_completely.py`, `test_db_paths.py` | 29 |
-| Советы | `test_tips_gamification.py`, `test_tips_medium_features.py`, `test_tips_content.py`, `test_productivity_tips_files.py` | 30 |
+| Советы | `test_tips_gamification.py`, `test_tips_medium_features.py`, `test_tips_content.py`, `test_productivity_tips_files.py` | 31 |
 | UX и настройки | `test_main_menu_ux.py`, `test_profile_ux.py`, `test_settings_fixes.py`, `test_tz_presets.py`, `test_i18n.py` | 39 |
 | Спринт-план (UI выключен) | `test_plan_service.py`, `test_plan_repository.py` | 34 |
 | Ачивки | `test_achievement_service.py` | 14 |
@@ -143,6 +143,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 ## Дополнительные проверки
 
 ```bash
+python scripts/check_docs.py          # документация против кода (25 проверок)
 python -m py_compile bot.py services.py repository.py db.py   # синтаксис
 python -c "import bot"                # ловит name-errors в декораторах
 python scripts/audit_i18n_keys.py     # ключи t() против locales/*.json
@@ -152,8 +153,10 @@ python scripts/pa_verify_export.py    # аналитика и экспорт ж�
 
 ## Чего в тестах нет
 
-- **CI-прогона.** GitHub Actions запускает только `pip-audit`. Тесты —
-  ответственность разработчика перед коммитом.
+- **CI-прогона.** GitHub Actions запускает только `pip-audit`. Тесты и
+  `check_docs.py` — ответственность разработчика перед коммитом. Оба
+  возвращают ненулевой код выхода, так что при желании заводятся в CI
+  одним шагом.
 - **Замера покрытия.** `coverage` не подключён; ориентир — карта выше.
 - **E2E через реальный Telegram.** Верхний уровень — интеграционные тесты
   на связках repo → service → render.

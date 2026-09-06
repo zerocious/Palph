@@ -159,12 +159,13 @@ await event_repo.log(user_id, "my_event", {"subject_id": sid, "value": v})
 
 ## Чеклист перед коммитом
 
-1. `python -m pytest -q` — зелёный (792 теста).
-2. `python -m py_compile bot.py services.py repository.py db.py`.
-3. `python -c "import bot"` — ловит ошибки в декораторах и на импорте.
-4. Если трогали строки интерфейса — `python scripts/audit_i18n_keys.py`.
-5. Новое поведение покрыто тестом; багфикс — регрессионным тестом.
-6. **Документация обновлена в этом же коммите**:
+1. `python -m pytest -q` — зелёный (793 теста).
+2. `python scripts/check_docs.py` — документация сходится с кодом.
+3. `python -m py_compile bot.py services.py repository.py db.py`.
+4. `python -c "import bot"` — ловит ошибки в декораторах и на импорте.
+5. Если трогали строки интерфейса — `python scripts/audit_i18n_keys.py`.
+6. Новое поведение покрыто тестом; багфикс — регрессионным тестом.
+7. **Документация обновлена в этом же коммите**:
    - изменилась схема → [data-model.md](data-model.md);
    - изменилась механика фичи → [features.md](features.md) и, если видно
      пользователю, [../README.md](../README.md) + [../user-flows.md](../user-flows.md);
@@ -173,10 +174,11 @@ await event_repo.log(user_id, "my_event", {"subject_id": sid, "value": v})
    - изменился баланс лидерборда → [../LEADERBOARD.md](../LEADERBOARD.md)
      (спека — источник истины, правится **до** кода);
    - в шапке правленого документа обновлён `Doc sync`.
-7. Запись в [../session_notes.md](../session_notes.md) — что сделано,
+8. Запись в [../session_notes.md](../session_notes.md) — что сделано,
    что отложено.
-8. Числа в документации (количество тестов, задач, таблиц) сверены с
-   реальностью, а не скопированы из прошлой версии.
+9. Числа в документации (количество тестов, задач, таблиц) сверены с
+   реальностью, а не скопированы из прошлой версии — за большинство из
+   них теперь ручается `check_docs.py`.
 
 ## Частые ошибки
 
