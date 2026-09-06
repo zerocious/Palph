@@ -20,11 +20,14 @@ import pytest
 import pytest_asyncio
 
 from repository import LeaderboardRepository
-from services import LeaderboardService, user_calendar_keys
+from services import LeaderboardService
+from tests.conftest import current_week_anchor, current_week_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)   # Monday, mid-day
-WEEK = "2026-W21"
+# Понедельник текущей недели в TZ пользователя — см. conftest.
+# Фиксированная дата здесь работала ровно до конца своей недели.
+NOW = current_week_anchor()
+TODAY, WEEK = current_week_keys()
 
 
 @pytest_asyncio.fixture
@@ -60,9 +63,12 @@ async def _make_user(user_repo, db, uid, age_days, *, streak=0, hidden=False, us
 async def _grant(lb_repo, uid, *, time=0, task=0, quiz=0, card=0, week_iso=WEEK):
     """Прямой write в weekly_scores для теста; обходит cap-логику."""
     if week_iso is None:
-        local_date, week_iso = user_calendar_keys(datetime.now())
+        # Часы пользователя, а не машины: render считает неделю в TZ
+        # пользователя, и на UTC-раннере эти двое расходятся каждое
+        # воскресенье после 21:00 UTC.
+        local_date, week_iso = current_week_keys()
     else:
-        local_date = "2026-05-18"
+        local_date = TODAY
     await lb_repo._ensure_rows(uid, local_date, week_iso)
     await lb_repo.db.execute(
         "UPDATE weekly_scores SET time_pts=?, task_pts=?, quiz_pts=?, card_pts=? "
