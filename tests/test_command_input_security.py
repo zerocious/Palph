@@ -1,5 +1,8 @@
 """Security tests for command/callback input validation and loader sandboxing."""
 
+import ast
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +22,56 @@ from file_upload_security import (
     truncate_for_telegram_message,
     truncate_text,
 )
+
+
+_BOT_PY = Path(__file__).resolve().parent.parent / "bot.py"
+
+
+class TestOutputParseModeInvariant:
+    """
+    Экранирование вывода в этом боте держится на неявном условии: у Bot()
+    НЕТ parse_mode по умолчанию (в aiogram 3 это None). Поэтому сообщения
+    со свободным пользовательским текстом — условие своей задачи, превью
+    списков своих задач и карточек — отправляются без parse_mode и не
+    разбираются как HTML. Там, где HTML-разметка нужна, пользовательские
+    строки уже проходят через html_escape (имя питомца, термин и
+    определение карточки).
+
+    Опасен именно рефакторинг «вынести повторяющийся parse_mode='HTML' из
+    двух десятков вызовов в дефолт бота»: он выглядит безобидной уборкой,
+    но разом делает HTML-разбираемыми ВСЕ пути со свободным текстом.
+    Пользовательский '<' тогда либо протащит разметку, либо уронит
+    отправку в 400.
+
+    Тест не запрещает такой рефакторинг — он требует, чтобы его делали
+    осознанно, обернув сырые пути в html_escape.
+    """
+
+    def test_aiogram_default_parse_mode_is_none(self):
+        """Фиксируем поведение библиотеки, на которое опирается остальное."""
+        from aiogram import Bot
+
+        assert Bot(token="123:abc").default.parse_mode is None
+
+    def test_bot_is_constructed_without_default_parse_mode(self):
+        tree = ast.parse(_BOT_PY.read_text(encoding="utf-8"))
+        constructions = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Bot"
+        ]
+        assert constructions, "не найден вызов Bot(...) в bot.py"
+
+        for call in constructions:
+            kwargs = {kw.arg for kw in call.keywords if kw.arg}
+            assert "default" not in kwargs and "parse_mode" not in kwargs, (
+                f"bot.py:{call.lineno}: у Bot() появился parse_mode по умолчанию. "
+                "Перед этим нужно обернуть в html_escape пути, где "
+                "пользовательский текст отправляется без parse_mode: условие "
+                "своей задачи (_send_next_task) и превью в списках своих "
+                "задач и карточек."
+            )
 
 
 class TestLoaderSubjectSandbox:
