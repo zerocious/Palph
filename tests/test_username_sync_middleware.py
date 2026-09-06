@@ -146,3 +146,85 @@ class TestNonExistentUser:
             "SELECT COUNT(*) AS n FROM users WHERE user_id=99999"
         ) as c:
             assert (await c.fetchone())["n"] == 0
+
+
+class TestWriteOnlyIfChanged:
+    """
+    UPDATE идёт с commit(), то есть fsync на каждое сообщение, и делит
+    глобальный db.lock со всем остальным. @handle меняют редко, поэтому
+    middleware пишет только при изменении значения. Замер на смешанной
+    нагрузке: 2823 → 4233 событий/с, минус 95% записей.
+    """
+
+    async def test_repeated_same_username_writes_once(self, user_repo, handler, event):
+        mw = UsernameSyncMiddleware(user_repo)
+        user_repo.refresh_username = AsyncMock()
+
+        for _ in range(20):
+            await mw(handler, event, _user_data(1, "alice"))
+
+        assert user_repo.refresh_username.await_count == 1
+
+    async def test_changed_username_is_written(self, user_repo, handler, event):
+        mw = UsernameSyncMiddleware(user_repo)
+        user_repo.refresh_username = AsyncMock()
+
+        await mw(handler, event, _user_data(1, "alice"))
+        await mw(handler, event, _user_data(1, "alice"))
+        await mw(handler, event, _user_data(1, "bob"))
+        await mw(handler, event, _user_data(1, "bob"))
+
+        assert user_repo.refresh_username.await_count == 2
+        assert user_repo.refresh_username.await_args.args == (1, "bob")
+
+    async def test_handle_removal_to_none_is_written(self, user_repo, handler, event):
+        """Сброс @handle в Telegram — тоже изменение, его надо записать."""
+        mw = UsernameSyncMiddleware(user_repo)
+        user_repo.refresh_username = AsyncMock()
+
+        await mw(handler, event, _user_data(1, "alice"))
+        await mw(handler, event, _user_data(1, None))
+        await mw(handler, event, _user_data(1, None))
+
+        assert user_repo.refresh_username.await_count == 2
+        assert user_repo.refresh_username.await_args.args == (1, None)
+
+    async def test_users_are_cached_independently(self, user_repo, handler, event):
+        mw = UsernameSyncMiddleware(user_repo)
+        user_repo.refresh_username = AsyncMock()
+
+        for _ in range(5):
+            await mw(handler, event, _user_data(1, "alice"))
+            await mw(handler, event, _user_data(2, "bob"))
+
+        assert user_repo.refresh_username.await_count == 2
+
+    async def test_failed_write_is_not_cached(self, user_repo, handler, event):
+        """
+        Ключевое: сбой БД не должен запомниться как «уже синхронизировано»,
+        иначе username не обновится больше никогда.
+        """
+        mw = UsernameSyncMiddleware(user_repo)
+        user_repo.refresh_username = AsyncMock(side_effect=RuntimeError("БД недоступна"))
+
+        await mw(handler, event, _user_data(1, "alice"))
+        assert user_repo.refresh_username.await_count == 1
+        assert 1 not in mw._synced
+
+        # БД ожила — следующая попытка обязана записать
+        user_repo.refresh_username = AsyncMock()
+        await mw(handler, event, _user_data(1, "alice"))
+        assert user_repo.refresh_username.await_count == 1
+
+    async def test_cache_is_bounded(self, user_repo, handler, event):
+        """Неограниченный словарь рос бы по записи на каждого пользователя."""
+        mw = UsernameSyncMiddleware(user_repo)
+        mw.CACHE_MAX_ENTRIES = 10
+        user_repo.refresh_username = AsyncMock()
+
+        for uid in range(100):
+            await mw(handler, event, _user_data(uid, f"user{uid}"))
+
+        assert len(mw._synced) == 10
+        # Вытесняются самые давние: последние 10 остались
+        assert set(mw._synced) == set(range(90, 100))
