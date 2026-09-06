@@ -211,7 +211,7 @@ return user_id in ADMINS or user_id == MAIN_ADMIN_ID
 30 дней (`BACKUP_RETENTION_DAYS` env, можно увеличить). Manual snapshot'ы
 **не подпадают** под daily-retention — хранятся до явного удаления.
 
-**Где лежат:** `BACKUP_DIR` env (default `./backups/`; в Docker — `/data/backups/`).
+**Где лежат:** `BACKUP_DIR` env (локально default `./backups/`; в Docker и на bothost — **`/app/data/backups/`**, задаётся в Dockerfile и docker-compose; путь `/data/backups` из ранних заметок устарел).
 
 **Поведение:**
 - ✅ → `Backup создан: studybuddy-manual-... ; Размер: N KB`
@@ -278,17 +278,29 @@ Cohort     | Size | D1     | D7     | D30
 
 Два блока: **progress+events steps** и **event-only funnel**. % от total registered; колонка `→N%` — conversion от **предыдущего** шага. ASCII bar:
 
+Шаги первого блока (`compute_funnel().steps`), в порядке вывода:
+
 ```
 Registered                          ██████████ 100.0% (18)
 Started studying (≥1 session)       ████████░░  77.8% (14)
+Picked subject (events)             ███████░░░  66.7% (12)
+Picked mode (events)                ██████░░░░  61.1% (11)
+≥1 quiz answer (events)             █████░░░░░  50.0% (9)
+≥1 flashcard review (events)        ████░░░░░░  38.9% (7)
+≥1 productivity tip (events)        ███░░░░░░░  33.3% (6)
 Reached 5+ sessions                 █████░░░░░  44.4% (8)
 Reached 10+ sessions                ███░░░░░░░  16.7% (3)
 Earned 3-day streak achievement     ████░░░░░░  27.8% (5)
 Earned 7-day streak achievement     █░░░░░░░░░   5.6% (1)
 ```
 
+Второй блок (`event_steps`) — чисто событийный, по именам событий:
+`Registered`, `session_started`, `subject_picked`, `mode_picked`,
+`quiz_answered`, `flashcard_reviewed`, `tip_viewed`.
+
 Шаги — не strict-subsets (3-day streak ≠ subset 10+ sessions),
 поэтому пропорции могут не убывать монотонно. Это intentionally honest.
+Строгая (монотонная) воронка есть отдельно — в `/product_metrics`.
 
 ### `/dau` — DAU / WAU / MAU + stickiness
 
@@ -328,6 +340,8 @@ Stickiness ≥20% — типичный benchmark для consumer apps.
 
 Учебные режимы, Pomodoro, настройки, **v0.8:** свои флэш-карточки, советы, питомец, друзья, weekly leaderboard, источник карт ≠ mix.
 
+Всего **14** строк, в порядке вывода (`compute_feature_usage`):
+
 ```
 🎯 Situational quizzes (≥1 ответ)    ████░░░░░░  44.4% (8)
 🃏 Flashcards (≥1 ревью)             ███░░░░░░░  33.3% (6)
@@ -335,8 +349,14 @@ Stickiness ≥20% — типичный benchmark для consumer apps.
 📷 Photo tasks (≥1 попытка)          █░░░░░░░░░  11.1% (2)
 ⏱️ Pomodoro (≥1 сессия)              ████████░░  77.8% (14)
 🌍 Изменил часовой пояс              ██░░░░░░░░  22.2% (4)
-🔕 Отключил уведомление              █░░░░░░░░░  11.1% (2)
+🔕 Отключил хотя бы одно уведомление █░░░░░░░░░  11.1% (2)
 ⏰ Изменил время напоминаний          █░░░░░░░░░  11.1% (2)
+📇 Свои флэш-карточки (≥1)           ██░░░░░░░░  16.7% (3)
+🎓 Советы (≥1 просмотр)              ████░░░░░░  38.9% (7)
+🐾 Питомец создан                    ███████░░░  72.2% (13)
+👥 ≥1 друг                           ██░░░░░░░░  16.7% (3)
+🏆 Weekly leaderboard (≥1 неделя)    █████░░░░░  50.0% (9)
+🃏 Источник карт ≠ mix               █░░░░░░░░░   5.6% (1)
 ```
 
 ### `/segments` — user segmentation

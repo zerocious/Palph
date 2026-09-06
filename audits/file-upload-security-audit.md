@@ -27,7 +27,7 @@ Residual risk is concentrated in **weak content-type assurance** (rename-only `.
 | User task `.txt` import | Inbound | `bot.py` `handle_ut_import_file` | No — `BytesIO` → SQLite |
 | Admin `/export`, analytics ZIP | Outbound | `bot.py`, `services.py` `export_all_tables_zip` | In-memory only |
 | Photo tasks / pet assets | Read-only | `bot.py` `load_tasks`, `services.render_pet` | Curated under `study_materials/`, `assets/pet/` |
-| DB backup | Internal | `services.py` `BackupService` | `/data/backups` (server path, not user upload) |
+| DB backup | Internal | `services.py` `BackupService` | `/app/data/backups` in Docker, `./backups` locally (server path, not user upload) |
 | Support catch-all | Inbound text | `bot.py` `handle_any_message` | Append `messages.log` (text JSONL, not binary upload) |
 
 **Grep confirmation:** Only `@router.message(..., F.document)` in `bot.py` (line 2485). No `F.photo` / `F.video` upload handlers.
@@ -387,7 +387,7 @@ for info in zf.infolist():
 
 | Topic | Status |
 |-------|--------|
-| **Storage outside webroot** | Upload content → SQLite (`user_tasks`); no HTTP static mapping. Backups under `BACKUP_DIR` (`/data/backups` in compose). |
+| **Storage outside webroot** | Upload content → SQLite (`user_tasks`); no HTTP static mapping. Backups under `BACKUP_DIR` (`/app/data/backups` in compose). |
 | **Direct execution prevention** | No `subprocess`, `eval`, or writing uploaded bytes to executable paths. Parser stores text fields only. |
 | **Anti-virus** | Not implemented |
 
