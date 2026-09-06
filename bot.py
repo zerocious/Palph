@@ -5348,7 +5348,10 @@ async def cmd_broadcast(message: Message, command: CommandObject):
             "Сообщение получат все зарегистрированные пользователи."
         )
         return
-    truncated = len((command.args or "").strip()) > TELEGRAM_MAX_MESSAGE_LEN
+    # Сравниваем с результатом, а не пересчитываем длину: truncate_text
+    # считает в UTF-16 единицах (лимит Telegram), и повторный подсчёт через
+    # len() расходился бы с ним на сообщениях с эмодзи.
+    truncated = text != (command.args or "").strip()
 
     if _broadcast_in_progress:
         await message.answer("⚠️ Рассылка уже идёт. Дождись её завершения.")

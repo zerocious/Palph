@@ -65,19 +65,55 @@ SUPPORT_MESSAGE_MAX_LEN = TELEGRAM_MAX_MESSAGE_LEN
 LIST_PREVIEW_MAX_LEN = 80
 
 
+def telegram_len(text: str) -> int:
+    """
+    Длина строки в UTF-16 code units — именно так Telegram считает лимит
+    сообщения, тогда как len() в Python считает кодовые точки.
+
+    Разница не косметическая: любой не-BMP символ (эмодзи 🥇, 📩 и т.п.)
+    занимает 2 единицы вместо одной, а бот использует их повсеместно.
+    Сообщение из 2048 эмодзи даёт len() == 2048 и 4096 единиц UTF-16.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _clip_to_utf16_units(text: str, budget: int) -> str:
+    """
+    Наибольший префикс text, укладывающийся в budget UTF-16 единиц.
+
+    Идём по кодовым точкам, поэтому суррогатную пару разорвать нельзя:
+    символ либо влезает целиком, либо отбрасывается.
+    """
+    if budget <= 0:
+        return ""
+    used = 0
+    for i, ch in enumerate(text):
+        width = 2 if ord(ch) > 0xFFFF else 1
+        if used + width > budget:
+            return text[:i]
+        used += width
+    return text
+
+
 def truncate_text(
     text: str,
     max_len: int = TELEGRAM_MAX_MESSAGE_LEN,
     suffix: str = "…",
 ) -> str:
-    """Trim text to max_len, appending suffix when truncated."""
+    """
+    Trim text to max_len, appending suffix when truncated.
+
+    max_len трактуется в UTF-16 единицах (как у Telegram). Для ASCII
+    поведение не отличается от подсчёта по len().
+    """
     if max_len <= 0:
         return ""
-    if len(text) <= max_len:
+    if telegram_len(text) <= max_len:
         return text
-    if len(suffix) >= max_len:
-        return text[:max_len]
-    return text[: max_len - len(suffix)] + suffix
+    suffix_units = telegram_len(suffix)
+    if suffix_units >= max_len:
+        return _clip_to_utf16_units(text, max_len)
+    return _clip_to_utf16_units(text, max_len - suffix_units) + suffix
 
 
 def sanitize_plain_preview(text: str, max_len: int = LIST_PREVIEW_MAX_LEN) -> str:
@@ -92,7 +128,7 @@ def truncate_for_telegram_message(
     max_len: int = TELEGRAM_MAX_MESSAGE_LEN,
 ) -> str:
     """Truncate body so prefix + body fits Telegram message limit."""
-    max_body = max(0, max_len - len(prefix))
+    max_body = max(0, max_len - telegram_len(prefix))
     return truncate_text(body, max_len=max_body)
 
 
@@ -156,7 +192,9 @@ def safe_subject_dir(materials_root: Path, subject_id: str) -> Path | None:
         base.relative_to(root)
     except ValueError:
         return None
-    return base if base.is_dir() else base  # may not exist yet for user-only subjects
+    # Возвращаем base и когда каталога ещё нет: у subject'ов без офлайн-
+    # материалов он создаётся позже. Проверка на выход за root уже сделана.
+    return base
 
 
 def safe_task_image_filename(name: str, task_id: str) -> str:
