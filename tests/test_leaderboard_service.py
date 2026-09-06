@@ -673,6 +673,76 @@ async def _add_friend_pair(db, friend_repo, a, b):
     await friend_repo.accept_request(a, b)
 
 
+def _utf16_len(text: str) -> int:
+    """Длина в UTF-16 единицах — как считает лимит сообщения Telegram."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+class TestFriendsTabDisplayLimit:
+    """
+    Число друзей ничем не ограничено (ни в send_request, ни в
+    accept_request), а текст вкладки рос линейно — примерно 20 UTF-16
+    единиц на строку. Начиная с ~205 друзей сообщение переставало влезать
+    в лимит Telegram (4096), и вкладка не открывалась вообще.
+    """
+
+    async def test_many_friends_stay_within_telegram_limit(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        await _make_user(user_repo, db, 1, age_days=30, username="me")
+        fr = lb_service_with_friends.friend_repo
+        for uid in range(2, 302):  # 300 друзей — до фикса это 5948 единиц
+            await _make_user(user_repo, db, uid, age_days=30, username=f"user{uid}")
+            await _add_friend_pair(db, fr, 1, uid)
+
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
+        assert _utf16_len(text) <= 4096
+
+    async def test_own_row_visible_even_outside_the_cap(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        """Свой ранг не должен теряться из-за среза — как и в render_leaderboard."""
+        await _make_user(user_repo, db, 1, age_days=30, username="me")
+        fr = lb_service_with_friends.friend_repo
+        for uid in range(2, 60):
+            await _make_user(user_repo, db, uid, age_days=30, username=f"user{uid}")
+            await _add_friend_pair(db, fr, 1, uid)
+            await _grant(lb_repo, uid, task=100)  # у друзей очки есть
+
+        # У пользователя 1 очков нет → он последний, вне первых 20
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
+        assert "(Вы)" in text
+        assert "@me" in text
+
+    async def test_cap_notice_shown_only_when_truncated(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        await _make_user(user_repo, db, 1, age_days=30, username="me")
+        fr = lb_service_with_friends.friend_repo
+        for uid in range(2, 6):  # 4 друга — срез не нужен
+            await _make_user(user_repo, db, uid, age_days=30, username=f"user{uid}")
+            await _add_friend_pair(db, fr, 1, uid)
+
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
+        assert "и ещё" not in text
+        # Все пятеро (4 друга + сам) на месте
+        for uid in range(2, 6):
+            assert f"@user{uid}" in text
+
+    async def test_all_friends_counted_in_notice(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        await _make_user(user_repo, db, 1, age_days=30, username="me")
+        fr = lb_service_with_friends.friend_repo
+        for uid in range(2, 32):  # 30 друзей + сам = 31 строка, показываем 20
+            await _make_user(user_repo, db, uid, age_days=30, username=f"user{uid}")
+            await _add_friend_pair(db, fr, 1, uid)
+
+        text = await lb_service_with_friends.render_friends_tab(1, now_local=NOW)
+        assert "и ещё 11 в списке" in text  # 31 - 20
+        assert "показаны первые 20" in text
+
+
 class TestRenderFriendsTab:
     async def test_no_friends_shows_hint(
         self, lb_service_with_friends, user_repo, db

@@ -1275,6 +1275,18 @@ class LeaderboardService:
     """
 
     TOP_N_DISPLAY = 20
+    # Друзей у пользователя может быть сколько угодно — ограничения нет ни в
+    # send_request, ни в accept_request. Без среза текст friends-tab растёт
+    # линейно (~20 UTF-16 единиц на строку) и примерно с 205 друзей
+    # перестаёт влезать в лимит сообщения Telegram: вкладка переставала
+    # открываться совсем. Режем так же, как лидерборд.
+    #
+    # Срез ограничивает вывод, но не число запросов: ранжируются все друзья,
+    # по 2 запроса на каждого (get_user + get_weekly_score). Замер: 10 друзей
+    # — 7 мс, 50 — 27 мс, 200 — 115 мс, 1000 — 547 мс на рендер. На текущих
+    # объёмах это дёшево; если списки вырастут — здесь нужен один JOIN вместо
+    # цикла.
+    FRIENDS_DISPLAY_LIMIT = 20
 
     # Top 10% coin bonus в конце недели — "small" по спеке (§Rewards).
     # 50 coins = ~1.25 math task. Видимый, но не настолько большой,
@@ -1555,16 +1567,34 @@ class LeaderboardService:
 
         rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = [f"<b>👥 Друзья · {week_iso}</b>", ""]
-        for rank, row in enumerate(rows, start=1):
+
+        def _row_line(rank: int, row: dict) -> str:
             emoji = rank_emojis.get(rank, "  ")
             suffix = " <i>(Вы)</i>" if row["user_id"] == user_id else ""
             label = format_leaderboard_user_label(
                 row.get("username"), row["user_id"]
             )
+            return f"{emoji} {label}  {row['total_final']:.0f} pts{suffix}"
+
+        shown = rows[: self.FRIENDS_DISPLAY_LIMIT]
+        for rank, row in enumerate(shown, start=1):
+            lines.append(_row_line(rank, row))
+
+        if len(rows) > len(shown):
+            lines.append("")
             lines.append(
-                f"{emoji} {label}  "
-                f"{row['total_final']:.0f} pts{suffix}"
+                f"…и ещё {len(rows) - len(shown)} в списке "
+                f"(показаны первые {len(shown)})"
             )
+            # Собственная строка не должна теряться из-за среза — как и в
+            # render_leaderboard, свой ранг показываем отдельно.
+            if all(r["user_id"] != user_id for r in shown):
+                self_rank = next(
+                    i for i, r in enumerate(rows, start=1)
+                    if r["user_id"] == user_id
+                )
+                lines.append(_row_line(self_rank, rows[self_rank - 1]))
+
         return "\n".join(lines)
 
 
