@@ -5,7 +5,8 @@
 **См. также:** [user-flows.md](../user-flows.md) §9 (клики до совета),
 [TODO.md](../TODO.md) #18 (known issue пагинации), [README.md](../README.md).
 
-**Doc sync:** 2026-05-25 (Palph v0.8, pytest suite **732** tests).
+**Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **787** tests).
+Форматы и правила наполнения — [../docs/content-authoring.md](../docs/content-authoring.md).
 
 ## Файлы
 
@@ -18,7 +19,7 @@
 
 ## Поведение в боте
 
-- **Загрузка:** JSON из этой папки, кэш при старте бота (`BOT_DIR`). Legacy `.txt` в корне — fallback.
+- **Загрузка:** JSON из этой папки через `locale_bot.tip_categories()` — **перечитывается на каждый вызов**, кеша нет, правка файла видна без рестарта. Переводы — `tips/<locale>/` с тем же именем файла. Legacy `.txt` в корне — fallback. (`bot.TIP_CATEGORIES` — снимок RU-каталога на момент импорта, нужен только тестам.)
 - **UI:** категории → случайный совет; inline «🔄 Ещё совет», «📋 Все советы» (пагинация), ссылки — URL-кнопки.
 - **Контекстный подбор** — при активном таймере приоритет `timer`; если не учился сегодня — `study`/`focus`/`bot`; если есть карточки к повторению — `flashcards`.
 - **Cooldown 7 дней** — `user_tips_seen`: недавние `tip_id` исключаются из random/more (если пул исчерпан — показываем снова).

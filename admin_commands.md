@@ -4,12 +4,19 @@
 Palph-бота. Обычные пользователи получают `❌ Нет прав.` /
 `❌ Команда только для админов.`
 
+> **Doc sync:** 2026-09-05 · сверено с `bot.py` на коммите `0ac30af`:
+> задокументированы все 20 админских команд, лишних нет.
+> Технический контекст — [docs/analytics.md](docs/analytics.md)
+> (что именно считает каждая метрика) и
+> [docs/operations.md](docs/operations.md) (runbook).
+
 ---
 
 > **Примечание про user-facing команды.** Этот файл документирует
 > только админ-команды. Пользовательские слэш-команды
-> (`/start`, `/help`, `/stop`, `/leaderboard`, `/friends`, `/share_friend`,
-> `/cancel`) — в [README.md](README.md). Reply-кнопка **📢 Новости** —
+> (`/start`, `/help`, `/stop`, `/progress`, `/pet`, `/leaderboard`,
+> `/friends`, `/share_friend`, `/delete_account`, `/cancel`) —
+> в [README.md](README.md) и [docs/features.md](docs/features.md). Reply-кнопка **📢 Новости** —
 > текст `nav.news_body` + inline «Перейти в канал» (`CHANNEL_URL`); см.
 > [user-flows.md](user-flows.md) §12. Навигация по кнопкам и подсчёт
 > кликов — в [user-flows.md](user-flows.md). Лидерборд-стек — в
@@ -39,9 +46,16 @@ return user_id in ADMINS or user_id == MAIN_ADMIN_ID
 - `/rmadmin <user_id>` — удалить (главного админа удалить нельзя)
 - `/listadmins` — посмотреть всех
 
-Новый админ моментально получает `/help`, `/reply`, `/broadcast`,
-`/notif_status` в /-пикере Telegram (через `BotCommandScopeChat`).
-При удалении пикер возвращается к дефолтному (`/start`, `/stop`).
+Новый админ моментально получает расширенный набор в `/`-пикере Telegram
+(через `BotCommandScopeChat`): пользовательские команды плюс `/help`,
+`/reply`, `/broadcast`, `/notif_status`, весь PA-блок и команды главного
+админа. При удалении пикер возвращается к дефолтному набору
+(`commands_for_locale`: `/start`, `/stop`, `/progress`, `/pet`,
+`/leaderboard`, `/friends`, `/share_friend`, `/delete_account`).
+
+Команды главного админа (`/addadmin`, `/rmadmin`, `/listadmins`,
+`/backup`) видны в пикере всем админам, но проверка внутри сверяет
+`user_id` именно с `MAIN_ADMIN_ID` — обычный админ получит отказ.
 
 > Файл `admins.json` (legacy) при первом старте импортируется в БД и
 > переименовывается в `admins.json.migrated`. Повторные запуски — no-op.

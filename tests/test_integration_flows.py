@@ -16,14 +16,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+import pytz
 
 from repository import FriendRepository, LeaderboardRepository
-from services import LeaderboardService, StreakService
+from services import LeaderboardService, StreakService, user_calendar_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)  # Monday, mid-day
-TODAY = "2026-05-18"
-WEEK = "2026-W21"
+# Тесты не привязываются к абсолютной календарной дате (docs/testing.md §Время).
+# `render_leaderboard` считает текущую ISO-неделю по TZ пользователя
+# (дефолт — Europe/Moscow), поэтому якорь берётся от «сейчас» в этом TZ,
+# а в код передаётся явным параметром `now_local=` каждого grant-вызова.
+_ANCHOR_TZ = pytz.timezone("Europe/Moscow")
+NOW = datetime.now(_ANCHOR_TZ).replace(hour=14, minute=30, second=0, microsecond=0)
+TODAY, WEEK = user_calendar_keys(NOW)
 
 
 @pytest_asyncio.fixture

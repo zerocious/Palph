@@ -1,6 +1,6 @@
 # Math — высшая математика (схема Бернулли)
 
-**Doc sync:** 2026-05-23 · 71 text-only tasks in Palph v0.8 (`task-08` removed — duplicate of `task-06`); **36 etalon tasks** with pedagogical `hint` from `source/top3_tasks_etalon_1.md`.
+**Doc sync:** 2026-09-05 · **71** text-only tasks in Palph v0.8 (`task-08` removed — duplicate of `task-06`); **36** tasks carry a pedagogical `hint` from `source/top3_tasks_etalon_1.md`. Counts re-verified against the files: `ls tasks/*.json | wc -l`, `grep -l '"hint"' tasks/*.json | wc -l`.
 
 ## Contents
 
@@ -31,8 +31,8 @@ Bernoulli script writes `task-01`…`task-41` and diagnostic. Etalon script appe
 | `text_only` | yes | `true` — no PNG required |
 | `problem` | yes | Full statement in chat |
 | `accepted` | yes | Fraction + decimal variants |
-| `solution_text` | yes | Shown after 2 wrong attempts |
-| `hint` | optional | Pedagogical nudge on 1st wrong attempt (before full answer on 2nd) |
+| `solution_text` | yes | Shown after the 2nd wrong attempt |
+| `hint` | optional | Pedagogical nudge after the **1st** wrong attempt; full answer / `solution_text` after the 2nd (`MAX_TASK_ATTEMPTS = 2`) |
 | `group`, `subtitle`, `topics` | yes | UI + planner |
 
 ## Answers

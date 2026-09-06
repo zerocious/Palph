@@ -1,6 +1,6 @@
 # Post — Опрос: учебный план в Palph
 
-> Doc sync 2026-05-25
+> Doc sync 2026-09-05
 
 > Опубликовать в **Week 2, День 10**. Сохранить результаты в [report_template.md](report_template.md).
 

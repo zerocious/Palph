@@ -1,6 +1,6 @@
 # Prelaunch Export Checklist
 
-> Пройти **до публичного запуска**. **Doc sync:** 2026-05-25 (export **20** tables, schema v0.8). Подтверждает, что PA-инфраструктура готова собирать данные.
+> Пройти **до публичного запуска**. **Doc sync:** 2026-09-05 (export **20** таблиц, schema v0.8 — сверено с `AnalyticsService.EXPORTABLE_TABLES`). Подтверждает, что PA-инфраструктура готова собирать данные. Таксономия событий — [../../docs/analytics.md](../../docs/analytics.md).
 
 ## Автоматическая проверка
 
@@ -76,7 +76,7 @@ python scripts/pa_verify_export.py --db studybuddy.db
 | friendships | friendships | social |
 | weekly_scores | weekly_scores | leaderboard |
 
-Полный список: `AnalyticsService.EXPORTABLE_TABLES` в [services.py](../services.py).
+Полный список: `AnalyticsService.EXPORTABLE_TABLES` в [services.py](../../services.py).
 
 ## Baseline snapshot
 

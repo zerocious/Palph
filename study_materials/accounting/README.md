@@ -1,8 +1,11 @@
 # Бухучёт — теоретические вопросы
 
-**Doc sync:** 2026-05-25.
+**Doc sync:** 2026-09-05.
 
-Предмет **не подключён** в `SUBJECTS` (`bot.py`) — только структура папок для подготовки контента.
+Предмет **подключён**: `accounting` есть и в `SUBJECT_IDS` (`locale_bot.py`),
+и в `SUBJECTS` (`bot.py`). Показывается в «📖 Подготовка» с режимом
+🃏 Флэш-карты, потому что `flashcards.txt` непустой (обнаружение
+data-driven, см. [../../docs/architecture.md](../../docs/architecture.md)).
 
 ## Папка `source/`
 
@@ -18,4 +21,7 @@
 Источник вопросов: `source/Теоретические-вопросы-2-курс.txt` (+ PDF-дубликат).  
 Перегенерация: `python scripts/generate_accounting_theory.py`.
 
-Предмет **не** в `SUBJECT_IDS` (`locale_bot.py`) — для подключения добавьте `accounting` и остальные файлы по [общему README](../README.md).
+Чего пока нет: `mcq.txt`, `tasks/`, `situational/`, `diagnostic/` — режимы
+для них не появятся в меню, пока файлы пустые. Форматы — в
+[общем README](../README.md) и
+[../../docs/content-authoring.md](../../docs/content-authoring.md).

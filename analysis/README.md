@@ -99,8 +99,8 @@ flowchart LR
 | Поле | Значение |
 |------|----------|
 | Версия бота | v0.8 |
-| Doc sync | 2026-05-25 |
-| Pytest suite | **732** tests (`pytest --collect-only -q`) |
+| Doc sync | 2026-09-05 |
+| Pytest suite | **787** tests (`pytest --collect-only -q`) |
 | User flows | [user-flows.md](../user-flows.md) |
 | Session log | [session_notes.md](../session_notes.md) |
 

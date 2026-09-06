@@ -1,492 +1,323 @@
 # Palph
 
-Telegram-бот для формирования регулярных учебных привычек у студентов через
-геймификацию (монеты, ачивки, стрики), Pomodoro-таймер, квизы и
-цифрового питомца.
+Telegram-бот для формирования регулярных учебных привычек у студентов:
+Pomodoro-таймер, четыре режима подготовки (ситуационные квизы, флэш-карты
+с SM-2, MCQ, задачи), геймификация (монеты, ачивки, стрики, цифровой
+питомец), недельный лидерборд с друзьями и продуктовая аналитика.
+
+> **Статус:** v0.8, код на коммите `0ac30af` (2026-06-03).
+> **Тесты:** 787, все зелёные (`python -m pytest -q`, ~24 с).
+> **Документация:** [docs/](docs/README.md) — полный технический справочник.
 
 > **Имя проекта.** Бот переименован из **StudyBuddy** в **Palph**
-> 2026-05-19. Все user-facing строки и документация обновлены. Для
-> операционной стабильности (logs, backups, deployment) сохранены
-> исторические внутренние имена: `studybuddy.db` (default DB-файл),
-> `studybuddy_bot` (logger name), `studybuddy-{date}.db` (backup
-> filename pattern), `studybuddy-bot` (docker-compose container_name).
-> Переименование этих имён сломало бы existing production deployment'ы
-> (миграция БД, monitoring tools индексирующие по logger name,
-> docker-compose up при сохранённых volumes). Если нужен полный rename
-> внутренних имён — это отдельная migration-задача с явным
-> backup/restore шагом.
-
-**Статус:** v0.8 shipped 2026-05-20. Спринт v0.7 закрыт на 5 из 6 пунктов
-(4 учебных режима + SM-2 + админ-CRUD + резюм таймера) + **полностью
-переработанный цифровой питомец** (data layer + art track + UI: profile
-preview, customization picker с 4-state buttons, level-up notification
-со списком разблокированных, FSM rename, sad-pet GIF в вечернем
-напоминании). Weekly leaderboard — **все 4 фазы shipped**:
-`/leaderboard` command, segment auto-routing (newbie/main), privacy
-opt-out, UTC-anchored weekly rollover с top-3/breakthrough/top-10%
-наградами, ❄️ заморозка стрика (profile-кнопка + cooldown + atomic
-покупка), 👥 friends system (`/friends` команда + 👥 Друзья кнопка в
-профиле + add по @username/Telegram ID + accept/reject/remove +
-deep-link invite-links через `/share_friend` + friends-tab по weekly
-score). Бот переименован с StudyBuddy в Palph (internals retained
-for ops compat). Спек: [LEADERBOARD.md](LEADERBOARD.md). User flows:
-[user-flows.md](user-flows.md). См. [TODO.md](TODO.md) и
-[session_notes.md](session_notes.md). Tests: **732** in suite
-(`python -m pytest -q`; см. [session_notes.md](session_notes.md) для актуального статуса прогона).
+> 2026-05-19. Все строки интерфейса и документация обновлены. Ради
+> операционной стабильности сохранены исторические внутренние имена:
+> `studybuddy.db` (файл БД), `studybuddy_bot` (имя логгера),
+> `studybuddy-{date}.db` (шаблон имени бэкапа), `studybuddy-bot`
+> (`container_name` в docker-compose). Переименование сломало бы
+> работающие деплои (миграция БД, мониторинг по имени логгера,
+> `docker compose up` с сохранёнными volume). Полный rename внутренних
+> имён — отдельная задача с явным шагом backup/restore.
 
 ---
 
 ## Быстрый старт
 
-### 1. Требования
+### Требования
 
-- Python 3.10+
-- Аккаунт у [@BotFather](https://t.me/BotFather) и токен бота
-- (опционально) свой Telegram user-id для роли главного админа
+- Python 3.10+ (образ и CI — 3.12)
+- Токен бота от [@BotFather](https://t.me/BotFather)
+- Свой Telegram user-id для роли главного админа
 
-### 2. Установка
+### Установка
 
 ```bash
 git clone <repo-url>
 cd Palph
 python -m venv venv
-# Windows PowerShell:
-.\venv\Scripts\Activate.ps1
-# macOS / Linux:
-source venv/bin/activate
+source venv/bin/activate          # Windows: .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
-
-### 3. Конфиг
-
-Скопируй шаблон и заполни:
-
-```bash
-cp .env.example .env
-```
-
-```env
-BOT_TOKEN=<токен от @BotFather>
-MAIN_ADMIN_ID=<свой Telegram user-id (число)>
-SERVER_TIMEZONE=Europe/Moscow
-DB_PATH=studybuddy.db
-LOG_FILE=bot.log
-BACKUP_DIR=backups
-BACKUP_RETENTION_DAYS=30
-LOG_LEVEL=INFO
-```
-
-### 4. Запуск
-
-**Локально:**
-
-```bash
+cp .env.example .env               # заполнить BOT_TOKEN и MAIN_ADMIN_ID
 python bot.py
 ```
 
-**В Docker:**
+Минимальный `.env`:
+
+```env
+BOT_TOKEN=<токен от @BotFather>
+MAIN_ADMIN_ID=<свой Telegram user-id>
+SERVER_TIMEZONE=Europe/Moscow
+LOG_LEVEL=INFO
+```
+
+Пути `DB_PATH` / `LOG_FILE` / `BACKUP_DIR` задавать не обязательно — код
+подставит локальные значения рядом с `bot.py`, а в контейнере
+автоматически перейдёт на `/app/data/`. Полный список переменных —
+[docs/configuration.md](docs/configuration.md).
+
+### Docker
 
 ```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
 
-`docker-compose.yml` монтирует `./data/` на хосте в `/app/data` в контейнере —
-SQLite-БД, логи и `admins.json.migrated` живут там, переживают rebuild.
+`./data` на хосте монтируется в `/app/data` — БД, логи и бэкапы переживают
+rebuild.
 
-### Деплой на bothost.ru
+### bothost.ru
 
-[bothost.ru](https://bothost.ru) использует persistent storage в **`/app/data/`**
-(не `/data/`). Dockerfile уже задаёт дефолты:
+Persistent storage хостера — `/app/data/`. Dockerfile уже задаёт нужные
+пути, код умеет автоопределение, поэтому в панели достаточно `BOT_TOKEN`
+и `MAIN_ADMIN_ID`. На бесплатном тарифе данные могут сбрасываться при
+redeploy.
 
-```env
-DB_PATH=/app/data/studybuddy.db
-LOG_FILE=/app/data/bot.log
-BACKUP_DIR=/app/data/backups
-```
+### Что происходит при первом запуске
 
-При старте бот создаёт `/app/data` и подкаталоги, если их нет. Если в панели
-bothost нет `DB_PATH` / `LOG_FILE` / `BACKUP_DIR`, код сам подставляет пути
-под `/app/data/` (образ Docker или layout `/app/bot.py`). Явно задавать их не
-обязательно; см. блок «ADD THESE ON BOTHOST» в `.env.example`.
-
-**Важно:** на бесплатном тарифе bothost данные могут сбрасываться при redeploy;
-на платном `/app/data` сохраняется между рестартами.
-
-При первом запуске:
-- создаётся `studybuddy.db` (SQLite, WAL-режим)
-- если рядом есть `admins.json` — он импортируется в БД и переименовывается
-  в `admins.json.migrated` (повторно не запускается)
-- `MAIN_ADMIN_ID` всегда сидится в таблицу `admins`
+- создаётся `studybuddy.db` (SQLite, WAL), 28 таблиц и 14 индексов;
+- если рядом лежит `admins.json` — импортируется в БД и переименовывается
+  в `admins.json.migrated`;
+- `MAIN_ADMIN_ID` доливается в таблицу `admins`;
+- таймеры, оставшиеся в FSM от прошлого запуска, завершаются или
+  возобновляются.
 
 ---
 
 ## Что умеет бот
 
-- **Pomodoro-таймер** (стандартный 25 мин + кастомный 5–120 мин); живёт в
-  фоне, переживает рестарт бота (FSM в SQLite + автовозобновление задач,
-  пользователь видит сообщение «♻️ Таймер продолжается, осталось N мин»)
-- **Монеты** за каждую минуту учёбы + бонусы за достижения и стрик
-- **Стрики** — ежедневный шедулер в локальном TZ пользователя
-- **10 достижений** (сессии, стрики, минуты, **10 советов по продуктивности**)
-- **4 учебных режима** под несколько предметов; flow учёбы:
-  **📖 Подготовка → предмет → режим** (раньше было режим → предмет).
-  Пустые контентом предметы/режимы автоматически скрываются
-  (data-driven обнаружение):
-  - 🎯 **Ситуационные квизы** — открытый ответ + keyword-grader +
-    фиксированные интервалы `[1, 2, 4, 7]` дней
-  - 🃏 **Флэш-карты с SM-2** — 3-кнопочный рейтинг ❌/😐/✅, per-card
-    ease factor, EF floor 1.3; +1 🪙 за карточку любого рейтинга.
-    Официальные карты из `flashcards.txt` (hash = MD5(term)[:8]);
-    **пользовательские** — до 100 шт. на предмет через
-    **📇 Мои карточки** в ⚙️ Настройки (создание/удаление, FSM).
-    Hash своих карт: `u{card_id:07x}` (изолирован от официальных).
-    Источник при повторении: ⚙️ → **🃏 Флэш-карты** — Микс /
-    Официальные / Свои (`flashcard_source` в `notification_settings`)
-  - ❓ **MCQ** — выбор из 4 вариантов с перетасовкой, +1 🪙 за правильный
-  - 📷 **Задачи (фото или текст)** — `task-NN.png` + JSON или `text_only` + `problem`/
-    `solution_text` / опционально `hint` (см. [study_materials/README.md](study_materials/README.md)); `task_answer_match.py`;
-    2 попытки → после 1-й ошибки подсказка (если есть), после 2-й — ответ; награды +3 / +2 / 0 🪙
-- **💾 Backup БД** — ежедневный snapshot после streak processing (23:59
-  в первом TZ глобального дня). Atomic через SQLite `VACUUM INTO`,
-  retention 30 дней (`BACKUP_RETENTION_DAYS` в env), папка
-  `./backups/` (Docker/bothost: `/app/data/backups/`). Главный админ может
-  принудительно snapshot через `/backup`. Для disaster-recovery —
-  template script `scripts/backup_offsite.sh.example` (GPG-шифрование +
-  rclone upload в S3/B2; ручная настройка на хосте).
-- **🛡 Rate limiting** — sliding-window in-memory лимитер per user
-  (30 actions / 60 sec, warn на 70%, hard block на 100%). Применяется
-  как aiogram middleware ко всем Message + CallbackQuery. Админы
-  exempt. Защита от спама/abuse'а — не DDoS (бот через polling, нет
-  публичного endpoint'а). См. план cybersecurity в
-  [.claude/plans/make-a-new-session-merry-castle.md](.claude/plans/).
-- **📊 Экран прогресса** (в профиле кнопка `📊 Прогресс по предметам`):
-  10-квадратный mastery-bar 🟩⬜ per subject, плюс actionable строки —
-  «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов». Пустые
-  предметы без контента (например english) показываются с пометкой
-  «🚧 Контент в разработке». **Математика**: 71 text-only задача (6 групп билета), 36 с подсказками.
-  Mastery считается из 4 режимов: ситуационные
-  termы с `streak ≥ 3`, флэш-карты (официальные + свои) с
-  `repetitions ≥ 3`, MCQ-вопросы отвеченные хотя бы раз верно,
-  решённые задачи.
-- **Цифровой питомец** — data-layer ([PR #2 merged](https://github.com/zerocious/Palph/pull/2))
-  + art/UI track в PR #3: один дизайн, **3 derived эмоции**
-  (`neutral / joy / sad` — выводятся в момент
-  рендера), 1 XP/мин, `level = floor(sqrt(xp/10)) + 1`,
-  `user_pet_inventory` под кастомизацию, атомарная покупка под `db.lock`,
-  **level-up notification** со списком новых разблокированных предметов,
-  **pet detail screen** в профиле (фото-превью + name + level + xp),
-  **4-state customization picker** (⭐ надето / ✓ куплено / 💰 N доступно /
-  🔒 lv.N заблокировано) для 5 цветов и 5 аксессуаров с confirm-диалогом
-  на покупку, **переименование** через FSM. Pillow build-script
-  (`scripts/build_pet_assets.py`) генерирует 75 PNG + 3 GIF placeholder
-  ассетов (programmer-art) — **real artwork** как отдельный track (замена
-  файлов в `assets/pet/`). **Четыре суточных варианта** (утро/день/вечер/ночь
-  по локальному TZ пользователя): кладите арт в `assets/pet/<period>/` с теми
-  же именами (`neutral_orange_none.png`, `default.png`, `sad.gif` и т.д.);
-  см. `services.get_pet_time_period` и docstring `render_pet`. Опционально
-  `python scripts/build_pet_assets.py --with-periods` для placeholder-копий.
-  **Sad-pet в вечернем напоминании** — shipped:
-  `derive_emotion` → `sad` + `send_animation(sad.gif)` с fallback на текст.
-- **🏆 Weekly leaderboard** (PR #3) — еженедельная формула:
-  `(time + math_task + quiz + card) × streak_multiplier`, daily caps,
-  ISO-week rollover **UTC Tuesday 00:00**. Auto-routing **newbie / main**
-  по `created_at < 7 days`. Команды: `/leaderboard` (свой сегмент +
-  ранг), `/friends` (👥 ранжированный лист друзей + add/accept/reject
-  по **@username или Telegram ID** + remove с confirm; username
-  кешируется через middleware на каждый Message), `/share_friend` —
-  **deep-link виральный invite** (`t.me/Bot?start=friend_<token>`,
-  multiuse, 30-day TTL; клик = auto-friendship без pending state).
-  👤 Privacy opt-out в настройках. ❄️ **Streak freeze** — coins-gated
-  кнопка в профиле, тиры 500/750/1000, 7-day cooldown, потребляется
-  в miss-day path вместо reset стрика. Top-3 / breakthrough / top-10%
-  coin bonus раздаются автоматически на rollover, идемпотентно.
-  Backtest notebook `analysis/leaderboard_backtest.ipynb` валидирует
-  формулу на исторических `events` до боевого запуска.
-- **🎓 Советы для продуктивности** (📚 Учебные инструменты): контент в [`tips/`](tips/)
-  (JSON: заголовок, тело, tags, «Попробуй сегодня»). Категории: ⏰ тайм-менеджмент,
-  🧠 запоминание, **🎯 как пользоваться ботом**, 🔗 ссылки (URL-кнопки).
-  Inline: «Ещё совет», «Все советы» (пагинация). **Контекстный подбор**
-  (таймер / не учился / карточки к повторению), **cooldown 7 дней** на повтор
-  того же `tip_id`. **+1 🪙** за первый совет дня; ачивка **«Любознательный»**
-  за 10 просмотров. **Совет дня** в 🌅 утреннем напоминании.
-- **Уведомления**: утро / вечер / стрик / ачивки; включается в ⚙️ Настройки;
-  время и часовой пояс настраиваются per-user. Там же: источник
-  флэш-карт (Микс/Официальные/Свои) и **📇 Мои карточки** (CRUD по предметам)
-- **📢 Новости** — призыв подписаться на канал [`t.me/palph_study`](https://t.me/palph_study):
-  новые функции, советы по продуктивности, лайфхаки для учёбы, бонусы и конкурсы;
-  inline-кнопка **«Перейти в канал»** (`nav.open_channel` / `CHANNEL_URL` в `bot.py`).
-- **❓ FAQ** — интерактивное меню с 10 вопросами + кнопка техподдержки.
-  Каждый вопрос как отдельная inline-кнопка → message edit показывает
-  ответ + `[◀️ К списку]`. Вопросы: миссия проекта, эффективность,
-  питомец, монеты (earn/spend), SM-2, интервальное повторение, active
-  recall, гарантия результатов, почему бот бесплатный.
-- **🛠 Техподдержка**: пользователь пишет в чат → forward всем админам;
-  ответ через `/reply <user_id> <текст>` (или через FAQ → «Связаться с
-  техподдержкой»).
-- **Главное меню (Reply):** **📖 Подготовка** (отдельная строка) · 📚 Учебные инструменты (таймер + советы) ·
-  📊 Профиль · ❓ FAQ · 📢 Новости. В профиле: **🏆 Рейтинг недели**, **👥 Друзья**,
-  питомец, прогресс, настройки. Подробно — [user-flows.md](user-flows.md).
-- **Пользовательские команды:** `/start`, `/help`, `/stop`, `/leaderboard`,
-  `/friends`, `/share_friend`, `/cancel` (дублируют кнопки профиля).
-- **Админ-инструменты:** `/help`, `/broadcast`, `/notif_status`, `/addadmin`,
-  `/rmadmin`, `/listadmins`, `/backup`, `/analytics`, `/export`, …
-  Подробно — [admin_commands.md](admin_commands.md).
-- **📊 PA-аналитика для портфолио** — dashboard `/analytics` с inline-меню
-  (10 разделов + export): cohort, funnel, time-to-value, **product metrics**,
-  DAU/WAU/MAU, feature adoption, segments, content stats, event timeline,
-  heatmap, export CSV/ZIP. Отдельные команды: `/cohort_stats`, `/funnel`,
-  `/activation`, `/product_metrics`, `/dau`, `/feature_usage`, `/segments`,
-  `/content_stats`, `/event_timeline`, `/heatmap`, `/export <alias>`,
-  `/export all`, `/parse_logs`. **Launch kit:** [analysis/README.md](analysis/README.md)
-  (framework, logbook, weekly templates, notebooks 01–04). Подробно — [admin_commands.md](admin_commands.md).
+### Учёба
+
+- **Pomodoro-таймер** — стандартные 25 минут или свои 5–120. Живёт в фоне,
+  переживает рестарт бота (FSM в SQLite + автовозобновление, пользователь
+  получает «♻️ Таймер продолжается, осталось N мин»). Переход в
+  «📖 Подготовка» таймер не останавливает.
+- **Четыре режима подготовки** — вход: 📖 Подготовка → предмет → режим.
+  Предметы и режимы без контента скрываются автоматически:
+  - 🎯 **Ситуационные квизы** — открытый ответ, грейдер по ключевым
+    словам, фиксированные интервалы `[1, 2, 4, 7]` дней;
+  - 🃏 **Флэш-карты с SM-2** — рейтинг ❌/😐/✅, свой ease factor на
+    карточку, пол EF 1.3, +1 🪙 за карточку при любом рейтинге. Источник
+    настраивается: Микс / Официальные / Свои;
+  - ❓ **MCQ** — 4 варианта с перетасовкой, +1 🪙 за верный;
+  - 📷 **Задачи** — картинка или текст; две попытки: после первой ошибки
+    подсказка (если есть), после второй — решение. Награда 3 / 2 / 0 🪙.
+- **Свой контент** — до 100 флэш-карточек на предмет через 📇 Мои
+  карточки и до 50 задач на предмет импортом `.txt` (файл до 64 КБ).
+
+### Геймификация
+
+- **Монеты** за каждую минуту учёбы, верные ответы, ачивки и стрик.
+- **10 достижений** (сессии, стрики, минуты, советы) с наградами 25–125 🪙.
+- **Стрики** — ночной прогон в 23:58–23:59 локального времени
+  пользователя, +15 🪙 со второго дня.
+- **Цифровой питомец** — 1 XP за минуту, `level = floor(sqrt(xp/10)) + 1`,
+  три эмоции (`neutral` / `joy` / `sad`), выводимые в момент рендера, и
+  четыре суточных варианта арта (утро / день / вечер / ночь). Уведомление о
+  новом уровне со списком открывшегося, переименование. Тому, кто не
+  учился, вечернее напоминание приходит с грустным питомцем.
+  **Две фичи питомца сейчас выключены флагами:** `PET_SINGLE_IMAGE_MODE`
+  (картинка зависит только от времени суток — не от эмоции и предметов) и
+  `PET_CUSTOMIZATION_ENABLED` (покупка цветов и аксессуаров скрыта из UI;
+  данные, каталоги и тесты на месте). Подробности —
+  [docs/features.md](docs/features.md) §5.
+- **🏆 Недельный лидерборд** —
+  `(время + задачи + квизы + карточки) × множитель стрика`, дневные капы
+  на каждый компонент, авто-сегменты «новички» / «основной», rollover во
+  вторник 00:00 UTC с бэджами и монетным бонусом топ-10 %.
+  ❄️ **Заморозка стрика** за 500 / 750 / 1000 🪙, не чаще раза в 7 дней.
+  👤 Privacy opt-out: скрытый пользователь копит очки и получает награды,
+  но не виден другим. Спека и баланс — [LEADERBOARD.md](LEADERBOARD.md).
+- **👥 Друзья** — добавление по `@username` или Telegram ID, приём и
+  отклонение заявок, удаление с подтверждением, вкладка друзей по
+  недельному счёту и виральные deep-link приглашения `/share_friend`
+  (multiuse, 3 дня).
+
+### Вокруг учёбы
+
+- **📊 Экран прогресса** — на каждый предмет mastery-bar 🟩⬜ из 10
+  квадратов, «🔔 К повторению сегодня», «🕐 Активность», «📈 Заходов».
+- **🎓 Советы по продуктивности** — тайм-менеджмент, память, «как
+  пользоваться ботом», внешние ссылки. Контекстный подбор, cooldown 7
+  дней, +1 🪙 за первый совет дня, совет дня в утреннем напоминании.
+- **Уведомления** — утро, вечер, стрик, ачивки; время и часовой пояс
+  настраиваются (50 пресетов TZ).
+- **❓ FAQ** — 10 вопросов инлайн-меню + кнопка техподдержки.
+  **🛠 Техподдержка** — сообщение пересылается админам, ответ через
+  `/reply`. **📢 Новости** — кнопка на канал
+  [`t.me/palph_study`](https://t.me/palph_study).
+- **Локализация ru / en** — 443 ключа в каждом бандле, выбор языка при
+  первом `/start` и в настройках.
+- **`/delete_account`** — полное самостоятельное удаление данных
+  (GDPR ст. 17 / 152-ФЗ).
+
+### Инфраструктура
+
+- **💾 Ежедневный бэкап БД** — атомарный `VACUUM INTO` после ночной
+  обработки стриков, retention 30 дней, ручной снапшот через `/backup`.
+- **🛡 Rate limiting** — 30 действий / 60 секунд на пользователя,
+  предупреждение на 70 %, блок на 100 %; админы освобождены.
+- **📊 PA-аналитика** — `/analytics` с инлайн-меню (когорты, воронка,
+  time-to-value, продуктовые метрики, DAU/WAU/MAU, adoption, сегменты,
+  контент, timeline, heatmap) и экспорт CSV / ZIP по 20 таблицам.
+
+### Команды
+
+**Пользовательские** (они же в `/`-пикере Telegram): `/start`, `/stop`,
+`/progress`, `/pet`, `/leaderboard`, `/friends`, `/share_friend`,
+`/delete_account`. Плюс `/cancel` внутри мастеров и `/skip` в онбординге —
+в пикере их нет. `/help` — админская: обычному пользователю она отвечает
+подсказкой открыть ❓ FAQ.
+
+**Админские:** `/help`, `/reply`, `/broadcast`, `/notif_status`, `/analytics`,
+`/cohort_stats`, `/funnel`, `/activation`, `/product_metrics`, `/dau`,
+`/feature_usage`, `/segments`, `/content_stats`, `/event_timeline`,
+`/heatmap`, `/export`, `/parse_logs`, плюс команды главного админа
+`/addadmin`, `/rmadmin`, `/listadmins`, `/backup`.
+Подробно — [admin_commands.md](admin_commands.md).
 
 ---
 
 ## Архитектура
 
-Слоистая: репозиторий → сервис → бот. Никаких прямых SQL-запросов в
-хендлерах.
+Слоистая: `bot.py` (хендлеры) → `services.py` (логика) → `repository.py`
+(SQL) → `db.py` (SQLite). Прямых SQL-запросов в хендлерах нет.
 
 ```
-bot.py              # Хендлеры aiogram, FSM, study flow (предмет→режим),
-                    # 4 учебных режима, user flashcards UI, main()
-db.py               # aiosqlite connection, init_db (схема + индексы + миграции)
-repository.py       # User/Session/Admin/Flashcard/UserFlashcard/Tips/
-                    # Mcq/Task/SubjectStats/Pet/Leaderboard/Friend/Event
-                    # repositories (CRUD only)
-plan_service.py     # Sprint plan generator (catalog, diagnostic, 14-day plan)
-plan_handlers.py    # Sprint plan handlers (PLAN_UI_ENABLED=False by default)
-task_answer_match.py # Text task answer normalization
-file_upload_security.py # User task upload path validation
-services.py         # Achievement, Study, Streak, Reminder, Backup,
-                    # Analytics, Leaderboard services; sm2_update();
-                    # derive_emotion, freeze_cost, parse_friend_query
-tasks.py            # Фоновые asyncio-шедулеры (стрики 23:59 локально,
-                    # утро/вечер раз в минуту)
-fsm_storage.py      # SQLite-бэкенд для aiogram FSM → состояние таймеров,
-                    # квизов и мастеров переживает рестарт
-achievements.json   # Каталог ачивок (id, иконка, описание, награда)
-tips/               # Советы по продуктивности (JSON, см. tips/README.md):
-  time-management.json, memory.json, bot-guide.json, links.json
-study_materials/    # Учебные материалы — data-driven дерево:
-  industrial-management/
-    situational/section-{i,ii,iii,iv}.txt   (термин ‖ опр ‖ ключи ‖ ситуация)
-    flashcards.txt                          (термин ‖ определение)
-    mcq.txt                          (вопрос ‖ верный ‖ w1 ‖ w2 ‖ w3)
-    tasks/task-NN.{png,json,-solution.png}  (картинка-условие + JSON метаданных)
-  math/                                     (71 text-only задач, groups.json, hints, diagnostic)
-  accounting/                               (source/ для PDF; предмет не в SUBJECTS)
-  english/                                  (ждёт контента)
+bot.py                   Хендлеры aiogram, FSM, клавиатуры, загрузка контента, main()
+services.py              Study/Streak/Reminder/Leaderboard/Analytics/Backup/Achievement,
+                         SM-2, формулы лидерборда, рендер питомца, resilience Telegram
+repository.py            15 репозиториев — единственное место с SQL
+db.py                    Соединение, PRAGMA, схема (28 таблиц), миграции, пути
+tasks.py                 Три фоновых цикла: стрики+бэкап, напоминания, rollover
+fsm_storage.py           FSM aiogram поверх SQLite — состояние переживает рестарт
+i18n.py, locale_bot.py   Локализация ru/en
+file_upload_security.py  Валидация загрузок, защита от path traversal
+task_answer_match.py     Сверка числовых ответов
+user_task_txt.py         Парсер своих задач из .txt
+parse_logs.py            ETL bot.log → CSV
+plan_service.py          Генератор спринт-плана (чистые функции)
+plan_handlers.py         UI спринт-плана — выключен флагом PLAN_UI_ENABLED
 ```
 
-**Таблицы в БД** (создаются в `db.init_db`):
-- `users`, `notification_settings` — профиль, уведомления, `flashcard_source`
-  (`mix` / `official` / `own`, default `mix`)
-- `user_flashcards` — пользовательские карточки (user_id, subject_id, term,
-  definition; UNIQUE по term; лимит 100/subject)
-- `study_sessions` — каждая завершённая сессия (длительность, монеты, рейтинг)
-- `user_achievements` — прогресс по 10 достижениям
-- `user_tips_stats` — счётчик просмотров советов, дневная монета, `tip_of_day_id/date`
-- `user_tips_seen` — cooldown: какие `tip_id` показывали (PK user+tip, `seen_at`)
-- `quiz_progress` — SRS для **ситуационных** квизов (fixed intervals)
-- `flashcard_progress` — SM-2 состояние per (user, card): ease_factor,
-  interval_days, repetitions, last_review, next_review
-- `mcq_progress` — per-question статистика MCQ: correct_count, total_count
-- `task_progress` — per-task: attempts_used, succeeded
-- `user_subject_stats` — per-subject visits + last_activity (для экрана прогресса)
-- `events` — append-only event log для PA-аналитики (одна строка на каждое
-  значимое действие: registration / session_started/completed / mode_picked /
-  subject_picked / quiz_answered / mcq_answered / task_attempted /
-  flashcard_reviewed / achievement_unlocked / tip_viewed /
-  user_flashcard_created / user_flashcard_deleted). `properties` — JSON.
-  Foundation для funnel/cohort/path-анализа.
-- `user_pet`, `user_pet_inventory` — питомец и купленные предметы
-- `weekly_scores`, `weekly_badges`, `streak_freezes` — лидерборд и freeze
-- `friend_requests`, `friendships` — друзья
-- `friend_invite_tokens` — deep-link invite (30-day TTL)
-- `admins` — список админов (источник истины; in-memory кеш для is_admin())
-- `fsm_storage` — постоянное FSM хранилище для aiogram
+Данные и контент:
+
+```
+achievements.json, achievements.en.json   Каталог ачивок
+locales/{ru,en}.json                      Строки интерфейса (генерируются скриптом)
+tips/*.json                               Советы по продуктивности
+study_materials/<subject>/                Учебный контент, обнаружение data-driven
+assets/pet/                               Арт питомца
+analysis/                                 PA-аналитика: ноутбуки, шаблоны, выгрузки
+audits/                                   Аудиты безопасности и устойчивости
+scripts/                                  Инструменты и генераторы контента
+tests/                                    787 тестов в 51 файле
+```
+
+Подробно — [docs/architecture.md](docs/architecture.md) и
+[docs/data-model.md](docs/data-model.md).
 
 ---
 
-## Документация по проекту
+## Документация
+
+### Технический справочник — [docs/](docs/README.md)
+
+| Документ | О чём |
+|----------|-------|
+| [docs/architecture.md](docs/architecture.md) | Слои, модули, запуск, фоновые циклы, конкурентность, логирование |
+| [docs/data-model.md](docs/data-model.md) | 28 таблиц, индексы, миграции, удаление аккаунта |
+| [docs/features.md](docs/features.md) | Точная механика каждой фичи: константы, формулы, состояния |
+| [docs/analytics.md](docs/analytics.md) | 30 событий, метрики, экспорт |
+| [docs/configuration.md](docs/configuration.md) | Переменные окружения, Docker, bothost, CI |
+| [docs/operations.md](docs/operations.md) | Runbook: бэкапы, логи, диагностика инцидентов |
+| [docs/security.md](docs/security.md) | Модель угроз и контроли |
+| [docs/i18n.md](docs/i18n.md) | Локализация |
+| [docs/content-authoring.md](docs/content-authoring.md) | Как добавлять контент |
+| [docs/testing.md](docs/testing.md) | Требования к тестам |
+| [docs/development-guide.md](docs/development-guide.md) | Рецепты и чеклисты для нового кода |
+| [docs/scripts.md](docs/scripts.md) | Справочник по `scripts/` |
+
+### Продуктовые и рабочие документы
 
 | Файл | Что внутри |
 |------|-----------|
-| [TODO.md](TODO.md) | Текущий спринт + размеченный бэклог (Must/Should/Could/Won't) |
-| [BACKLOG.md](BACKLOG.md) | Сырые идеи без приоритета — отстойник перед TODO |
-| [session_notes.md](session_notes.md) | История сессий разработки (по датам, что менялось и почему) |
-| [admin_commands.md](admin_commands.md) | Справочник по админским командам |
-| [LEADERBOARD.md](LEADERBOARD.md) | Спека weekly leaderboard (формула, segments, privacy, freeze, friends, rewards, phasing) — source-of-truth при ребалансе |
-| [user-flows.md](user-flows.md) | Стандартные user flows, подсчёт кликов, mermaid-диаграммы, идеи сокращения навигации |
-| [tips/README.md](tips/README.md) | Формат JSON-советов, tags, поведение бота (контекст, cooldown, совет дня) |
+| [LEADERBOARD.md](LEADERBOARD.md) | Спека лидерборда — источник истины при ребалансе |
+| [user-flows.md](user-flows.md) | Пользовательские сценарии, подсчёт кликов, диаграммы |
+| [admin_commands.md](admin_commands.md) | Справочник админских команд |
+| [TODO.md](TODO.md) | Размеченные задачи (Must / Should / Could / Won't) |
+| [BACKLOG.md](BACKLOG.md) | Сырые идеи до оценки |
+| [session_notes.md](session_notes.md) | Журнал сессий разработки |
+| [PRIVACY.md](PRIVACY.md) · [PRIVACY.ru.md](PRIVACY.ru.md) | Политика приватности (GDPR + 152-ФЗ) |
+| [analysis/README.md](analysis/README.md) | PA-аналитика для портфолио |
+| [study_materials/README.md](study_materials/README.md) | Форматы учебного контента |
+| [tips/README.md](tips/README.md) | Формат советов |
+| [audits/](audits/) | Аудиты: безопасность, ошибки, устойчивость, сложность |
+
+---
+
+## Разработка
+
+### Тесты
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q                      # 787 тестов, ~24 с
+python -m pytest tests/test_sm2.py -v    # один файл
+python -m pytest -k leaderboard -q       # по подстроке
+```
+
+**Ключевое требование:** в тестах не должно быть абсолютных календарных
+дат как якоря «сейчас» — только относительные привязки; абсолютная дата
+допустима лишь тогда, когда передаётся в код явным параметром. Полностью —
+[docs/testing.md](docs/testing.md).
+
+### Прочие проверки
+
+```bash
+python -m py_compile bot.py services.py repository.py db.py
+python -c "import bot"                 # ловит name-errors в декораторах
+python scripts/audit_i18n_keys.py      # ключи t() против locales/*.json
+python scripts/pa_verify_export.py     # аналитика и экспорт живы
+```
+
+### Дебаг через SQLite
+
+```bash
+sqlite3 studybuddy.db "SELECT user_id, current_streak, total_coins FROM users"
+sqlite3 studybuddy.db "SELECT * FROM admins"
+sqlite3 studybuddy.db "SELECT card_hash, ease_factor, interval_days, repetitions, next_review \
+                       FROM flashcard_progress ORDER BY next_review"
+sqlite3 studybuddy.db "SELECT key, state FROM fsm_storage WHERE state IS NOT NULL"
+sqlite3 studybuddy.db "SELECT created_at, event_name, user_id FROM events ORDER BY id DESC LIMIT 30"
+```
+
+### Логи
+
+`bot.log`, ротация 5 МБ × 5 файлов, уровень через `LOG_LEVEL`. Формат —
+`тег.через.точки key=value`; PII не пишется. Рецепты grep и разбор
+инцидентов — [docs/operations.md](docs/operations.md).
+
+### Перед коммитом
+
+Прогнать тесты, обновить документацию, которую затрагивает изменение, и
+`Doc sync` в её шапке, добавить запись в
+[session_notes.md](session_notes.md). Полный чеклист —
+[docs/development-guide.md](docs/development-guide.md).
+
+---
 
 ## Файлы инфраструктуры
 
 | Файл | Назначение |
 |------|------------|
-| [Dockerfile](Dockerfile) | Python 3.12-slim образ; non-root user; `/app/data` для persistent state |
-| [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
-| [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
-| [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
-| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
-| [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
-| [tests/](tests/) | Юнит-тесты (**738+**): baseline + flashcards + tips + LB/friends + UX (меню/профиль) + **PA analytics** |
-| [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |
-| [parse_logs.py](parse_logs.py) | ETL: bot.log → CSV (CLI + библиотека для `/parse_logs` command) |
-| [.github/workflows/security.yml](.github/workflows/security.yml) | Weekly `pip-audit` через GitHub Actions — CVE-сканирование зависимостей |
-| [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Template скрипт для GPG-шифрованных offsite backup'ов через rclone |
-
----
-
-## Полезное при разработке
-
-### Тесты
-
-```bash
-# Один раз — установить dev-зависимости (pytest + pytest-asyncio)
-pip install -r requirements-dev.txt
-
-# Запустить весь suite
-pytest -v
-
-# Только SM-2 или конкретный сервис
-pytest tests/test_sm2.py
-pytest tests/test_streak_service.py -v
-```
-
-Покрытие — **732 теста** (~60 сек; полный перечень: `pytest --collect-only -q`):
-
-**Pre-leaderboard baseline (185):**
-
-| Файл | Тестов | Что покрывает |
-|------|--------|--------------|
-| `test_sm2.py` | 24 | SM-2: стандартные переходы, fail-path, EF floor, parametrized properties |
-| `test_achievement_service.py` | 14 | Все 9 ачивок, multi-award, идемпотентность |
-| `test_streak_service.py` | 11 (→13 после freeze hook) | Инкремент, сброс, +15🪙 со 2-го дня, multi-user isolation; +freeze-integration (Phase 3) |
-| `test_progress_repos.py` | 16 | MCQ counters, task best-attempts, subject visits |
-| `test_backup_service.py` | 12 | Daily dedup, restart-survival, retention cleanup, manual snapshots, валидность SQLite-файла после VACUUM INTO |
-| `test_analytics_service.py` | 58 | Cohort retention, funnel, DAU/MAU stickiness, feature adoption, segments, content stats, event timeline, heatmap, single-CSV + ZIP export-all |
-| `test_rate_limiter.py` | 15 | Basic limiting, warn-zone + cooldown, user isolation, sliding window expiry, edge cases |
-| `test_event_repository.py` | 15 | Append-only insert, JSON serialization, null user_id, multi-event ordering, user isolation, error swallowing |
-| `test_log_parser.py` | 20 | parse_log_line для structured events / multi-word values / unstructured legacy / malformed; CSV roundtrip; CLI main() exit codes |
-
-**Pet data layer (47, PR #2 merged):**
-
-| Файл | Тестов | Что покрывает |
-|------|--------|--------------|
-| `test_pet_repository.py` | 32 | create/get/inventory + xp formula (parametrized) + atomic purchase under db.lock + insufficient coins/level/already-owned/unknown-item + equip ownership / rename / mark_excited |
-| `test_derive_emotion.py` | 15 | 3-emotion priority branches + 10 hour cases (all neutral when studied) |
-
-**Leaderboard + friends + invite-links (205, PR #3 in flight):**
-
-| Файл | Тестов | Что покрывает |
-|------|--------|--------------|
-| `test_leaderboard_helpers.py` | 40 | piecewise_time_pts (12 tier-boundary cases), streak_multiplier (12 tiers), freeze_cost (9 tiers), user_calendar_keys (ISO week + year-boundary) |
-| `test_leaderboard_repository.py` | 24 | grant_time/task/quiz/card + caps + series bonus (5/15) + reset_quiz_series + read helpers + default-TZ resolution |
-| `test_leaderboard_service.py` | 49 | render_leaderboard segments + privacy + ranked-segment multiplier-vs-base flip + get_user_rank + award_badge idempotency + active_badges expiration + privacy flag + render_friends_tab + **run_rollover** (top-3 main / breakthrough newbie / top-10% bonus, threshold + idempotency + hidden eligibility) + _compute_ended_week_iso (year boundary) + **purchase_freeze + has/consume_freeze + cooldown** |
-| `test_friend_repository.py` | 25 | send_request status paths incl. **auto_accepted-via-reverse-pending**, accept transactional, reject/cancel, get_friends UNION, symmetric are_friends/remove_friend, pending lists |
-| `test_username_search.py` | 25 | parse_friend_query (11 input variants), refresh_username (set/change/clear-to-NULL/no-op), find_by_username (case-insensitive COLLATE NOCASE), **create_user(username=) closes first-message gap** (3) |
-| `test_friend_invite_tokens.py` | 17 | create_invite_token (uniqueness + 30-day expiry), find (valid / unknown / empty / None / expired), accept_invite (happy / self / already-friends / normalized storage / pending cleanup), multi-use, end-to-end |
-| `test_username_sync_middleware.py` | 8 | UsernameSyncMiddleware: happy path + change persists + NULL handling + graceful degradation (no event_from_user / refresh_failure / falsy user_id) + missing-user no-op |
-| `test_integration_flows.py` | 9 | End-to-end: full leaderboard journey (study → score → rollover → badge), friends lifecycle (send→accept→render→remove), freeze cycle, privacy effect both POVs, username search e2e, multiplier reordering (A=1000@0-streak vs B=900@14-streak → B wins) |
-
-**User flashcards (16, 2026-05-22):**
-
-| Файл | Тестов | Что покрывает |
-|------|--------|--------------|
-| `test_user_flashcards.py` | 11 | CRUD, лимит 100/subject, hash `u{id:07x}`, удаление + cascade SM-2 progress, `flashcard_source` в settings |
-| `test_flashcard_source.py` | 5 | `load_flashcards_for_study`: mix / official / own, изоляция hash-префиксов |
-
-**Productivity tips (26, 2026-05-22):**
-
-| Файл | Тестов | Что покрывает |
-|------|--------|--------------|
-| `test_productivity_tips_files.py` | 7 | `tips/*.json`, кэш, inline-клавиатуры, legacy `.txt` fallback |
-| `test_tips_content.py` | 5 | JSON schema, HTML-формат, links |
-| `test_tips_gamification.py` | 6 | дневная монета, ачивка `10_tips_read`, cooldown repo |
-| `test_tips_medium_features.py` | 7 | контекстные tags, pick без seen, совет дня, bot-guide |
-| `test_morning_tip_reminder.py` | 1 | утреннее напоминание + блок «Совет дня» |
-
-Каждый тест получает свежую SQLite через `tempfile`-фикстуру —
-параллелятся без collisions.
-
-### Прочие проверки
-
-```bash
-# Синтаксис
-python -c "import ast; ast.parse(open('bot.py', encoding='utf-8').read())"
-
-# Импорт модуля без запуска main() — ловит name-errors в декораторах
-python -c "import importlib.util; s=importlib.util.spec_from_file_location('t','bot.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('OK')"
-```
-
-### Дебаг через SQLite напрямую
-
-```bash
-# Пользователи и прогресс
-sqlite3 studybuddy.db "SELECT user_id, current_streak, total_coins FROM users"
-
-# Админы
-sqlite3 studybuddy.db "SELECT * FROM admins"
-
-# SM-2 состояние карточек: какие на повторении, какие "разогнаны"
-sqlite3 studybuddy.db "SELECT card_hash, ease_factor, interval_days, repetitions, next_review FROM flashcard_progress ORDER BY next_review"
-
-# Что сейчас в активных FSM (таймеры, мастера, незавершённые сессии)
-sqlite3 studybuddy.db "SELECT key, state FROM fsm_storage WHERE state IS NOT NULL"
-
-# Топ-сессии по длительности
-sqlite3 studybuddy.db "SELECT user_id, duration_minutes, coins_earned, score, created_at FROM study_sessions ORDER BY id DESC LIMIT 10"
-```
-
-### Логи
-
-`bot.log` — ротация 5 МБ × 5 файлов (~25 МБ потолок). Уровень регулируется
-через `LOG_LEVEL` в `.env`. Путь — через `LOG_FILE` (default `bot.log`;
-в Docker/bothost → `/app/data/bot.log` на persistent volume). Шум сторонних библиотек
-(aiogram, aiohttp, aiosqlite) глушится до WARNING.
-
-Бизнес-события идут как структурированные строки `event.tag key=value`:
-- `app.start`, `app.shutdown`
-- `session.complete source=natural|stop|reconcile`, `session.rated`
-- `reconcile.summary completed=X resumed=Y broken=Z`,
-  `reconcile.resume user_id=X duration=Y remaining=Z`
-- `mcq.session.complete user_id=X subject=Y correct=A total=B coins=C`
-- `task.answered user_id=X task_id=Y attempts=N result=correct|wrong|show_solution`
-- `flash.rated user_id=X hash=Y quality=Z reps=A->B ef=C->D interval=E->F next=...`
-- `flash.session.complete user_id=X subject=Y reviewed=N coins=M`
-- `admin.added`/`admin.removed user_id=X by=Y`
-- `broadcast.start`/`broadcast.done delivered=X failed=Y`
-- `backup.created path=X size=Y duration_ms=Z`, `backup.cleanup removed=N`
-- `anlt.export.done alias=X rows=N size_kb=M`
-- `streak.batch`, `reminder.morning.dispatched`
-
-### PA-аналитика для портфолио
-
-Бот спроектирован как **источник реальных данных для product-analyst анализа**:
-
-1. **В чате** — `/analytics` показывает все ключевые метрики (cohort retention,
-   funnel, DAU/WAU/MAU stickiness, feature adoption) одной командой.
-2. **Снаружи (single table)** — `/export <alias>` шлёт CSV-файл любой
-   таблицы. 20 алиасов: `users`, `sessions`, `events`, `user_flashcards`, …
-   `flashcards`, `mcq`, `tasks`, `subject_stats`, `settings`, **`events`**.
-3. **Снаружи (full dataset)** — `/export all` шлёт **ZIP всех 20 таблиц +
-   `metadata.json`** одним сообщением. metadata содержит `exported_at`
-   (UTC ISO-8601), `schema_version`, `row_counts` по каждой таблице.
-   Reproducible export для Jupyter — открывай и сразу анализируй.
-4. **Events table** — append-only лог каждого значимого действия с
-   timestamp и JSON-properties. Foundation для funnel/cohort/path/
-   retention анализа. Каждое действие пользователя → одна строка.
-5. **`/parse_logs`** (или CLI `python parse_logs.py`) — ETL для исторических
-   данных: парсит `bot.log` + ротированные `bot.log.1..5` в CSV. Спасает
-   когда нужны события до того, как `events` table начала писаться (события
-   уже есть в логе структурированно — нужен только parser). Колонки:
-   `timestamp, level, event_name, user_id, properties (JSON), raw_text`.
-
-После 30+ дней живых данных — заполняется папка `analysis/` Jupyter-ноутбуками
-с key findings (см. план в [TODO.md](TODO.md) → секция PA-аналитика).
+| [Dockerfile](Dockerfile) | `python:3.12-slim`, non-root, `/app/data` под состояние |
+| [docker-compose.yml](docker-compose.yml) | Запуск с volume `./data`, `env_file: .env`, ротация логов |
+| [.dockerignore](.dockerignore) | Исключает `.env`, БД, логи, тесты из образа |
+| [requirements.txt](requirements.txt) | Рантайм: aiogram, aiosqlite, pytz, python-dotenv |
+| [requirements-dev.txt](requirements-dev.txt) | pytest, pytest-asyncio, pandas, matplotlib, jupyter, Pillow |
+| [pytest.ini](pytest.ini) | `asyncio_mode=auto`, `testpaths=tests` |
+| [.github/workflows/security.yml](.github/workflows/security.yml) | Еженедельный `pip-audit --strict` по зависимостям |
+| [scripts/backup_offsite.sh.example](scripts/backup_offsite.sh.example) | Шаблон offsite-бэкапа (GPG + rclone) |
 
 ---
 

@@ -1,0 +1,63 @@
+# Техническая документация Palph
+
+Полный технический справочник по проекту. Каждый документ — самодостаточный
+раздел; ссылки между ними и на корневые файлы репозитория.
+
+> **Doc sync:** 2026-09-05 · код на коммите `0ac30af` (2026-06-03) ·
+> pytest suite **787** тестов, все зелёные.
+
+## Карта документации
+
+### Технический справочник (эта папка)
+
+| Документ | О чём |
+|----------|-------|
+| [architecture.md](architecture.md) | Слои, карта модулей, запуск, фоновые циклы, конкурентность, обработка ошибок, логирование |
+| [data-model.md](data-model.md) | Все 28 таблиц SQLite, колонки, индексы, миграции, инварианты |
+| [features.md](features.md) | Пофичевая спецификация: онбординг, таймер, 4 режима учёбы, геймификация, питомец, лидерборд, друзья, советы |
+| [analytics.md](analytics.md) | Таксономия событий (30 имён), админ-метрики, экспорт, ноутбуки |
+| [configuration.md](configuration.md) | Переменные окружения, разрешение путей, Docker, bothost.ru, CI |
+| [operations.md](operations.md) | Runbook: деплой, бэкап/восстановление, логи, диагностика инцидентов |
+| [security.md](security.md) | Модель угроз и реализованные контроли |
+| [i18n.md](i18n.md) | Система локализации ru/en, ключи, генерация бандлов |
+| [content-authoring.md](content-authoring.md) | Как добавлять учебный контент, советы, арт питомца |
+| [testing.md](testing.md) | **Требования к тестам** (включая правило о времени), фикстуры, как запускать |
+| [development-guide.md](development-guide.md) | **Рекомендации при создании** нового кода: рецепты, чеклисты, инварианты |
+| [scripts.md](scripts.md) | Справочник по `scripts/` |
+
+### Корневые документы репозитория
+
+| Документ | О чём |
+|----------|-------|
+| [../README.md](../README.md) | Обзор продукта, быстрый старт, что умеет бот |
+| [../LEADERBOARD.md](../LEADERBOARD.md) | Продуктовая спека weekly-лидерборда (источник истины по балансу) |
+| [../user-flows.md](../user-flows.md) | Пользовательские сценарии и подсчёт кликов |
+| [../admin_commands.md](../admin_commands.md) | Справочник админ-команд |
+| [../TODO.md](../TODO.md) | Размеченные задачи и статус спринтов |
+| [../BACKLOG.md](../BACKLOG.md) | Сырые идеи до оценки |
+| [../PRIVACY.md](../PRIVACY.md) / [../PRIVACY.ru.md](../PRIVACY.ru.md) | Политика приватности (GDPR + 152-ФЗ) |
+| [../session_notes.md](../session_notes.md) | Журнал изменений по сессиям разработки |
+| [../audits/](../audits/) | Аудиты: безопасность, обработка ошибок, отказоустойчивость, сложность |
+| [../analysis/README.md](../analysis/README.md) | PA-аналитика для портфолио |
+
+## С чего начать
+
+**Новому разработчику:** [architecture.md](architecture.md) →
+[data-model.md](data-model.md) → [development-guide.md](development-guide.md) →
+[testing.md](testing.md).
+
+**Тому, кто наполняет контент:** [content-authoring.md](content-authoring.md) →
+[../study_materials/README.md](../study_materials/README.md).
+
+**Тому, кто эксплуатирует бота:** [configuration.md](configuration.md) →
+[operations.md](operations.md).
+
+**Продуктовому аналитику:** [analytics.md](analytics.md) →
+[../analysis/README.md](../analysis/README.md) → [../admin_commands.md](../admin_commands.md).
+
+## Правило актуальности
+
+Документация — часть Definition of Done. Меняешь поведение — в том же
+коммите правишь документ, который это поведение описывает, и обновляешь
+`Doc sync` в его шапке. Детали — в [development-guide.md](development-guide.md)
+§«Чеклист перед коммитом».

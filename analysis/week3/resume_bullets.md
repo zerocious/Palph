@@ -1,6 +1,6 @@
 # Resume Bullets — Palph PA Case
 
-> Doc sync 2026-05-25
+> Doc sync 2026-09-05
 
 Pick 1–2 for resume / LinkedIn. Customize numbers after Week 3.
 

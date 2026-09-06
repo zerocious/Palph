@@ -1,7 +1,7 @@
 # Command & User Input Security Audit
 
-**Project:** Palph Telegram bot (`tg bot 0.6 (settings not working)`)  
-**Audit date:** 2026-06-01 · **Remediation:** 2026-06-01 (follow-up)  
+**Project:** Palph Telegram bot  
+**Audit date:** 2026-06-01 · **Remediation:** 2026-06-01 (follow-up) · **Doc sync:** 2026-09-05  
 **Scope:** Telegram commands, callback_data parsing, FSM text input, rate limiting, admin authorization  
 **Prior work:** `audits/input-validation-audit.md`, `audits/file-upload-security-audit.md`, `file_upload_security.py`  
 **Method:** Static review of `bot.py`, helpers, repositories; pytest on security-related tests

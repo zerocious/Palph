@@ -3,8 +3,9 @@
 Документ описывает стандартные пути пользователя в Telegram-боте Palph (v0.8) и считает клики до «полезного действия» — первого вопроса, запуска таймера, просмотра совета.
 
 **Источник правды:** `bot.py` (клавиатуры, FSM, handlers).  
-**Версия бота:** v0.8. **Тесты:** 732 (`pytest --collect-only -q`).  
-**Дата:** 2026-05-25. **Статус:** living doc — обновлять при смене навигации.
+**Версия бота:** v0.8, код на коммите `0ac30af`. **Тесты:** 787 (`pytest --collect-only -q`).  
+**Doc sync:** 2026-09-05. **Статус:** living doc — обновлять при смене навигации.  
+**Механика за экранами:** [docs/features.md](docs/features.md).
 
 ---
 
@@ -410,6 +411,8 @@ flowchart LR
 | Файл | Связь |
 |------|-------|
 | [README.md](README.md) | Обзор продукта, быстрый старт |
+| [docs/features.md](docs/features.md) | Что происходит за экранами: константы, награды, состояния |
+| [docs/architecture.md](docs/architecture.md) | Middlewares, FSM, восстановление таймеров |
 | [TODO.md](TODO.md) | Задачи по UX (tips pagination #18) |
 | [BACKLOG.md](BACKLOG.md) | Sprint / adaptive plan — сокращение «что учить» |
 | [LEADERBOARD.md](LEADERBOARD.md) | Друзья, freeze, privacy |

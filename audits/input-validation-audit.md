@@ -1,7 +1,7 @@
 # Input Validation Security Audit
 
 **Project:** Palph Telegram bot (`tg bot 0.6 (settings not working)`)  
-**Audit date:** 2026-05-22 · **Doc sync:** 2026-06-01 (remediation in `command-input-security-audit.md`)  
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-05 (remediation in `command-input-security-audit.md`)  
 **Scope:** Python sources — `bot.py`, `db.py`, `repository.py`, `services.py`, `i18n.py`, `locale_bot.py`, `user_task_txt.py`, `fsm_storage.py`, `tasks.py`, `parse_logs.py`, `scripts/*.py`, `tests/*.py`  
 **Method:** Static review, pattern grep (`execute`, f-strings in SQL, `subprocess`, `open`, `Path`, `eval`, etc.), handler mapping, targeted pytest (`47 passed` on validation-related tests)
 

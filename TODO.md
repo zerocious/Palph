@@ -1,9 +1,54 @@
 Сырые идеи без оценки → [BACKLOG.md](BACKLOG.md). Сюда (TODO.md) попадают только размеченные задачи.
 
-**Текущий фокус (2026-05-25):** v0.8 закрыт. Следующее — контент ОПМ (#1),
-сбор 30+ дней `events` для PA-ноутбуков, UX-сокращение навигации
+**Текущий фокус (2026-09-05):** v0.8 закрыт, пост-v0.8 работа отгружена
+(см. секцию ниже). Следующее — контент ОПМ (#1), сбор 30+ дней `events`
+для PA-ноутбуков, UX-сокращение навигации
 (см. [user-flows.md](user-flows.md)), затем sprint-план к экзамену
 ([BACKLOG.md](BACKLOG.md)).
+
+**Тесты:** 787 в suite, все зелёные. Требования к тестам —
+[docs/testing.md](docs/testing.md). Технический справочник —
+[docs/](docs/README.md).
+
+---
+
+## Пост-v0.8 (2026-05-26 … 2026-06-03) ✅ shipped
+
+Работа, отгруженная после закрытия v0.8; в TODO раньше не фиксировалась.
+
+22) [Контент] Математика — этюдный банк задач билета  
+Готовность: `task-42`…`task-72` по шести группам билета (`generate_math_etalon_top3_tasks.py`), удалён дубль `task-08`, **36 задач** с полем `hint`; итого **71** text-only задача  
+Приоритет: Must — **закрыто**
+
+23) [UX] Подсказка вместо третьей попытки  
+Готовность: `MAX_TASK_ATTEMPTS = 2`; после 1-й ошибки — `hint` (если есть), после 2-й — ответ/решение; награды 3 / 2 / 0 🪙  
+Приоритет: Should — **закрыто**
+
+24) [Контент] Бухучёт — теория с подсказками  
+Готовность: `flashcards.txt` (67 карточек) + `theory-with-hints.txt`; предмет заведён в `SUBJECT_IDS`; фактические ошибки в ответах вычитаны  
+Приоритет: Should — **закрыто**
+
+25) [Питомец] Три эмоции + суточный арт  
+Готовность: `neutral` / `joy` / `sad` вместо пяти (legacy-имена поддержаны фолбэком); `get_pet_time_period` → `assets/pet/<period>/`; пользовательский арт заменил плейсхолдеры  
+Приоритет: Should — **закрыто**
+
+26) [Безопасность] Хардening команд и callback-ввода  
+Готовность: аллоулист `subject_id` во всех `fc_*` / `ut_*` / `taskgrp:` хендлерах, `safe_subject_dir` во всех загрузчиках, HTML-экранирование пользовательских строк, явные капы на `/broadcast` / `/reply` / поддержку / поиск друга; ОПМ скрыт из «Подготовки»; аудит [audits/command-input-security-audit.md](audits/command-input-security-audit.md)  
+Приоритет: Must — **закрыто**
+
+27) [Инфра] Persistent storage на bothost + i18n-регрессии  
+Готовность: автоопределение `/app/data` при пустом `DB_PATH`, тест на сохранность БД при рестарте; восстановлены ключи локалей, потерянные при пересборке бандлов  
+Приоритет: Must — **закрыто**
+
+28) [UX] Таймер не сбрасывается при входе в «Подготовку»  
+Готовность: `_detach_timer_for_study_flow`; таймер продолжает тикать, пока пользователь учится  
+Приоритет: Should — **закрыто**
+
+29) [Док] Технический справочник `docs/` + сверка всех md  
+Готовность: 13 документов в [docs/](docs/README.md) (архитектура, модель данных, фичи, аналитика, конфигурация, эксплуатация, безопасность, i18n, контент, тесты, рекомендации, скрипты); все корневые md сверены с кодом; требование к тестам о времени зафиксировано  
+Приоритет: Must — **закрыто**
+
+---
 
 Example:
 
@@ -86,9 +131,17 @@ privacy, Phase 2b rollover + rewards, Phase 3 freeze, Phase 4 friends) +
 **deep-link invite-links** через `/share_friend` (BACKLOG → ship) +
 **👥 Друзья кнопка в профиле** (post-v0.8 PR #5, reuses friends_back
 handler). Главные PR-ы: #3 = `258fadc`, #5 = `55e70ec`. На feature-ветке
-**732 теста** в suite покрывают систему. Открытой leaderboard-работы нет.
+**732 теста** в suite на момент закрытия фазы (сейчас в suite 787).
+Открытой leaderboard-работы нет.
 
 16) [Фича] Полноценный цифровой питомец: 1 дизайн + эмоции + кастомизация + реальные картинки/GIF — **в PR #3 art track shipped 2026-05-19**:
+
+> **Актуальное состояние (2026-09-05):** спека ниже — исторический текст
+> задачи. С тех пор эмоций стало **три** (`neutral` / `joy` / `sad`),
+> генератор ассетов делает **75 PNG + 3 GIF**, добавлены суточные варианты
+> арта (`assets/pet/<period>/`), плейсхолдеры заменены пользовательским
+> артом. Текущее поведение — [docs/features.md](docs/features.md) §5.
+
 - `render_pet` + 125 placeholder PNG + 5 GIF (Pillow build-script);
 - level-up notification со списком разблокированных предметов;
 - pet detail screen с image preview;
@@ -168,7 +221,11 @@ Real artwork — отдельный art-track (placeholder PNG functional, но 
 - `events` + колонки `subject_id`, `mode`, `tip_id`
 - События: учёба, tips, flashcards, friend/pet/LB/settings/reminder
 
-Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`. **~95 pytest** в analytics-модулях + **732 total** в suite.
+Реализация: `AnalyticsService` + `EventRepository` + `parse_logs.py`.
+**110 pytest** в аналитических модулях (`test_analytics_service.py` 69,
+`test_event_repository.py` 18, `test_log_parser.py` 20,
+`test_pa_verify_export.py` 3) + **787 total** в suite.
+Таксономия событий — [docs/analytics.md](docs/analytics.md).
 
 ### ✅ PA launch kit (2026-05-25)
 

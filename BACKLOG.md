@@ -7,7 +7,11 @@
 - **BACKLOG.md (этот файл)** — идеи без оценки. Сюда сбрасываем мысли, чтобы не потерять, не загромождая TODO.md.
 
 **Связанные документы:** [user-flows.md](user-flows.md) (навигация и клики),
-[README.md](README.md), [TODO.md](TODO.md).
+[README.md](README.md), [TODO.md](TODO.md), [docs/](docs/README.md)
+(технический справочник — что уже реализовано и как).
+
+**Doc sync:** 2026-09-05. Идеи ниже сверены с кодом: то, что успело
+отгрузиться, помечено ✅ и продублировано в [TODO.md](TODO.md).
 
 Формат записи (свободный, но желательно):
 
@@ -76,7 +80,8 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 Поднято с defer на ship сразу после username-search (одна сессия).
 Финальная реализация:
 - `friend_invite_tokens` (token PK, from_user_id, created_at, expires_at).
-  Многоразовый токен с 30-day TTL.
+  Многоразовый токен с **3-дневным** TTL (`datetime('now', '+3 days')` в
+  `create_invite_token`; в ранних заметках ошибочно писали «30 дней»).
 - `FriendRepository.create_invite_token` (16-char token из `secrets.token_urlsafe`),
   `find_invite_token` (отсекает истёкшие), `accept_invite` (atomic под
   `db.lock`, skip pending state — deep-link клик это уже согласие обеих сторон).
@@ -214,6 +219,16 @@ Re-validation на stale username (A удалил @foo, B взял) тоже Н�
 После этих 4 prerequisites — Sprint можно ship'нуть за **~1-2 рабочих дня** кода.
 
 **Update 2026-05-24**: backend scaffold — plan_service.py, plan_handlers.py, PlanRepository, math diagnostic + 15 tasks; Telegram UI **off** (PLAN_UI_ENABLED=False) until OPM topic pass + manual QA.
+
+**Update 2026-09-05** (сверка с кодом): backend полностью на месте и покрыт
+тестами — `plan_service.py` (545 строк, 30 тестов), `plan_handlers.py`
+(791 строка), `PlanRepository` (4 теста), три таблицы
+(`user_skill_map`, `user_active_plan`, `user_plan_meta`) создаются при
+каждом старте. Математика укомплектована: 71 задача, 6 групп билета,
+`topics.json`, `diagnostic/default.json`. UI по-прежнему выключен
+константой `PLAN_UI_ENABLED = False` в `plan_handlers.py` — включение
+это одна строка плюс ручное QA. Механика генерации плана описана в
+[docs/features.md](docs/features.md) §12.
 
 ---
 

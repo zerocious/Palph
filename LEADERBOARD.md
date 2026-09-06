@@ -4,7 +4,11 @@ Design spec for the weekly leaderboard. Source of truth for implementation
 across multiple slices. Edit this file, not the formula in code, when
 balancing changes.
 
-Version: v1.1
+Version: v1.1 · **Doc sync:** 2026-09-05 (all phases shipped; verified
+against `services.py` / `repository.py` at commit `0ac30af`).
+
+Implementation reference: [docs/features.md](docs/features.md) §6 (mechanics),
+[docs/data-model.md](docs/data-model.md) §Лидерборд (tables).
 
 ## Formula
 
@@ -12,7 +16,16 @@ Version: v1.1
 weekly_score = (time_pts + task_pts + quiz_pts + card_pts) × streak_multiplier
 ```
 
-Weekly reset every Monday 00:00 in the user's local timezone.
+**Week boundary vs. reward rollover — two different clocks, both intentional:**
+
+- *Score bucketing* uses the ISO week of the user's **local** timezone
+  (`services.user_calendar_keys` → `%G-W%V`), so a week runs Monday 00:00
+  to Sunday 23:59 wherever the user lives.
+- *Reward distribution* runs once globally at **UTC Tuesday 00:00**
+  (`tasks.leaderboard_scheduler`). By then every timezone from UTC+14 to
+  UTC−12 has crossed its local Sunday→Monday boundary, so the just-ended
+  week's `weekly_scores` are final for everyone — no race with late writes,
+  no per-timezone mini-leaderboards. See §Phase 2b.
 
 ## Components
 
@@ -110,8 +123,13 @@ System auto-routes the user — no extra buttons:
 - **Newbie** — `registered < 7 days ago`. Sees only other newbies.
 - **Main** — everyone else.
 
+Display cap: top **20** rows (`TOP_N_DISPLAY`); the viewer's own rank is
+appended below when they fall outside it.
+
 Separate **Friends** tab. Mutual-confirmation add via Telegram ID or
-username. Friends list shows comparative weekly scores.
+username, plus multiuse deep-link invites (`/share_friend`, 3-day TTL)
+where the click itself counts as the invitee's consent. Friends list shows
+comparative weekly scores.
 
 ## Privacy Opt-out
 
@@ -143,8 +161,13 @@ Single toggle in the settings menu: **"👤 Скрыть из лидерборд
 
 - **Top-3 main leaderboard:** unique 1-week badge in profile.
 - **Top-1 newbie leaderboard:** "Прорыв недели" badge (1-week).
-- **Top 10% of any leaderboard:** small coin bonus (cosmetic; doesn't feed
-  back into the score).
+- **Top 10% of any leaderboard:** small coin bonus — **50 coins**
+  (`LeaderboardService.COIN_BONUS_TOP10_PCT`), cosmetic, doesn't feed back
+  into the score. Skipped entirely when the segment has fewer than **10**
+  ranked users (`MIN_SEGMENT_FOR_TOP10_BONUS`) — in a tiny segment "top 10 %"
+  degenerates into "everyone" and the reward stops meaning anything.
+  Tracked as badge id `top10_pct_bonus`, which is what makes the payout
+  idempotent across re-runs.
 - No minimum-score floor for v1 — even low-activity weeks can produce
   ranked top-3. Revisit if early-launch UX surfaces an issue.
 
@@ -276,6 +299,9 @@ Events from this patch forward have clean backtest semantics directly.
 | File | Content |
 |------|---------|
 | [README.md](README.md) | Product overview, features |
+| [docs/features.md](docs/features.md) | Implemented mechanics: constants, caps, rollover |
+| [docs/data-model.md](docs/data-model.md) | `daily_score_counters`, `weekly_scores`, `weekly_badges`, `streak_freezes` |
+| [docs/architecture.md](docs/architecture.md) | Why the rollover anchor is UTC Tuesday |
 | [user-flows.md](user-flows.md) | Profile → friends/freeze/LB navigation, click counts |
 | [admin_commands.md](admin_commands.md) | PA metrics including LB blocks in `/product_metrics` |
 | [TODO.md](TODO.md) | Open work |

@@ -23,8 +23,12 @@ from repository import LeaderboardRepository
 from services import LeaderboardService, user_calendar_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)   # Monday, mid-day
-WEEK = "2026-W21"
+# Якорь времени — относительный (docs/testing.md §Время): часть тестов ниже
+# дергает render_leaderboard, который берёт текущую ISO-неделю по системным
+# часам. Абсолютные даты в этом файле встречаются только там, где они
+# передаются в код явным параметром (run_rollover / consume_freeze_if_active).
+NOW = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+_TODAY, WEEK = user_calendar_keys(NOW)
 
 
 @pytest_asyncio.fixture
@@ -62,7 +66,7 @@ async def _grant(lb_repo, uid, *, time=0, task=0, quiz=0, card=0, week_iso=WEEK)
     if week_iso is None:
         local_date, week_iso = user_calendar_keys(datetime.now())
     else:
-        local_date = "2026-05-18"
+        local_date = _TODAY
     await lb_repo._ensure_rows(uid, local_date, week_iso)
     await lb_repo.db.execute(
         "UPDATE weekly_scores SET time_pts=?, task_pts=?, quiz_pts=?, card_pts=? "

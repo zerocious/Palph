@@ -1,6 +1,10 @@
 # Error-Handling Review — Palph (Telegram bot, aiogram 3)
 
-**Audit date:** 2026-05-22 · **Doc sync:** 2026-05-25 (Palph v0.8, pytest suite **732** tests)
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **787** tests)
+
+> Ссылки вида `bot.py:1234` — номера строк **на дату аудита**; с тех пор код
+> сдвинулся, ищите по имени функции. Оформлены как код, а не как ссылки,
+> именно поэтому.
 **Reviewer:** Claude (Opus 4.7)
 **Branch / HEAD:** `main` @ `aa7071c`
 **Scope:** `bot.py`, `services.py`, `repository.py`, `tasks.py`, `db.py`, `fsm_storage.py`, `i18n.py`, `locale_bot.py`
@@ -15,12 +19,12 @@
 
 The codebase relies almost exclusively on a single error-handling primitive —
 `try: … except Exception as e: logger.warning|error(…)` — repeated **~415 times
-across the project (~339 in [bot.py](bot.py) alone)**. There is no central
+across the project (~339 in [bot.py](../bot.py) alone)**. There is no central
 aiogram error handler, no custom exception hierarchy, no retry/back-off layer,
 and no separation between expected-and-handled vs. unexpected failure. The
 schedulers and the per-user timer task are individually robust, but the
 `asyncio.create_task(...)` invocations that launch them at
-[bot.py:6989-6993](bot.py:6989) and [bot.py:2964](bot.py:2964) have no
+`bot.py:6989-6993` and `bot.py:2964` have no
 `add_done_callback`, so a fatal exception silently kills the task with only
 "Task exception was never retrieved" landing in stderr.
 
@@ -45,12 +49,12 @@ aiogram's default `loggers.event` traceback and the user sees **nothing** — no
 blocks in `bot.py`, the per-handler pattern compensates *most* of the time, but
 gaps are unavoidable at this scale.
 
-Concrete evidence of a gap: [bot.py:3036-3040](bot.py:3036) `handle_standard_timer`
+Concrete evidence of a gap: `bot.py:3036-3040` `handle_standard_timer`
 calls `user_repo.user_exists` / `create_user` / `apply_user_bot_commands` with no
 wrapping; a DB lock-timeout or a SQLite IO error here would propagate untouched.
 
-**Remediation — minimal drop-in for [bot.py](bot.py) (place near other middleware
-registration around [bot.py:6939](bot.py:6939)):**
+**Remediation — minimal drop-in for [bot.py](../bot.py) (place near other middleware
+registration around `bot.py:6939`):**
 
 ```python
 from aiogram.types import ErrorEvent
@@ -89,8 +93,8 @@ async def global_error_handler(event: ErrorEvent) -> bool:
     return True  # mark as handled so aiogram doesn't re-log
 ```
 
-Add `"common.unexpected_error"` to [locales/ru.json](locales/ru.json) and
-[locales/en.json](locales/en.json) (e.g. "⚠️ Что-то пошло не так. Попробуй ещё
+Add `"common.unexpected_error"` to [locales/ru.json](../locales/ru.json) and
+[locales/en.json](../locales/en.json) (e.g. "⚠️ Что-то пошло не так. Попробуй ещё
 раз через минуту." / "⚠️ Something went wrong. Please try again in a minute.").
 
 ---
@@ -103,22 +107,22 @@ There are no custom exception classes anywhere in the project (verified:
 `class \w+(?:Error|Exception)\b` returns zero matches). Domain conditions are
 encoded as:
 
-- [repository.py:449](repository.py:449): `raise ValueError("limit_exceeded")`
+- `repository.py:449`: `raise ValueError("limit_exceeded")`
   — sentinel string carries the semantic.
-- [bot.py:2214-2221](bot.py:2214): caller does `except ValueError as e: if
+- `bot.py:2214-2221`: caller does `except ValueError as e: if
   str(e) == "limit_exceeded": ...; raise` — string-equality on exception messages
   is brittle (any future `ValueError` from the same code path is masked as a
   generic error).
-- [bot.py:73](bot.py:73): `raise RuntimeError("❌ BOT_TOKEN не установлен в .env!")`
+- `bot.py:73`: `raise RuntimeError("❌ BOT_TOKEN не установлен в .env!")`
   — generic, plus a UI-style emoji in an exception message that may end up in a
   systemd/journalctl log.
-- [bot.py:1833,1864](bot.py:1833): `raise ValueError(f"Unknown setting type: ...")`
+- `bot.py:1833,1864`: `raise ValueError(f"Unknown setting type: ...")`
   / `f"Unknown slot: ..."` — these are programmer errors (should be `AssertionError`
   or `TypeError` at most) but are caught by the same `except Exception as e` blocks
   downstream as if they were user-input failures.
-- [repository.py:1638](repository.py:1638): `raise ValueError(f"Unknown segment:
+- `repository.py:1638`: `raise ValueError(f"Unknown segment:
   {segment!r}")` — same issue.
-- [services.py:1732](services.py:1732): `raise KeyError(f"Unknown table alias: ...")`
+- `services.py:1732`: `raise KeyError(f"Unknown table alias: ...")`
   — at least `KeyError` is more semantically right; but still no domain hierarchy.
 
 **Remediation — add one small module, `errors.py`:**
@@ -177,13 +181,13 @@ except sqlite3.IntegrityError:
 Three styles coexist, none of them capture the traceback consistently:
 
 1. **f-string concat (loses traceback):** 12 sites in `bot.py`, 5 in `tasks.py`:
-   - [bot.py:408](bot.py:408): `logger.error(f"send_rating_prompt: не удалось отправить запрос оценки: {e}")`
-   - [bot.py:2005](bot.py:2005): `logger.error(f"Error toggling setting: {e}")`
-   - [bot.py:2948](bot.py:2948): `logger.error(f"Ошибка отправки завершения таймера {user_id}: {e}")`
-   - [bot.py:6885](bot.py:6885): `logger.error(f"reconcile_stale_timers: запись {key!r} не обработана: {e}")`
-   - [tasks.py:68, 109, 144](tasks.py:68): scheduler-loop catch-alls.
+   - `bot.py:408`: `logger.error(f"send_rating_prompt: не удалось отправить запрос оценки: {e}")`
+   - `bot.py:2005`: `logger.error(f"Error toggling setting: {e}")`
+   - `bot.py:2948`: `logger.error(f"Ошибка отправки завершения таймера {user_id}: {e}")`
+   - `bot.py:6885`: `logger.error(f"reconcile_stale_timers: запись {key!r} не обработана: {e}")`
+   - `tasks.py:68, 109, 144`: scheduler-loop catch-alls.
 2. **Structured key=value (newer, better, but still no traceback):** e.g.
-   [bot.py:5586](bot.py:5586), [services.py:602](services.py:602).
+   `bot.py:5586`, `services.py:602`.
 3. **Zero `logger.exception(...)` calls anywhere** (`logger\.exception` returns
    zero matches). That's the only style that captures `exc_info` for free.
 
@@ -220,8 +224,8 @@ keep `logger.warning(... reason=%s, type(e).__name__)` for known/expected ones
 
 **Severity: 5/10**
 
-Sites: [bot.py:2698, 2709, 5627, 5925, 6179, 6756](bot.py:2698), plus three
-`except Exception: pass` in [db.py:368, 381, 391, 401, 410, 419, 429, 441](db.py:368)
+Sites: `bot.py:2698, 2709, 5627, 5925, 6179, 6756`, plus three
+`except Exception: pass` in `db.py:368, 381, 391, 401, 410, 419, 429, 441`
 (migration ADD COLUMN idempotency).
 
 The DB-migration ones (db.py) are intentionally swallowing "duplicate column"
@@ -229,7 +233,7 @@ errors — but they also swallow disk-full, read-only-DB, and schema-corruption
 errors. The user-facing ones (e.g. bot.py:5925 `pet_menu` delete-message) are
 mostly fine for ergonomic edge cases but lose forensic value.
 
-**Remediation — narrow the catch in [db.py](db.py)** (the only place where
+**Remediation — narrow the catch in [db.py](../db.py)** (the only place where
 catch-everything is actually load-bearing):
 
 ```python
@@ -274,12 +278,12 @@ aiogram-bot mapping of the HTTP-style categories:
 
 Grep for `TelegramRetryAfter` / `TelegramBadRequest` / `TelegramServerError` /
 `TelegramAPIError` / `TelegramNetworkError` returns **only `TelegramForbiddenError`**.
-At [bot.py:4502](bot.py:4502) the broadcast uses a fixed `await asyncio.sleep(0.05)`
+At `bot.py:4502` the broadcast uses a fixed `await asyncio.sleep(0.05)`
 which on a large user base will *eventually* hit Telegram's per-bot rate limit
 (~30 msgs/s, harder caps on broadcast). When that happens, aiogram raises
 `TelegramRetryAfter(retry_after=N)` — and the current code lumps it into the
 generic `except Exception as e:` branch at
-[bot.py:4495-4501](bot.py:4495) and marks the recipient as "failed" forever
+`bot.py:4495-4501` and marks the recipient as "failed" forever
 without retrying. A single 429 can permanently fail hundreds of valid recipients.
 
 **Remediation — patch broadcast loop:**
@@ -323,8 +327,8 @@ for uid in user_ids:
     await asyncio.sleep(0.05)
 ```
 
-Apply the same pattern in [services.py:715-735 (`_send_morning`)](services.py:715)
-and [services.py:780-815 (`_send_evening`)](services.py:780): both currently
+Apply the same pattern in `services.py:715-735 (`_send_morning`)`
+and `services.py:780-815 (`_send_evening`)`: both currently
 have only `TelegramForbiddenError` + catch-all.
 
 ---
@@ -335,8 +339,8 @@ have only `TelegramForbiddenError` + catch-all.
 
 There are ~30 sites that do `callback.message.edit_text(...)` wrapped in
 `except Exception` — e.g.
-[bot.py:1793](bot.py:1793), [bot.py:2105](bot.py:2105), [bot.py:2125](bot.py:2125),
-[bot.py:2169](bot.py:2169), [bot.py:5451-5613](bot.py:5451) (the analytics views).
+`bot.py:1793`, `bot.py:2105`, `bot.py:2125`,
+`bot.py:2169`, `bot.py:5451-5613` (the analytics views).
 The fallback (re-`answer` the message) works, but the catch is too wide — it
 also swallows network failures and serializer bugs.
 
@@ -366,9 +370,9 @@ async def _edit_or_answer_settings(
 Two patterns recur:
 
 - **Admin gate:** `if not is_admin(message.from_user.id): await message.answer("❌ Команда только для админов."); return` — copy-pasted at least at
-  [bot.py:4456, 4525, 5237, 5640, 5662](bot.py:4456) (and more).
+  `bot.py:4456, 4525, 5237, 5640, 5662` (and more).
 - **Owner gate (anti-spoof):** `if callback.from_user.id != target_user_id: await callback.answer(t("common.not_yours_...", ...), show_alert=True); return` — copy-pasted at least at
-  [bot.py:1761, 2100, 2119, 2140, 2156, 2319, 6101, ...](bot.py:1761).
+  `bot.py:1761, 2100, 2119, 2140, 2156, 2319, 6101, ...`.
 
 These aren't *bugs*, but they bypass the central error handler (Finding 1.1) and
 fragment the "403"-equivalent category. Adding a small decorator gives a single
@@ -401,8 +405,8 @@ def admin_only(handler):
 
 Four `asyncio.create_task(...)` sites; none of them attach an exception logger:
 
-- [bot.py:2964](bot.py:2964): `active_timers[user_id] = task` — per-user pomodoro
-- [bot.py:6989-6993](bot.py:6989): the three schedulers
+- `bot.py:2964`: `active_timers[user_id] = task` — per-user pomodoro
+- `bot.py:6989-6993`: the three schedulers
   (`streak_scheduler`, `reminder_scheduler`, `leaderboard_scheduler`)
 
 The schedulers each have an inner `while True: try: ... except Exception:
@@ -414,10 +418,10 @@ warning "Task exception was never retrieved" which only fires when the task is
 GC'd — typically minutes or never. The bot will keep polling messages but
 streaks/reminders/rollover stop silently.
 
-[bot.py:2964](bot.py:2964) `run_timer_task` is worse: it has
+`bot.py:2964` `run_timer_task` is worse: it has
 `except asyncio.CancelledError: pass` and `finally: active_timers.pop(...)`, but
-**no generic `except Exception`** between [bot.py:2913](bot.py:2913) and
-[bot.py:2956](bot.py:2956). A failed
+**no generic `except Exception`** between `bot.py:2913` and
+`bot.py:2956`. A failed
 `study_service.complete_session` or `event_repo.log` raises, the task dies,
 the user's session is dropped, and the only trace is a stderr warning.
 
@@ -460,7 +464,7 @@ for coro, name in (
     background_tasks.append(t_)
 ```
 
-Additionally, harden [bot.py:2912-2956 `run_timer_task`](bot.py:2912):
+Additionally, harden `bot.py:2912-2956 `run_timer_task``:
 
 ```python
 async def run_timer_task(chat_id, state, user_id, duration):
@@ -482,7 +486,7 @@ async def run_timer_task(chat_id, state, user_id, duration):
 
 **Severity: 6/10**
 
-At [bot.py:7021-7022](bot.py:7021):
+At `bot.py:7021-7022`:
 
 ```python
 if __name__ == "__main__":
@@ -515,7 +519,7 @@ if __name__ == "__main__":
 
 **Severity: 5/10**
 
-At [bot.py:7014-7019](bot.py:7014):
+At `bot.py:7014-7019`:
 
 ```python
 try:
@@ -558,7 +562,7 @@ issue on shutdown.)
 
 **Severity: 3/10**
 
-[bot.py:182-197](bot.py:182) `UsernameSyncMiddleware`: on any DB error during
+`bot.py:182-197` `UsernameSyncMiddleware`: on any DB error during
 `refresh_username`, logs `warning` and continues. This is deliberate (commented
 "Sync failure тихо логируется и НЕ должна прерывать handler"), and is the right
 call. **No change needed**, listed here for completeness.
@@ -576,7 +580,7 @@ Telegram occasionally returns transient `TelegramServerError` (5xx) or
 `backoff`, or `circuit_breaker` infrastructure — every `bot.send_message` /
 `edit_text` / `send_animation` is one-shot. A 1-second network glitch during
 the streak-bonus notification at
-[services.py:907-921](services.py:907) costs the user that day's bonus message.
+`services.py:907-921` costs the user that day's bonus message.
 
 **Remediation — minimal retry helper, no dependency added:**
 
@@ -605,7 +609,7 @@ async def _telegram_call_with_retry(coro_factory, *, retries: int = 2):
 ```
 
 Apply at the hot notification sites — for example at
-[services.py:599](services.py:599):
+`services.py:599`:
 
 ```python
 await _telegram_call_with_retry(
@@ -620,9 +624,9 @@ await _telegram_call_with_retry(
 **Severity: 3/10 — Unable to verify need**
 
 I don't see evidence this bot has scaled to a size where a circuit breaker
-adds value (no caching of failed `chat_id`s, no batch sender). At ~732 tests
+adds value (no caching of failed `chat_id`s, no batch sender). At ~787 tests
 and presumably <1000 users (per the README description of "<100 пользователей"
-heuristic in [bot.py:170](bot.py:170)), the simpler retry from 4.1 is enough.
+heuristic in `bot.py:170`), the simpler retry from 4.1 is enough.
 Flagged only because the audit brief asked.
 
 ---
@@ -634,15 +638,15 @@ Flagged only because the audit brief asked.
 Several pieces of well-designed graceful degradation, called out so they
 aren't accidentally regressed:
 
-- [services.py:411-426 `render_pet`](services.py:411) — 3-tier fallback chain
+- `services.py:411-426 `render_pet`` — 3-tier fallback chain
   (specific combo → emotion default → universal happy → raise).
-- [services.py:777-795 evening reminder sad-pet asset](services.py:777) —
+- `services.py:777-795 evening reminder sad-pet asset` —
   catches `FileNotFoundError` and falls back to text-only.
-- [services.py:752-757 unknown TZ in `_send_evening`](services.py:752) —
+- `services.py:752-757 unknown TZ in `_send_evening`` —
   defensive `datetime.now()` fallback.
-- [services.py:2568-2573 BackupService.maybe_backup_for_today](services.py:2568)
+- `services.py:2568-2573 BackupService.maybe_backup_for_today`
   — returns `None` on failure, doesn't crash the scheduler tick that called it.
-- The `_edit_or_answer_settings` pattern ([bot.py:1788-1796](bot.py:1788)):
+- The `_edit_or_answer_settings` pattern (`bot.py:1788-1796`):
   edit-then-answer fallback for stale callback messages — solid.
 
 ---
@@ -655,13 +659,13 @@ aren't accidentally regressed:
 
 Three sites leak raw `type(e).__name__: {e}` strings into Telegram messages:
 
-- [bot.py:4442](bot.py:4442): `await message.answer(f"❌ Ошибка: {str(e)}")` —
+- `bot.py:4442`: `await message.answer(f"❌ Ошибка: {str(e)}")` —
   inside `/reply` admin command. Reaches whichever admin used the command.
-- [bot.py:5206](bot.py:5206): `await reply_target.answer(f"❌ Export-all failed:
+- `bot.py:5206`: `await reply_target.answer(f"❌ Export-all failed:
   {type(e).__name__}: {e}")`
-- [bot.py:5268](bot.py:5268): `await message.answer(f"❌ Export failed:
+- `bot.py:5268`: `await message.answer(f"❌ Export failed:
   {type(e).__name__}: {e}")`
-- [bot.py:5587](bot.py:5587): `await callback.answer(f"❌ {type(e).__name__}:
+- `bot.py:5587`: `await callback.answer(f"❌ {type(e).__name__}:
   {e}", show_alert=True)`
 
 These are admin-only flows, so the *severity* is low (admins are trusted), but
@@ -691,7 +695,7 @@ except Exception:
 
 **Severity: 4/10**
 
-`LOG_LEVEL` exists ([bot.py:86](bot.py:86)) but there is no `DEBUG`/`ENV` flag
+`LOG_LEVEL` exists (`bot.py:86`) but there is no `DEBUG`/`ENV` flag
 that gates user-visible error detail. In a dev environment you might want
 `type(e).__name__` in the alert; in prod you don't. Currently the only knob is
 the log level, which affects only what's written to `bot.log` — not what's
@@ -710,7 +714,7 @@ def safe_error_text(e: Exception, prefix: str = "❌ Ошибка") -> str:
 ```
 
 Then the leak sites become `await message.answer(safe_error_text(e, "❌ Export failed"))`.
-Add `PALPH_DEBUG=` to [.env.example](.env.example).
+Add `PALPH_DEBUG=` to [.env.example](../.env.example).
 
 ---
 
@@ -734,10 +738,10 @@ debuggability ROI in this audit.
 
 **Severity: 3/10**
 
-[bot.py:78-116](bot.py:78) configures only the `studybuddy_bot` logger. The
+`bot.py:78-116` configures only the `studybuddy_bot` logger. The
 root logger has no handler. Any third-party library that does
 `logging.getLogger(__name__).error(...)` and isn't in the explicit silenced
-list ([bot.py:113](bot.py:113)) will have its messages dropped silently. Low
+list (`bot.py:113`) will have its messages dropped silently. Low
 priority because aiogram/aiohttp/aiosqlite are explicitly silenced and the
 known-noisy ones are covered, but a future dependency addition will hit this.
 

@@ -4,6 +4,81 @@ Running log of changes made per coding session. Newest entries at the top.
 
 ---
 
+## Session — 2026-09-05 (документация: технический справочник + сверка всех md)
+
+Goal: закрыть расхождение между кодом и документацией, накопившееся после
+2026-05-25 (~15 коммитов до `0ac30af` не были отражены в md), и завести
+полноценную техническую документацию.
+
+**Итог:** новая папка [docs/](docs/README.md) из 13 документов; все корневые
+md сверены с кодом; зафиксировано требование к тестам о времени; починены
+4 теста, которые падали из-за абсолютной даты.
+
+### Найденные расхождения (что было неверно)
+
+| # | Где | Было | Стало |
+|---|-----|------|-------|
+| 1 | README, TODO, user-flows, tips, analysis, audits | «732 теста» | 787 (реальный прогон) |
+| 2 | `tests/test_integration_flows.py` | Якорь `2026-W21` + `render_leaderboard` по системным часам → 4 падения | Относительный якорь через `user_calendar_keys(datetime.now(tz))` |
+| 3 | README, `db.py`-комментарий, study_materials | invite-token «30 дней» | **3 дня** (`create_invite_token`) |
+| 4 | study_materials/README, accounting/README | «accounting не подключён в SUBJECTS» | Подключён и показывается (флэш-карты, 67 карточек) |
+| 5 | README | Ссылка на `.claude/plans/` (папки нет) | Ссылка убрана |
+| 6 | README | «5 эмоций питомца», «125 PNG + 5 GIF» | 3 эмоции (`neutral/joy/sad`), 75 PNG + 3 GIF, суточные варианты |
+| 7 | README | 3 попытки на задачу | 2 попытки (`MAX_TASK_ATTEMPTS`), подсказка после 1-й |
+| 8 | study_materials/README | «solution_text после 3 ошибок» | После 2-й |
+| 9 | README | Ситуационный квиз «+1 🪙» | Монет не даёт, только очки лидерборда |
+| 10 | LEADERBOARD.md | «Weekly reset every Monday 00:00 local» без упоминания реального anchor | Разведены bucketing (локальная ISO-неделя) и rollover (UTC вторник 00:00) |
+| 11 | README, docs | «Пикер кастомизации питомца» как рабочая фича | `PET_CUSTOMIZATION_ENABLED = False` — кнопок нет, callback'и отвечают отказом |
+| 12 | README, docs | «Эмоции и предметы меняют картинку питомца» | `PET_SINGLE_IMAGE_MODE = True` — `render_pet` возвращает `<period>/default.png` до всей цепочки |
+| 13 | README, features | «❓ Квизы» как отдельная кнопка главного меню | Кнопка одна: ключ `kb.quizzes` с текстом «📖 Подготовка» |
+| 14 | study_materials, docs | ОПМ «доступен через ❓ Квизы» | `PREP_HIDDEN_SUBJECT_IDS` — из UI недоступен целиком |
+| 15 | README | `/help` в списке пользовательских команд | Команда админская; пользователю отвечает подсказкой открыть FAQ |
+| 16 | tips/README, docs | «Советы кешируются при старте» | Кеша нет — `tip_categories()` читает JSON на каждый вызов |
+| 17 | docs (черновик) | «SQL только в repository.py» | В `bot.py` осталось 14 прямых `db.execute` — задокументированы как долг |
+| 18 | docs (черновик) | «События не содержат пользовательский текст» | `pet_renamed` пишет имя питомца (обрезано до 20 символов) |
+| 19 | audits/error-handling-review.md | 49 «ссылок» вида `bot.py:113` (битые) + 6 ссылок мимо `../` | Ссылки на строки → код-спаны с пометкой о дате, файловые ссылки починены |
+| 20 | analysis/prelaunch/export_checklist.md | Ссылка `../services.py` | `../../services.py` |
+
+### Changes
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | Docs | `docs/`: README (индекс), architecture, data-model, features, analytics, configuration, operations, security, i18n, content-authoring, testing, development-guide, scripts |
+| 2 | Tests | `tests/test_integration_flows.py`, `tests/test_leaderboard_service.py` — относительные якоря времени вместо `2026-05-18` / `2026-W21` |
+| 3 | Docs | README переписан: точные числа, ссылки на `docs/`, удалён протухший разбор тестов пофайлово (переехал в `docs/testing.md`) |
+| 4 | Docs | TODO — секция «Пост-v0.8 (2026-05-26 … 2026-06-03)» с восемью отгруженными пунктами, которые нигде не фиксировались |
+| 5 | Docs | LEADERBOARD, admin_commands, user-flows, tips/README, study_materials/*, analysis/README, audits/* — сверка и `Doc sync` |
+
+### Требование к тестам (новое, зафиксировано в `docs/testing.md` §1)
+
+> В тестах допустимы только относительные привязки ко времени. Абсолютная
+> календарная дата обязана прокидываться в код явным параметром.
+
+Практический критерий: если в цепочке вызовов есть хоть один
+`datetime.now()` внутри продакшн-кода — якорь теста обязан быть
+относительным. Отсюда требование к самому коду: функция, зависящая от
+времени, принимает его параметром (`now_local=None`).
+
+Пункты 11–20 найдены на втором, углублённом проходе сверки — первый
+проход документировал заявленное поведение, второй проверял его по коду.
+
+### Verification
+
+- `python -m pytest -q` → **787 passed** (было 783 passed / 4 failed)
+- `python -c "import bot"` → OK
+- `python -m py_compile bot.py services.py repository.py db.py` → OK
+- `python scripts/audit_i18n_keys.py` → Used keys 306, Missing ru 0, en 0
+- Проверка markdown-ссылок скриптом: битых нет
+- Числа в документах пересчитаны из кода и файлов, а не перенесены
+
+### Deferred
+
+- Тесты в CI (GitHub Actions гоняет только `pip-audit`)
+- Пагинация «Все советы» всё ещё инкрементит `total_views` (TODO #18)
+- Контент: ОПМ разделы II–IV, MCQ/задачи для бухучёта, английский
+
+---
+
 ## Session — 2026-05-23 (math: pedagogical hints)
 
 Goal: импорт подсказок из `top3_tasks_etalon_1.md` в математические задачи и показ в боте после 3-й ошибки.
