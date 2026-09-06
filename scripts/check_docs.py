@@ -66,17 +66,66 @@ def check_links() -> None:
     check("markdown-ссылки резолвятся", not broken, "; ".join(broken[:5]))
 
 
+# ---------------------------------------------------------------- разметка
+def check_markdown_hygiene() -> None:
+    """
+    Дефекты разметки, которые глазами пропускаются: незакрытый блок кода,
+    код-спан, разорванный переносом строки, битый синтаксис ссылки,
+    забытый TODO/FIXME в тексте.
+
+    Намеренные два пробела в конце строки (жёсткий перенос Markdown) —
+    не дефект и не проверяются.
+    """
+    bad: list[str] = []
+    for md in md_files():
+        text = md.read_text(encoding="utf-8")
+        rel = md.relative_to(ROOT)
+        if text.count("```") % 2:
+            bad.append(f"{rel}: незакрытый блок ```")
+        in_code = False
+        for i, line in enumerate(text.split("\n"), 1):
+            if line.strip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                continue
+            if line.count("`") % 2:
+                bad.append(f"{rel}:{i}: непарный бэктик (код-спан разорван переносом?)")
+            if re.search(r"\]\(\s*\)|\]\(\s+\S", line):
+                bad.append(f"{rel}:{i}: битый синтаксис ссылки")
+            outside_code = re.sub(r"`[^`]*`", "", line)
+            # Только маркерный синтаксис («TODO:», «FIXME(...)»). Ссылки вида
+            # «TODO #18» и «TODO.md» — обычная проза, их трогать нельзя.
+            if re.search(r"\b(TODO|FIXME|XXX)\s*[:(]", outside_code):
+                bad.append(f"{rel}:{i}: забытый маркер TODO/FIXME")
+    check("разметка markdown без дефектов", not bad, "; ".join(bad[:5]))
+
+
 # ---------------------------------------------------------------- schema
 def check_schema() -> None:
     db = read("db.py")
-    tables = db.count("CREATE TABLE IF NOT EXISTS")
+    names = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db))
     indexes = db.count("CREATE INDEX IF NOT EXISTS")
     dm = read("docs/data-model.md")
+
     check(
-        f"docs/data-model: {tables} таблиц",
-        f"**{tables} таблиц**" in dm or f"{tables} таблиц" in dm,
-        f"в db.py {tables}",
+        f"docs/data-model: {len(names)} таблиц",
+        f"**{len(names)} таблиц**" in dm or f"{len(names)} таблиц" in dm,
+        f"в db.py {len(names)}",
     )
+    # Одного количества мало: переименование таблицы его не меняет, а
+    # документацию делает неверной. Поэтому сверяем имена поимённо.
+    undocumented = sorted(t for t in names if f"`{t}`" not in dm)
+    check("каждая таблица упомянута в docs/data-model", not undocumented,
+          ", ".join(undocumented))
+    # Обратная сторона: таблицу удалили или переименовали, а строка в обзоре
+    # осталась. Разбираем именно нумерованную таблицу-обзор, а не все
+    # бэктики подряд — иначе в «несуществующие таблицы» попадают колонки.
+    overview = re.findall(r"^\| \d+ \| `(\w+)` \|", dm, re.M)
+    check("обзор таблиц в docs/data-model разобрался",
+          len(overview) == len(names), f"строк {len(overview)}, таблиц {len(names)}")
+    ghosts = sorted(set(overview) - names)
+    check("в обзоре нет несуществующих таблиц", not ghosts, ", ".join(ghosts))
     check(
         f"docs/data-model: {indexes} индексов",
         f"**{indexes} индексов**" in dm or f"{indexes} индексов" in dm,
@@ -90,10 +139,18 @@ def check_schema() -> None:
 # ---------------------------------------------------------------- events
 def check_events() -> None:
     src = "".join(read(f) for f in ("bot.py", "services.py", "plan_handlers.py"))
-    code = set(re.findall(r'event_repo\.log\(\s*[^,]+,\s*\n?\s*"([a-z_]+)"', src))
+    # [a-z0-9_]+, а не [a-z_]+: имя с цифрой раньше просто выпадало из
+    # выборки, и переименование события проверка не замечала.
+    code = set(re.findall(r'event_repo\.log\(\s*[^,]+,\s*\n?\s*"([a-z0-9_]+)"', src))
     doc = read("docs/analytics.md")
+    check("события вообще найдены в коде", len(code) >= 25, f"найдено {len(code)}")
     missing = sorted(e for e in code if f"`{e}`" not in doc)
     check("все события описаны в docs/analytics.md", not missing, ", ".join(missing))
+    # Обратная сторона: событие удалили из кода, а из документа забыли.
+    documented = set(re.findall(r"^\| `([a-z0-9_]+)` \|", doc, re.M))
+    known_non_events = {"activity_events", "activity_progress"}
+    ghosts = sorted(documented - code - known_non_events)
+    check("в docs/analytics нет исчезнувших событий", not ghosts, ", ".join(ghosts))
 
 
 # ---------------------------------------------------------------- export
@@ -101,11 +158,18 @@ def check_export_aliases() -> None:
     services = read("services.py")
     blk = services[services.index("EXPORTABLE_TABLES"):]
     blk = blk[blk.index("{"):blk.index("}") + 1]
-    aliases = set(re.findall(r'"([a-z_]+)":', blk))
+    aliases = set(re.findall(r'"([a-z0-9_]+)":', blk))
+    check("алиасы /export вообще найдены", len(aliases) >= 15, f"найдено {len(aliases)}")
     for doc in ("docs/analytics.md", "admin_commands.md"):
         text = read(doc)
         missing = sorted(a for a in aliases if f"`{a}`" not in text)
         check(f"{doc}: все {len(aliases)} алиасов /export", not missing, ", ".join(missing))
+    # Список в docs/analytics перечислен явно — ловим и лишние имена.
+    listed = re.search(r"`users`, `sessions`.*?`streak_freezes`", read("docs/analytics.md"), re.S)
+    if listed:
+        named = set(re.findall(r"`([a-z0-9_]+)`", listed.group(0)))
+        check("в docs/analytics нет исчезнувших алиасов",
+              not (named - aliases), ", ".join(sorted(named - aliases)))
 
 
 # ---------------------------------------------------------------- locales
@@ -113,9 +177,22 @@ def check_locales() -> None:
     def leaves(d: dict) -> int:
         return sum(leaves(v) if isinstance(v, dict) else 1 for v in d.values())
 
+    def paths(d: dict, prefix: str = "") -> set[str]:
+        out: set[str] = set()
+        for k, v in d.items():
+            full = f"{prefix}{k}"
+            out |= paths(v, f"{full}.") if isinstance(v, dict) else {full}
+        return out
+
     ru = json.loads(read("locales/ru.json"))
     en = json.loads(read("locales/en.json"))
     check("паритет групп ru/en", ru.keys() == en.keys())
+    # Сравнение полных путей, а не групп: переименование вложенного ключа
+    # не меняло ни набор групп, ни их количество, и проходило незамеченным.
+    only_ru = sorted(paths(ru) - paths(en))
+    only_en = sorted(paths(en) - paths(ru))
+    check("паритет полных путей ключей ru/en", not only_ru and not only_en,
+          f"только в ru: {only_ru[:5]}; только в en: {only_en[:5]}")
     check("паритет числа ключей ru/en", leaves(ru) == leaves(en), f"{leaves(ru)} vs {leaves(en)}")
     i18n = read("docs/i18n.md")
     check(f"docs/i18n: {leaves(ru)} ключей", f"**{leaves(ru)}**" in i18n, f"реально {leaves(ru)}")
@@ -129,8 +206,11 @@ def check_content() -> None:
     for doc in ("study_materials/README.md", "study_materials/math/README.md",
                 "docs/content-authoring.md"):
         text = read(doc)
-        check(f"{doc}: {len(tasks)} задач по математике", f"{len(tasks)}" in text)
-        check(f"{doc}: {len(hints)} подсказок", f"{len(hints)}" in text)
+        # \b, а не подстрока: «71» иначе находилось внутри «171» и т.п.
+        check(f"{doc}: {len(tasks)} задач по математике",
+              bool(re.search(rf"\b{len(tasks)}\b", text)), f"реально {len(tasks)}")
+        check(f"{doc}: {len(hints)} подсказок",
+              bool(re.search(rf"\b{len(hints)}\b", text)), f"реально {len(hints)}")
 
 
 # ---------------------------------------------------------------- flags
@@ -202,6 +282,12 @@ def check_test_counts() -> None:
     listed = set(re.findall(r"`(test_[^`]+\.py)`", testing))
     unlisted = sorted(set(counts) - listed)
     check("все тест-файлы перечислены", not unlisted, ", ".join(unlisted))
+    ghosts = sorted(listed - set(counts))
+    check("нет ссылок на удалённые тест-файлы", not ghosts, ", ".join(ghosts))
+
+    files_claims = re.findall(r"в (\d+) файл", testing) + re.findall(r"в (\d+) файл", read("README.md"))
+    wrong = [n for n in files_claims if int(n) != len(counts)]
+    check(f"число тест-файлов = {len(counts)}", not wrong, f"в доке {set(wrong)}")
 
     # Ищем только те числа, которые ЗАЯВЛЯЮТ размер всего прогона. Частные
     # цифры («110 pytest в аналитических модулях») и явно исторические
@@ -252,7 +338,8 @@ def main() -> int:
     args = ap.parse_args()
 
     for fn in (
-        check_links, check_schema, check_events, check_export_aliases,
+        check_links, check_markdown_hygiene, check_schema, check_events,
+        check_export_aliases,
         check_locales, check_content, check_feature_flags, check_test_counts,
     ):
         try:

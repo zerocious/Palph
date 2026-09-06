@@ -1,6 +1,6 @@
 # Требования к тестам
 
-> **Doc sync:** 2026-09-05 · **793** теста в 51 файле, все зелёные
+> **Doc sync:** 2026-09-05 · **802** тест в 52 файлах, все зелёные
 > (`python -m pytest -q`, ~24 с).
 
 ## Запуск
@@ -92,7 +92,18 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 пограничные случаи API покрываются проверкой того, какие исключения
 код ловит (`tests/test_telegram_resilience.py`).
 
-### 4. Каталоги — из продакшн-файлов
+### 4. Документация — часть прогона
+
+`tests/test_docs_consistency.py` гоняет проверки из
+`scripts/check_docs.py` внутри pytest, поэтому расхождение документации с
+кодом краснеет обычным `pytest -q`, а не только когда кто-то вспомнит про
+отдельный скрипт. Внутрь теста не включена сверка счётчиков тестов — она
+поднимает `pytest --collect-only` подпроцессом; её делает сам скрипт.
+
+Отдельный тест `test_every_check_actually_asserts_something` следит, что
+ни одна проверка не превратилась в пустышку, которая ничего не проверяет.
+
+### 5. Каталоги — из продакшн-файлов
 
 Фикстура `achievements_catalog` читает настоящий `achievements.json`, а не
 копию: тест должен краснеть, когда каталог разъезжается с кодом.
@@ -100,7 +111,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 `tests/test_math_bernoulli_tasks.py`, `tests/test_i18n.py` — они валидируют
 реальный контент репозитория.
 
-### 5. Чистые функции тестируются без БД
+### 6. Чистые функции тестируются без БД
 
 Формулы (`sm2_update`, `piecewise_time_pts`, `streak_multiplier`,
 `freeze_cost`, `derive_emotion`, `parse_friend_query`,
@@ -137,13 +148,14 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 | UX и настройки | `test_main_menu_ux.py`, `test_profile_ux.py`, `test_settings_fixes.py`, `test_tz_presets.py`, `test_i18n.py` | 39 |
 | Спринт-план (UI выключен) | `test_plan_service.py`, `test_plan_repository.py` | 34 |
 | Ачивки | `test_achievement_service.py` | 14 |
+| Документация | `test_docs_consistency.py` | 9 |
 
 Точные цифры на текущий момент: `pytest --collect-only -q | tail -1`.
 
 ## Дополнительные проверки
 
 ```bash
-python scripts/check_docs.py          # документация против кода (25 проверок)
+python scripts/check_docs.py          # документация против кода
 python -m py_compile bot.py services.py repository.py db.py   # синтаксис
 python -c "import bot"                # ловит name-errors в декораторах
 python scripts/audit_i18n_keys.py     # ключи t() против locales/*.json

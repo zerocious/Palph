@@ -1,6 +1,6 @@
 # Error-Handling Review — Palph (Telegram bot, aiogram 3)
 
-**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **793** tests)
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **802** tests)
 
 > Ссылки вида `bot.py:1234` — номера строк **на дату аудита**; с тех пор код
 > сдвинулся, ищите по имени функции. Оформлены как код, а не как ссылки,
@@ -109,8 +109,7 @@ encoded as:
 
 - `repository.py:449`: `raise ValueError("limit_exceeded")`
   — sentinel string carries the semantic.
-- `bot.py:2214-2221`: caller does `except ValueError as e: if
-  str(e) == "limit_exceeded": ...; raise` — string-equality on exception messages
+- `bot.py:2214-2221`: caller does `except ValueError as e: if str(e) == "limit_exceeded": ...; raise` — string-equality on exception messages
   is brittle (any future `ValueError` from the same code path is masked as a
   generic error).
 - `bot.py:73`: `raise RuntimeError("❌ BOT_TOKEN не установлен в .env!")`
@@ -120,8 +119,7 @@ encoded as:
   / `f"Unknown slot: ..."` — these are programmer errors (should be `AssertionError`
   or `TypeError` at most) but are caught by the same `except Exception as e` blocks
   downstream as if they were user-input failures.
-- `repository.py:1638`: `raise ValueError(f"Unknown segment:
-  {segment!r}")` — same issue.
+- `repository.py:1638`: `raise ValueError(f"Unknown segment: {segment!r}")` — same issue.
 - `services.py:1732`: `raise KeyError(f"Unknown table alias: ...")`
   — at least `KeyError` is more semantically right; but still no domain hierarchy.
 
@@ -409,8 +407,7 @@ Four `asyncio.create_task(...)` sites; none of them attach an exception logger:
 - `bot.py:6989-6993`: the three schedulers
   (`streak_scheduler`, `reminder_scheduler`, `leaderboard_scheduler`)
 
-The schedulers each have an inner `while True: try: ... except Exception:
-logger.error(...)` loop, so they survive per-tick failures. **But** any
+The schedulers each have an inner `while True: try: ... except Exception: logger.error(...)` loop, so they survive per-tick failures. **But** any
 exception raised *outside* that inner try (e.g. an exception during
 `pytz.timezone(...)` setup before the loop, or a `CancelledError` re-raise on
 shutdown bug) will kill the task, and the only signal will be the asyncio
@@ -624,7 +621,7 @@ await _telegram_call_with_retry(
 **Severity: 3/10 — Unable to verify need**
 
 I don't see evidence this bot has scaled to a size where a circuit breaker
-adds value (no caching of failed `chat_id`s, no batch sender). At ~793 tests
+adds value (no caching of failed `chat_id`s, no batch sender). At ~802 tests
 and presumably <1000 users (per the README description of "<100 пользователей"
 heuristic in `bot.py:170`), the simpler retry from 4.1 is enough.
 Flagged only because the audit brief asked.
@@ -661,12 +658,9 @@ Three sites leak raw `type(e).__name__: {e}` strings into Telegram messages:
 
 - `bot.py:4442`: `await message.answer(f"❌ Ошибка: {str(e)}")` —
   inside `/reply` admin command. Reaches whichever admin used the command.
-- `bot.py:5206`: `await reply_target.answer(f"❌ Export-all failed:
-  {type(e).__name__}: {e}")`
-- `bot.py:5268`: `await message.answer(f"❌ Export failed:
-  {type(e).__name__}: {e}")`
-- `bot.py:5587`: `await callback.answer(f"❌ {type(e).__name__}:
-  {e}", show_alert=True)`
+- `bot.py:5206`: `await reply_target.answer(f"❌ Export-all failed: {type(e).__name__}: {e}")`
+- `bot.py:5268`: `await message.answer(f"❌ Export failed: {type(e).__name__}: {e}")`
+- `bot.py:5587`: `await callback.answer(f"❌ {type(e).__name__}: {e}", show_alert=True)`
 
 These are admin-only flows, so the *severity* is low (admins are trusted), but
 the *pattern* is wrong for a few reasons: ① it bypasses i18n, ② if any of these
@@ -724,8 +718,7 @@ Add `PALPH_DEBUG=` to [.env.example](../.env.example).
 
 Already covered in Finding 1.3. The "Error information completeness" dimension
 of the audit brief is most violated here: when a production user reports
-"settings didn't save", the only line you'll find is `bot.log: 'Error toggling
-setting: object of type X is not Y'` with no file/line. Half-an-hour repro
+"settings didn't save", the only line you'll find is `bot.log: 'Error toggling setting: object of type X is not Y'` with no file/line. Half-an-hour repro
 session vs. a five-second `grep`.
 
 Same patch as 1.3. Combined with Finding 1.1 (central handler also using

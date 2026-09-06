@@ -149,7 +149,7 @@ SELECT created_at, event_name, user_id FROM events ORDER BY id DESC LIMIT 30;
 | Ежедневно | Появился ли файл бэкапа за сегодня |
 | Еженедельно | `grep -c "handler.unhandled" bot.log*`; результат pip-audit workflow |
 | После деплоя | `reconcile.summary` в логе; `/notif_status`; один тестовый Pomodoro |
-| Перед релизом | `python -m pytest -q` (793 теста), `python -m py_compile bot.py services.py repository.py` |
+| Перед релизом | `python -m pytest -q` (802 теста), `python -m py_compile bot.py services.py repository.py` |
 
 ## Админ-доступ
 
