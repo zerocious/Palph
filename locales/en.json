@@ -366,7 +366,8 @@
   },
   "support": {
     "message_sent": "✅ Your message was sent! An admin will reply soon.\n\nMeanwhile, keep studying — tap Study in the menu below 👇",
-    "rate_limited": "⏳ Please wait a minute before sending another message to admins."
+    "rate_limited": "⏳ Please wait a minute before sending another message to admins.",
+    "send_failed": "⚠️ Could not deliver your message to an admin. Please try again a bit later."
   },
   "delete_account": {
     "confirm_prompt": "⚠️ <b>Account deletion</b>\n\nThis will <b>permanently</b> erase all your data:\n• study sessions, streak, coins\n• achievements and per-subject progress\n• pet, inventory, level\n• your flashcards and tasks\n• friends and pending requests\n• event log and settings\n\nThis CANNOT be undone. Backups may retain your data for up to 30 more days — then they're deleted automatically.\n\nConfirm that you want to delete your account.",

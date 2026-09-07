@@ -723,7 +723,13 @@ async def send_rating_prompt(chat_id: int, session_id: int, user_id: int) -> Non
 # Администраторы и сообщения
 # ------------------------------------------------------------
 ADMINS_FILE = "admins.json"
-MESSAGES_FILE = "messages.log"  # append-only JSONL: одна запись = одна строка JSON
+# append-only JSONL: одна запись = одна строка JSON.
+# Кладём рядом с LOG_FILE, а не в рабочий каталог: в Docker/bothost
+# LOG_FILE указывает в персистентный /app/data, а голый относительный путь
+# писался бы в эфемерный слой контейнера и терялся при каждом рестарте
+# вместе со всеми обращениями в поддержку. Локально LOG_FILE = "bot.log",
+# то есть путь остаётся прежним — ./messages.log.
+MESSAGES_FILE = str(Path(LOG_FILE).parent / "messages.log")
 
 # In-memory кеш админов. Источник истины — таблица `admins` в БД;
 # кеш заполняется в main() из БД и обновляется командами /addadmin / /rmadmin.
@@ -7857,17 +7863,37 @@ async def handle_any_message(message: Message):
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.error(f"Не удалось записать сообщение пользователя в лог: {e}")
+    delivered = 0
     for admin_id in ADMINS:
         try:
             admin_prefix = f"📩 Новое сообщение от {user_name} (ID: {user_id}):\n"
             admin_body = truncate_for_telegram_message(admin_prefix, text)
             await bot.send_message(admin_id, f"{admin_prefix}{admin_body}")
-        except Exception:
-            pass
-    await message.answer(
-        t("support.message_sent", locale),
-        reply_markup=get_main_keyboard(locale),
-    )
+            delivered += 1
+        except Exception as e:
+            # Раньше сбой глотался молча и не попадал даже в лог, а
+            # пользователю всё равно отвечали «отправлено». messages.log
+            # не спасал: его никто не читает — ни одной команды бота,
+            # которая бы его открывала, нет.
+            logger.warning(
+                "support.delivery_failed admin_id=%s user_id=%s reason=%s",
+                admin_id, user_id, type(e).__name__,
+            )
+
+    if delivered:
+        await message.answer(
+            t("support.message_sent", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
+    else:
+        logger.error(
+            "support.delivery_failed_all user_id=%s admins=%s",
+            user_id, len(ADMINS),
+        )
+        await message.answer(
+            t("support.send_failed", locale),
+            reply_markup=get_main_keyboard(locale),
+        )
 
 # ------------------------------------------------------------
 # Восстановление после перезапуска

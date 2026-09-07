@@ -699,6 +699,10 @@ def ru_bundle():
                 "А пока можешь продолжить учиться — выбери Учеба в меню ниже 👇"
             ),
             "rate_limited": "⏳ Подожди минуту перед следующим сообщением администраторам.",
+            "send_failed": (
+                "⚠️ Не получилось доставить сообщение администратору. "
+                "Попробуй ещё раз чуть позже."
+            ),
         },
         "delete_account": {
             "confirm_prompt": (
@@ -1567,6 +1571,10 @@ def en_bundle():
             "Meanwhile, keep studying — tap Study in the menu below 👇"
         ),
         "rate_limited": "⏳ Please wait a minute before sending another message to admins.",
+        "send_failed": (
+            "⚠️ Could not deliver your message to an admin. "
+            "Please try again a bit later."
+        ),
     }
 
     b["delete_account"] = {
