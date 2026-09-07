@@ -1,0 +1,9 @@
+# Зависимости для прогона pytest — то, что нужно CI и ничего сверх.
+# Ноутбучные (pandas / matplotlib / jupyter) и Pillow сюда НЕ входят:
+# они не нужны тестам и добавляли бы минуты к каждому прогону.
+# Полный дев-набор — requirements-dev.txt, он включает этот файл.
+-r requirements.txt
+# pytest 9.0.3 — фикс CVE-2025-71176 (был в pytest 8.x); pytest-asyncio
+# обновлён на 1.x ради совместимости с pytest 9.
+pytest>=9.0.3,<10
+pytest-asyncio>=1.0,<2

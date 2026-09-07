@@ -330,7 +330,8 @@ study_materials/    # Учебные материалы — data-driven дере
 | [docker-compose.yml](docker-compose.yml) | Запуск с `./data/` volume на хосте; env_file: .env; log rotation |
 | [.dockerignore](.dockerignore) | Исключает .env, БД, логи, тесты, docs из образа |
 | [requirements.txt](requirements.txt) | Runtime: aiogram, aiosqlite, pytz, python-dotenv |
-| [requirements-dev.txt](requirements-dev.txt) | Dev only: pytest + pytest-asyncio + pandas/matplotlib/jupyter для `analysis/*.ipynb` |
+| [requirements-test.txt](requirements-test.txt) | Прогон тестов: runtime + pytest + pytest-asyncio. Ставится в CI |
+| [requirements-dev.txt](requirements-dev.txt) | Dev only: всё из requirements-test.txt + pandas/matplotlib/jupyter для `analysis/*.ipynb` + Pillow |
 | [pytest.ini](pytest.ini) | asyncio_mode=auto; testpaths=tests |
 | [tests/](tests/) | Юнит-тесты (**738+**): baseline + flashcards + tips + LB/friends + UX (меню/профиль) + **PA analytics** |
 | [analysis/](analysis/) | Jupyter notebooks для PA-валидации (`leaderboard_backtest.ipynb` — реплей events → реконструкция weekly scores) |

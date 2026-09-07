@@ -1,10 +1,9 @@
 # Dev-only dependencies — не нужны в production-образе.
 # Установка: pip install -r requirements-dev.txt
--r requirements.txt
-# pytest 9.0.3 — фикс CVE-2025-71176 (был в pytest 8.x); pytest-asyncio
-# обновлён на 1.x ради совместимости с pytest 9.
-pytest>=9.0.3,<10
-pytest-asyncio>=1.0,<2
+#
+# Пины на pytest/pytest-asyncio живут в requirements-test.txt — его же
+# ставит CI, чтобы прогон тестов не тянул ноутбучные пакеты.
+-r requirements-test.txt
 # Analysis notebooks (analysis/*.ipynb).
 pandas>=2.0,<3
 matplotlib>=3.8,<4

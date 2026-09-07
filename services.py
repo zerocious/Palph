@@ -1474,7 +1474,12 @@ class LeaderboardService:
                 "total_final": base * mult,
                 "current_streak": streak_days,
             })
-        rows.sort(key=lambda r: r["total_final"], reverse=True)
+        # Tie-break по user_id — как в LeaderboardRepository.get_ranked_segment.
+        # Порядок all_ids = friend_ids + [self], то есть порядок строк из
+        # get_friends; при равных очках (типовой случай — начало недели,
+        # у всех 0) стабильная сортировка оставляла бы именно его, и
+        # медали 🥇🥈🥉 прыгали бы между показами.
+        rows.sort(key=lambda r: (-r["total_final"], r["user_id"]))
 
         rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = [f"<b>👥 Друзья · {week_iso}</b>", ""]

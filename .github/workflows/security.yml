@@ -3,7 +3,7 @@ name: Security audit
 # Сканируем зависимости на known CVEs через pip-audit:
 #   - раз в неделю автоматически (понедельник 07:00 UTC)
 #   - вручную через workflow_dispatch
-#   - на каждом PR, который меняет requirements.txt (защита от
+#   - на каждом PR, который меняет любой requirements*.txt (защита от
 #     случайного добавления уязвимой зависимости)
 on:
   schedule:
@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'requirements.txt'
+      - 'requirements-test.txt'
       - 'requirements-dev.txt'
 
 jobs:

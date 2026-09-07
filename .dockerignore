@@ -52,5 +52,6 @@ admin_commands.md
 Dockerfile
 docker-compose.yml
 .dockerignore
+requirements-test.txt
 requirements-dev.txt
 pytest.ini

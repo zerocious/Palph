@@ -1,0 +1,45 @@
+name: Tests
+
+# Прогон pytest на каждый PR и на push в main. До этого workflow'а в CI
+# был только pip-audit, поэтому четыре красных интеграционных теста
+# (захардкоженная ISO-неделя) прожили в main незамеченными несколько
+# месяцев. Тесты, которые никто не запускает, не защищают ни от чего.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Новый push в тот же PR отменяет предыдущий прогон — не занимаем
+# runner'ы устаревшими коммитами.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'  # та же версия, что в Dockerfile
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+
+      # requirements-test.txt, а не -dev: тестам не нужны pandas /
+      # matplotlib / jupyter / Pillow, и без них установка кратно быстрее.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+
+      # BOT_TOKEN не нужен: tests/conftest.py подставляет фиктивный через
+      # os.environ.setdefault (bot.py падает на импорте без него).
+      - name: Run pytest
+        run: python -m pytest -q

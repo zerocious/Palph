@@ -754,6 +754,30 @@ class TestRenderFriendsTab:
         pos_1 = text.find("@usr1")
         assert pos_3 < pos_2 < pos_1, f"Order wrong; got 3@{pos_3}, 2@{pos_2}, 1@{pos_1}"
 
+    async def test_ties_broken_deterministically_by_user_id(
+        self, lb_service_with_friends, user_repo, lb_repo, db
+    ):
+        """
+        Ничья в friends-tab (типовой случай: начало недели, у всех 0 pts)
+        обязана давать стабильный порядок — иначе медали 🥇🥈🥉 прыгают
+        между показами. all_ids = friend_ids + [self], и стабильная
+        сортировка сохраняла бы именно этот произвольный порядок.
+        """
+        for uid in (1, 2, 3):
+            await _make_user(user_repo, db, uid, age_days=30, streak=0,
+                             username=f"usr{uid}")
+        fr = lb_service_with_friends.friend_repo
+        await _add_friend_pair(db, fr, 1, 2)
+        await _add_friend_pair(db, fr, 1, 3)
+        # Никаких очков — у всех троих ровно 0.
+
+        text = await lb_service_with_friends.render_friends_tab(1)
+        order = [text.find(f"@usr{u}") for u in (1, 2, 3)]
+        assert all(p >= 0 for p in order), text
+        assert order == sorted(order), f"ожидали 1→2→3 при ничьей, got {order}"
+        # Повторный показ — тот же порядок.
+        assert await lb_service_with_friends.render_friends_tab(1) == text
+
     async def test_no_friend_repo_returns_message(self, lb_service):
         """Если LeaderboardService построен без friend_repo — graceful message."""
         text = await lb_service.render_friends_tab(1)
