@@ -135,6 +135,39 @@ class TestGetRankedSegment:
         assert ranked[0]["hidden"] is True
         assert ranked[1]["hidden"] is False
 
+    async def test_ties_broken_deterministically_by_user_id(
+        self, lb_repo, user_repo, db
+    ):
+        """
+        При равных total_final порядок обязан быть детерминированным:
+        от него зависит, кому run_rollover выдаст top_1, а кому top_2.
+        Голый sort(reverse=True) стабилен и сохранял произвольный порядок
+        строк SQLite — призы при ничьей распределялись случайно.
+        """
+        for uid in (3, 1, 2):  # намеренно не по возрастанию
+            await _make_user(user_repo, db, uid, age_days=30, streak=0)
+            await _grant(lb_repo, uid, task=100)
+
+        ranked = await lb_repo.get_ranked_segment(WEEK, "main")
+        assert [r["user_id"] for r in ranked] == [1, 2, 3]
+        assert len({r["total_final"] for r in ranked}) == 1  # ничья реальная
+
+        # Повторный вызов даёт тот же порядок.
+        again = await lb_repo.get_ranked_segment(WEEK, "main")
+        assert [r["user_id"] for r in again] == [1, 2, 3]
+
+    async def test_tie_break_does_not_outrank_higher_score(
+        self, lb_repo, user_repo, db
+    ):
+        """Tie-break вторичен: больший total_final всегда выше меньшего user_id."""
+        await _make_user(user_repo, db, 1, age_days=30, streak=0)
+        await _make_user(user_repo, db, 2, age_days=30, streak=0)
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=200)
+
+        ranked = await lb_repo.get_ranked_segment(WEEK, "main")
+        assert [r["user_id"] for r in ranked] == [2, 1]
+
     async def test_unknown_segment_raises(self, lb_repo):
         with pytest.raises(ValueError):
             await lb_repo.get_ranked_segment(WEEK, "premium")

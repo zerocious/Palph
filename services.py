@@ -1266,14 +1266,16 @@ class LeaderboardService:
         segment = await self._user_segment(user_id)
         week_iso = await self._current_week_iso(user_id)
 
-        # Публичный топ (исключая hidden)
-        public_top = await self.leaderboard_repo.get_ranked_segment(
-            week_iso, segment, exclude_hidden=True
-        )
-        # Полный ranked (включая hidden) — для поиска позиции self
+        # Полный ranked (включая hidden) — для поиска позиции self.
         full_ranked = await self.leaderboard_repo.get_ranked_segment(
             week_iso, segment, exclude_hidden=False
         )
+        # Публичный топ — подмножество full_ranked без hidden. Раньше здесь
+        # был второй идентичный запрос с exclude_hidden=True; фильтрация в
+        # Python даёт ровно тот же результат (порядок сохраняется, список
+        # уже отсортирован) и экономит один SQL + JOIN + сортировку на
+        # каждый показ /leaderboard.
+        public_top = [e for e in full_ranked if not e["hidden"]]
 
         seg_label = "🆕 Новички" if segment == "newbie" else "🏆 Основной"
         lines = [

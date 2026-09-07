@@ -18,12 +18,23 @@ import pytest
 import pytest_asyncio
 
 from repository import FriendRepository, LeaderboardRepository
-from services import LeaderboardService, StreakService
+from services import LeaderboardService, StreakService, user_calendar_keys
 
 
-NOW = datetime(2026, 5, 18, 14, 30)  # Monday, mid-day
-TODAY = "2026-05-18"
-WEEK = "2026-W21"
+# Календарный якорь тестов ДОЛЖЕН попадать в ту же ISO-неделю, которую
+# читают рендеры: render_leaderboard / render_friends_tab резолвят неделю
+# из datetime.now() (см. LeaderboardService._current_week_iso), а не из
+# переданных данных. Захардкоженная дата делала эти тесты бомбой
+# замедленного действия — они проходили только в течение самой недели
+# 2026-W21, а потом навсегда краснели: гранты писались в W21, рендер
+# читал текущую неделю и видел пустой лидерборд.
+#
+# Поэтому берём сегодняшнюю дату и выводим ключи тем же helper'ом, что и
+# продакшн (services.user_calendar_keys) — тест остаётся валидным в любую
+# неделю. Время фиксируем на середине дня, чтобы прогон не задевал
+# границу суток.
+NOW = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+TODAY, WEEK = user_calendar_keys(NOW)
 
 
 @pytest_asyncio.fixture

@@ -1750,7 +1750,12 @@ class LeaderboardRepository:
                 "total_final": base * mult,
                 "hidden": bool(r["hidden_from_leaderboards"]),
             })
-        result.sort(key=lambda x: x["total_final"], reverse=True)
+        # Tie-break по user_id обязателен: при равных total_final голый
+        # sort(reverse=True) стабилен и оставляет порядок строк SQLite,
+        # то есть произвольный. От этого порядка зависит раздача top_1 /
+        # top_2 / top_3 в run_rollover — без детерминированного правила
+        # призы при ничьей распределялись бы по-разному между запусками.
+        result.sort(key=lambda x: (-x["total_final"], x["user_id"]))
         return result
 
     async def get_user_rank(
