@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
+
+logger = logging.getLogger("studybuddy_bot")
 
 LOCALES_DIR = Path(__file__).parent / "locales"
 SUPPORTED_LOCALES = ("ru", "en")
@@ -44,7 +47,17 @@ def t(key: str, locale: str = DEFAULT_LOCALE, **kwargs) -> str:
     if kwargs:
         try:
             return text.format(**kwargs)
-        except KeyError:
+        except (KeyError, IndexError) as e:
+            # Плейсхолдер остался неподставленным — пользователь увидит
+            # буквальное «{duration}» в тексте. Раньше это происходило
+            # беззвучно и обнаруживалось только по жалобе; теперь есть след
+            # в логе с точным ключом. Статически такие вызовы ловит
+            # test_t_calls_supply_required_placeholders, но ключи бывают и
+            # динамическими.
+            logger.warning(
+                "i18n.format_failed key=%s locale=%s missing=%s",
+                key, loc, e,
+            )
             return text
     return text
 

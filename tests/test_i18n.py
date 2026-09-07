@@ -246,3 +246,63 @@ def test_industrial_management_en_label():
     assert "Production management" in en
     assert "производственного" in ru
     assert en != ru
+
+
+def test_t_calls_supply_required_placeholders():
+    """
+    Каждый вызов t() с литеральным ключом обязан передавать все поля,
+    которых требует строка локали.
+
+    Забытый аргумент не роняет бота: t() возвращает текст как есть, и
+    пользователь видит буквальное «{duration}» в сообщении. Раньше это
+    происходило беззвучно; теперь частичный набор пишет warning в лог, но
+    случай, когда kwargs не переданы ВООБЩЕ, до формата не доходит и в
+    рантайме не диагностируется — его ловит только эта проверка.
+
+    Динамические ключи (f-строки) и вызовы с **kwargs пропускаем: их
+    состав статически не определить.
+    """
+    import string
+
+    from i18n import _load_bundle, _resolve
+
+    formatter = string.Formatter()
+
+    def required_fields(key: str, locale: str) -> set[str] | None:
+        text = _resolve(_load_bundle(locale), key)
+        if text is None:
+            return None
+        return {f for _, f, _, _ in formatter.parse(text) if f}
+
+    problems = []
+    for filename in ("bot.py", "services.py", "plan_handlers.py", "locale_bot.py"):
+        tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "t"
+                and node.args
+            ):
+                continue
+            first = node.args[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                continue  # динамический ключ
+            if any(kw.arg is None for kw in node.keywords):
+                continue  # **kwargs
+            passed = {kw.arg for kw in node.keywords}
+            for locale in SUPPORTED_LOCALES:
+                needed = required_fields(first.value, locale)
+                if needed is None:
+                    continue
+                gap = needed - passed
+                if gap:
+                    problems.append(
+                        f"{filename}:{node.lineno} t({first.value!r}) "
+                        f"[{locale}] не передано: {sorted(gap)}"
+                    )
+
+    assert not problems, (
+        "вызовы t() без обязательных плейсхолдеров — пользователь увидит "
+        "их буквально в тексте:\n" + "\n".join(sorted(set(problems)))
+    )
