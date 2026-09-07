@@ -139,15 +139,17 @@ def check_schema() -> None:
 # ---------------------------------------------------------------- events
 def check_events() -> None:
     src = "".join(read(f) for f in ("bot.py", "services.py", "plan_handlers.py"))
-    # [a-z0-9_]+, а не [a-z_]+: имя с цифрой раньше просто выпадало из
-    # выборки, и переименование события проверка не замечала.
-    code = set(re.findall(r'event_repo\.log\(\s*[^,]+,\s*\n?\s*"([a-z0-9_]+)"', src))
+    # Класс [A-Za-z0-9_]+, а не [a-z_]+. Узкий класс трижды за сессию давал
+    # один и тот же провал: переименование делало сущность НЕВИДИМОЙ для
+    # выборки вместо того, чтобы пометить её изменившейся, и проверка
+    # проходила на усечённом множестве.
+    code = set(re.findall(r'event_repo\.log\(\s*[^,]+,\s*\n?\s*"([A-Za-z0-9_]+)"', src))
     doc = read("docs/analytics.md")
     check("события вообще найдены в коде", len(code) >= 25, f"найдено {len(code)}")
     missing = sorted(e for e in code if f"`{e}`" not in doc)
     check("все события описаны в docs/analytics.md", not missing, ", ".join(missing))
     # Обратная сторона: событие удалили из кода, а из документа забыли.
-    documented = set(re.findall(r"^\| `([a-z0-9_]+)` \|", doc, re.M))
+    documented = set(re.findall(r"^\| `([A-Za-z0-9_]+)` \|", doc, re.M))
     known_non_events = {"activity_events", "activity_progress"}
     ghosts = sorted(documented - code - known_non_events)
     check("в docs/analytics нет исчезнувших событий", not ghosts, ", ".join(ghosts))
@@ -158,7 +160,7 @@ def check_export_aliases() -> None:
     services = read("services.py")
     blk = services[services.index("EXPORTABLE_TABLES"):]
     blk = blk[blk.index("{"):blk.index("}") + 1]
-    aliases = set(re.findall(r'"([a-z0-9_]+)":', blk))
+    aliases = set(re.findall(r'"([A-Za-z0-9_]+)":', blk))
     check("алиасы /export вообще найдены", len(aliases) >= 15, f"найдено {len(aliases)}")
     for doc in ("docs/analytics.md", "admin_commands.md"):
         text = read(doc)
@@ -232,6 +234,62 @@ def check_feature_flags() -> None:
             f"{name} = {value}" in arch,
             "значение флага изменилось — обнови таблицу «Выключенные фичи»",
         )
+
+
+# ---------------------------------------------------------------- команды
+def _commands_from_code() -> tuple[set[str], set[str]]:
+    """(админские, пользовательские) слэш-команды, разобранные из bot.py."""
+    src = read("bot.py")
+    admin: set[str] = set()
+    user: set[str] = set()
+    for block in re.split(r"\n@router\.", src):
+        m = re.match(r'message\(Command\((.*?)\)\)', block)
+        if not m:
+            continue
+        names = re.findall(r'"([A-Za-z0-9_]+)"', m.group(1))
+        if not names:
+            continue
+        body = block[:4000]
+        gated = re.search(r"if\s+not\s+is_admin", body) or re.search(r"!=\s*MAIN_ADMIN_ID", body)
+        (admin if gated else user).add(names[0])
+    return admin, user
+
+
+def check_commands() -> None:
+    """
+    Слэш-команды: код против справочников. Ровно так вручную нашлось, что
+    `/help` — единственная админ-команда без раздела в admin_commands.md.
+    """
+    admin, user = _commands_from_code()
+    check("команды разобраны из bot.py", len(admin) >= 15 and len(user) >= 6,
+          f"админских {len(admin)}, пользовательских {len(user)}")
+
+    ac = read("admin_commands.md")
+    documented = set(re.findall(r"^### `/([A-Za-z0-9_]+)", ac, re.M))
+    missing = sorted(admin - documented)
+    check("у каждой админ-команды есть раздел в admin_commands.md",
+          not missing, ", ".join(f"/{c}" for c in missing))
+    ghosts = sorted(documented - admin)
+    check("в admin_commands.md нет несуществующих команд",
+          not ghosts, ", ".join(f"/{c}" for c in ghosts))
+
+    # README перечисляет оба набора — сверяем их с кодом.
+    readme = read("README.md")
+    block = readme[readme.index("**Админские:**"):]
+    block = block[:block.index("Подробно")]
+    readme_admin = set(re.findall(r"`/([A-Za-z0-9_]+)`", block))
+    check("список админ-команд в README совпадает с кодом",
+          readme_admin == admin,
+          f"нет в README: {sorted(admin - readme_admin)}; лишние: {sorted(readme_admin - admin)}")
+
+    # Дефолтный /-пикер задаётся в locale_bot.commands_for_locale.
+    picker = set(re.findall(r'BotCommand\(command="([A-Za-z0-9_]+)"', read("locale_bot.py")))
+    check("команды пикера существуют как хендлеры", picker <= (user | admin),
+          f"в пикере, но без хендлера: {sorted(picker - user - admin)}")
+    ub = readme[readme.index("**Пользовательские**"):readme.index("**Админские:**")]
+    readme_user = set(re.findall(r"`/([A-Za-z0-9_]+)`", ub))
+    check("все команды пикера перечислены в README", picker <= readme_user,
+          f"не хватает: {sorted(picker - readme_user)}")
 
 
 # ---------------------------------------------------------------- константы
@@ -415,7 +473,7 @@ def main() -> int:
         check_links, check_markdown_hygiene, check_schema, check_events,
         check_export_aliases,
         check_locales, check_content, check_feature_flags,
-        check_balance_constants, check_test_counts,
+        check_commands, check_balance_constants, check_test_counts,
     ):
         try:
             fn()
