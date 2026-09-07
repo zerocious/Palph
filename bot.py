@@ -1216,7 +1216,25 @@ class QuizTerm:
             "hash": self.hash
         }
 
-def load_quiz_section(section: str, subject_id: str = "industrial-management") -> list[QuizTerm]:
+# Разобранные секции ситуационных квизов: (subject_id, section) →
+# (mtime, size, terms). load_quiz_section зовётся на КАЖДЫЙ ответ в
+# квизе, а не один раз за сессию, — без кеша это чтение и парсинг файла
+# с диска внутри event loop на каждый тап. Ключ инвалидации mtime+size,
+# чтобы правка контента подхватывалась без перезапуска бота.
+# Размер ограничен каталогом: предметы × секции, максимум 16 записей.
+_quiz_section_cache: dict[tuple[str, str], tuple[float, int, list["QuizTerm"]]] = {}
+
+
+def load_quiz_section(section: str, subject_id: str) -> list[QuizTerm]:
+    """
+    Термины раздела ситуационного квиза для предмета.
+
+    subject_id ОБЯЗАТЕЛЕН. Раньше у него был дефолт
+    'industrial-management', и вызов без предмета молча отдавал термины
+    чужого предмета — так handle_quiz_answer со второго вопроса и
+    переключал пользователя на ОПМ. Дефолт убран, чтобы такой вызов
+    падал на этапе разработки, а не тихо портил контент в проде.
+    """
     key = section.lower()
     if key not in QUIZ_SECTION_KEYS:
         return []
@@ -1224,8 +1242,20 @@ def load_quiz_section(section: str, subject_id: str = "industrial-management") -
     if base is None:
         return []
     file_path = base / "situational" / f"section-{key}.txt"
-    if not file_path.exists():
-        return []
+    try:
+        stat = file_path.stat()
+    except OSError:
+        return []  # нет файла / нет доступа — раздел просто пуст
+
+    cache_key = (subject_id, key)
+    cached = _quiz_section_cache.get(cache_key)
+    if cached is not None and (cached[0], cached[1]) == (stat.st_mtime, stat.st_size):
+        # Копия списка, не сам кеш: рядом в коде принято шаффлить
+        # результат загрузчика (см. random.shuffle над load_mcq), и
+        # мутация общего списка испортила бы контент всем пользователям.
+        # QuizTerm трактуем как неизменяемое value-object.
+        return list(cached[2])
+
     terms = []
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -1235,7 +1265,8 @@ def load_quiz_section(section: str, subject_id: str = "industrial-management") -
             parts = [p.strip() for p in line.split("||")]
             if len(parts) == 4:
                 terms.append(QuizTerm(*parts))
-    return terms
+    _quiz_section_cache[cache_key] = (stat.st_mtime, stat.st_size, terms)
+    return list(terms)
 
 
 def load_mcq(subject_id: str) -> list[dict]:
@@ -4897,6 +4928,18 @@ async def handle_quiz_exit_from_section(message: Message, state: FSMContext):
     )
 
 
+def _quiz_subject_from_state(data: dict) -> str | None:
+    """
+    Предмет активного ситуационного квиза из FSM. None — состояние
+    сломано: предмета нет или он не из каталога.
+
+    Единая точка правды: раньше предмет резолвился в трёх местах через
+    `data.get("subject_id", "industrial-management")`, и при потере
+    состояния пользователь молча получал контент чужого предмета.
+    """
+    return validate_subject_id(data.get("subject_id") or "")
+
+
 @router.message(QuizStates.choosing_section, F.text.in_(_quiz_section_label_list()))
 async def handle_quiz_section(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -4905,7 +4948,14 @@ async def handle_quiz_section(message: Message, state: FSMContext):
     if not section_key:
         return
     data = await state.get_data()
-    subject_id = data.get("subject_id", "industrial-management")
+    subject_id = _quiz_subject_from_state(data)
+    if subject_id is None:
+        await state.clear()
+        await message.answer(
+            t("errors.state_error", locale),
+            reply_markup=await get_subject_keyboard(user_id, locale),
+        )
+        return
     terms = load_quiz_section(section_key, subject_id)
     if not terms:
         await message.answer(
@@ -4968,7 +5018,9 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
         await leaderboard_repo.reset_quiz_series(user_id)
     await update_quiz_progress(user_id, term["hash"], is_correct, streak)
     await event_repo.log(user_id, "quiz_answered", {
-        "subject_id": data.get("subject_id", "industrial-management"),
+        # Реальный предмет из состояния, без подстановки дефолта:
+        # выдуманный 'industrial-management' в аналитике хуже, чем None.
+        "subject_id": data.get("subject_id"),
         "section": data.get("section"),
         "term_hash": term["hash"],
         "is_correct": is_correct,
@@ -4990,7 +5042,18 @@ async def handle_quiz_answer(message: Message, state: FSMContext):
             )
         return
 
-    terms = load_quiz_section(data["section"])
+    # subject_id обязателен: без него загрузчик раньше молча брал
+    # дефолтный предмет, и со второго вопроса пользователь получал
+    # термины чужого раздела.
+    subject_id = _quiz_subject_from_state(data)
+    if subject_id is None:
+        await state.clear()
+        await message.answer(
+            t("errors.state_error", locale),
+            reply_markup=await get_subject_keyboard(user_id, locale),
+        )
+        return
+    terms = load_quiz_section(data["section"], subject_id)
     next_term = await get_next_quiz_term(user_id, terms)
     if next_term:
         await state.update_data(current_term=next_term.to_dict())
