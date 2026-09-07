@@ -11,6 +11,12 @@ _LOCAL_DEFAULTS = {
     "DB_PATH": "studybuddy.db",
     "LOG_FILE": "bot.log",
     "BACKUP_DIR": "backups",
+    # Лог свободных обращений в поддержку (JSONL). Раньше путь был
+    # захардкожен относительным "messages.log" в bot.py, то есть в
+    # контейнере писался в /app — эфемерный слой образа, а не в
+    # смонтированный /app/data. Обращения пользователей пропадали при
+    # каждой пересборке.
+    "MESSAGES_FILE": "messages.log",
 }
 
 
@@ -26,11 +32,13 @@ def _container_defaults() -> dict[str, str]:
         "DB_PATH": os.path.join(CONTAINER_DATA_DIR, "studybuddy.db"),
         "LOG_FILE": os.path.join(CONTAINER_DATA_DIR, "bot.log"),
         "BACKUP_DIR": os.path.join(CONTAINER_DATA_DIR, "backups"),
+        "MESSAGES_FILE": os.path.join(CONTAINER_DATA_DIR, "messages.log"),
     }
 
 
 def resolve_env_path(name: str) -> str:
-    """Resolve DB_PATH / LOG_FILE / BACKUP_DIR with container-aware defaults."""
+    """Resolve DB_PATH / LOG_FILE / BACKUP_DIR / MESSAGES_FILE with
+    container-aware defaults."""
     explicit = os.getenv(name)
     if explicit:
         return explicit
@@ -42,15 +50,17 @@ def resolve_env_path(name: str) -> str:
 DB_PATH = resolve_env_path("DB_PATH")
 LOG_FILE = resolve_env_path("LOG_FILE")
 BACKUP_DIR = resolve_env_path("BACKUP_DIR")
+MESSAGES_FILE = resolve_env_path("MESSAGES_FILE")
 
 
 def ensure_persistent_dirs() -> None:
-    """Create parent dirs for DB/log files and the backup directory if missing."""
+    """Create parent dirs for DB/log/messages files and the backup dir if missing."""
     db_path = resolve_env_path("DB_PATH")
     log_file = resolve_env_path("LOG_FILE")
     backup_dir = resolve_env_path("BACKUP_DIR")
+    messages_file = resolve_env_path("MESSAGES_FILE")
 
-    for file_path in (db_path, log_file):
+    for file_path in (db_path, log_file, messages_file):
         parent = os.path.dirname(file_path)
         if parent:
             os.makedirs(parent, exist_ok=True)

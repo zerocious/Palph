@@ -27,6 +27,7 @@ USER app
 # binds ./data:/app/data for local Docker dev.
 ENV DB_PATH=/app/data/studybuddy.db \
     LOG_FILE=/app/data/bot.log \
-    BACKUP_DIR=/app/data/backups
+    BACKUP_DIR=/app/data/backups \
+    MESSAGES_FILE=/app/data/messages.log
 
 CMD ["python", "bot.py"]

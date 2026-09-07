@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import random
+import threading
 import hashlib
 import sqlite3
 import unicodedata
@@ -39,7 +40,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
 
-from db import BACKUP_DIR, DB_PATH, LOG_FILE, ensure_persistent_dirs, get_db, init_db
+from db import (
+    BACKUP_DIR, DB_PATH, LOG_FILE, MESSAGES_FILE,
+    ensure_persistent_dirs, get_db, init_db,
+)
 from repository import (
     UserRepository, SessionRepository, AdminRepository, FlashcardRepository,
     UserFlashcardRepository, UserTaskRepository, TipsRepository,
@@ -633,7 +637,83 @@ async def send_rating_prompt(chat_id: int, session_id: int, user_id: int) -> Non
 # Администраторы и сообщения
 # ------------------------------------------------------------
 ADMINS_FILE = "admins.json"
-MESSAGES_FILE = "messages.log"  # append-only JSONL: одна запись = одна строка JSON
+# MESSAGES_FILE резолвится в db.py вместе с DB/LOG/BACKUP: в контейнере
+# это /app/data/messages.log (смонтированный volume), локально —
+# ./messages.log. Append-only JSONL: одна запись = одна строка JSON.
+#
+# Лок сериализует дозапись и вычистку: purge переписывает файл целиком,
+# и параллельный append мог бы попасть в уже прочитанную копию и
+# потеряться при подмене.
+#
+# Именно threading.Lock, а не asyncio.Lock: файловые операции и так
+# уходят в worker-тред через to_thread, и лок берётся ВНУТРИ треда —
+# значит ожидание не блокирует event loop, а сериализация покрывает
+# реальный доступ к файлу. asyncio.Lock на уровне модуля привязался бы
+# к первому event loop'у, где возникла конкуренция, и падал бы в любом
+# другом (в проде loop один, но код становится непроверяемым).
+# Ср. UserRateLimiter в services.py — там тот же выбор.
+_messages_file_lock = threading.Lock()
+
+
+def _write_support_message(entry: dict) -> None:
+    with _messages_file_lock:
+        with open(MESSAGES_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+async def _append_support_message(entry: dict) -> None:
+    """
+    Дозаписывает обращение в JSONL. Файловый I/O уходит в тред: это
+    catch-all хендлер на каждое свободное сообщение, а синхронный write
+    блокировал бы event loop всем остальным пользователям.
+    """
+    await asyncio.to_thread(_write_support_message, entry)
+
+
+def _purge_support_messages(user_id: int) -> int:
+    """Переписывает JSONL без строк пользователя. Возвращает число удалённых."""
+    with _messages_file_lock:
+        return _purge_support_messages_locked(user_id)
+
+
+def _purge_support_messages_locked(user_id: int) -> int:
+    path = Path(MESSAGES_FILE)
+    if not path.exists():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                if json.loads(stripped).get("user_id") == user_id:
+                    removed += 1
+                    continue
+            except (json.JSONDecodeError, AttributeError):
+                pass  # битую строку не трогаем — она не наша, чтобы её терять
+            kept.append(line if line.endswith("\n") else line + "\n")
+    if not removed:
+        return 0
+    # Пишем через временный файл в той же директории + os.replace:
+    # падение посреди перезаписи не оставит усечённый лог.
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines(kept)
+    os.replace(tmp, path)
+    return removed
+
+
+async def purge_support_messages(user_id: int) -> int:
+    """
+    Стирает обращения пользователя из JSONL-лога.
+
+    Нужно для /delete_account: delete_user_completely чистит только БД, а
+    этот файл хранит user_id, имя и текст сообщений — то есть переживал
+    бы «право на забвение» (GDPR Art. 17 / 152-ФЗ ст. 14).
+    """
+    return await asyncio.to_thread(_purge_support_messages, user_id)
 
 # In-memory кеш админов. Источник истины — таблица `admins` в БД;
 # кеш заполняется в main() из БД и обновляется командами /addadmin / /rmadmin.
@@ -3855,6 +3935,19 @@ async def handle_delete_account_confirm(callback: CallbackQuery, state: FSMConte
         )
 
     counts = await user_repo.delete_user_completely(user_id)
+
+    # Лог свободных обращений — файл, а не таблица, поэтому
+    # delete_user_completely до него не достаёт. Без этого шага user_id,
+    # имя и тексты сообщений пережили бы удаление аккаунта.
+    try:
+        counts["messages_log"] = await purge_support_messages(user_id)
+    except Exception as e:
+        counts["messages_log"] = -1
+        logger.error(
+            "delete_account.messages_purge_failed user_id=%s reason=%s detail=%s",
+            user_id, type(e).__name__, e,
+        )
+
     logger.info("account.deleted user_id=%s counts=%s", user_id, counts)
 
     try:
@@ -7793,8 +7886,7 @@ async def handle_any_message(message: Message):
         "text": text,
     }
     try:
-        with open(MESSAGES_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        await _append_support_message(log_entry)
     except Exception as e:
         logger.error(f"Не удалось записать сообщение пользователя в лог: {e}")
     for admin_id in ADMINS:

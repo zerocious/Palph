@@ -7,8 +7,11 @@
 # Статус:   docker compose ps
 # Стоп:     docker compose down
 #
-# Persistent state (БД, логи, мигрированный admins.json) живёт в ./data
-# на хосте — переживает rebuild контейнера.
+# Persistent state (БД, bot.log, messages.log, бэкапы) живёт в ./data на
+# хосте — переживает rebuild контейнера. Пути задаются переменными ниже.
+# admins.json в этот список НЕ входит: он читается один раз при старте
+# из рабочей директории и мигрируется в таблицу `admins`, дальше
+# источник истины — БД.
 
 services:
   bot:
@@ -26,6 +29,7 @@ services:
       DB_PATH: /app/data/studybuddy.db
       LOG_FILE: /app/data/bot.log
       BACKUP_DIR: /app/data/backups
+      MESSAGES_FILE: /app/data/messages.log
       BACKUP_RETENTION_DAYS: "30"
 
     volumes:

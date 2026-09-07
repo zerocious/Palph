@@ -189,11 +189,13 @@ before using the Bot.
 | User account record (users table) | Until you request deletion |
 | Study sessions, progress, achievements | Until you request deletion |
 | Event log | Until you request deletion |
+| Free-form messages to admins (`messages.log`) | Until you request deletion |
 | Friend requests / friendships / invite tokens | Until you delete the friendship or the token expires (3 days) |
 | Application log (`bot.log`) | Rotated automatically at 25 MB total |
 | Database backups | 30 days, then auto-deleted |
 
-When you request deletion, your record is removed from the live database.
+When you request deletion, both your record in the live database and
+your messages to admins in `messages.log` are removed.
 Backups containing your data will continue to exist for up to 30 more days
 and will then be deleted automatically as part of normal rotation.
 
