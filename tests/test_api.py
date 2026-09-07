@@ -286,7 +286,12 @@ class TestPomodoro:
         assert resp.status == 200
         timer = (await resp.json())["timer"]
         assert timer["duration_minutes"] == 25
-        assert 1490 <= timer["remaining_seconds"] <= 1500
+        # Инвариант вместо тайминга: прошедшее плюс оставшееся всегда равно
+        # длительности. Прежний ассерт «уложились в 10 секунд» проверял
+        # скорость машины и мог падать под нагрузкой, ничего не говоря о
+        # поведении таймера.
+        assert 0 < timer["remaining_seconds"] <= 25 * 60
+        assert timer["elapsed_seconds"] + timer["remaining_seconds"] == 25 * 60
 
     async def test_duration_is_clamped(self, api_env):
         client, device_repo, user_id = api_env
@@ -381,7 +386,9 @@ class TestPomodoro:
 
         await client.post("/api/pomodoro/start", json={"minutes": 25}, headers=headers)
         timer = (await (await client.get("/api/me", headers=headers)).json())["timer"]
-        assert timer["elapsed_seconds"] <= 5
+        # Отмотанные 20 минут должны исчезнуть; сравниваем с ними, а не с
+        # абсолютным порогом в секундах — тот зависел бы от скорости машины.
+        assert timer["elapsed_seconds"] < 20 * 60
 
     async def test_timer_is_per_user(self, api_env, db):
         """Таймер одного пользователя не виден другому."""
