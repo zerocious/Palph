@@ -4169,7 +4169,9 @@ async def _send_next_mcq_question(chat_id: int, state: FSMContext):
 
     kb = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
-        kb.button(text=opt, callback_data=f"mcq:{i}")
+        # Номер вопроса в callback_data обязателен: без него повторно
+        # отправленный ответ неотличим от свежего (см. handle_mcq_callback).
+        kb.button(text=opt, callback_data=f"mcq:{idx}:{i}")
     kb.adjust(1)
 
     await state.update_data(
@@ -4230,12 +4232,32 @@ async def handle_mcq_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer(t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False)
         return
     try:
-        user_idx = int(callback.data.split(":", 1)[1])
+        _, question_idx_str, user_idx_str = callback.data.split(":", 2)
+        question_idx = int(question_idx_str)
+        user_idx = int(user_idx_str)
     except (ValueError, IndexError):
-        await callback.answer()
+        # Сюда же попадает старый формат "mcq:<вариант>" без номера
+        # вопроса — он остался в кнопках сессий, начатых до этой правки.
+        await callback.answer(
+            t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False
+        )
         return
 
     data = await state.get_data()
+    if question_idx != data.get("mcq_index", 0):
+        # Ответ на уже пройденный вопрос. Раньше callback_data содержал
+        # только индекс варианта, поэтому повторная отправка была
+        # неотличима от свежего ответа и засчитывалась СЛЕДУЮЩЕМУ вопросу:
+        # записывалась попытка, начислялись монета и очки лидерборда,
+        # сессия проматывалась дальше. Достижимо не только поддельным
+        # клиентом — обычный двойной тап успевает пройти до того, как
+        # edit_text уберёт клавиатуру, потому что она снимается уже ПОСЛЕ
+        # начисления.
+        await callback.answer(
+            t("mcq.session_ended", await loc(callback.from_user.id)), show_alert=False
+        )
+        return
+
     correct_idx = data.get("mcq_current_correct_idx")
     correct_text = data.get("mcq_current_correct_text", "")
     if correct_idx is None:
