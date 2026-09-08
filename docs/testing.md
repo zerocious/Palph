@@ -136,7 +136,7 @@ Telegram не вызывается по-настоящему: `unittest.mock.Asy
 упал:
 
 ```bash
-python scripts/mutate_docs_check.py                    # все 27 мутаций
+python scripts/mutate_docs_check.py                    # все мутации
 python scripts/mutate_docs_check.py --group constants  # только числа баланса
 ```
 
