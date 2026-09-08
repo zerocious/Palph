@@ -669,6 +669,24 @@ def user_calendar_keys(now_local: datetime) -> tuple:
     return now_local.strftime("%Y-%m-%d"), now_local.strftime("%G-W%V")
 
 
+def week_end_utc(week_iso: str) -> str | None:
+    """
+    Конец ISO-недели 'YYYY-Www' как 'YYYY-MM-DD HH:MM:SS' — воскресенье
+    23:59:59. Формат совпадает с users.created_at (datetime('now')),
+    поэтому строку можно сравнивать через julianday() в SQL.
+
+    Нужен для rollover'а: сегмент newbie/main обязан считаться на конец
+    ранжируемой недели, а не на момент раздачи наград (вторник, +2 дня).
+
+    None, если строка не разбирается — caller откатывается на 'now'.
+    """
+    try:
+        sunday = datetime.strptime(f"{week_iso}-7", "%G-W%V-%u")
+    except (ValueError, TypeError):
+        return None
+    return sunday.strftime("%Y-%m-%d 23:59:59")
+
+
 def format_leaderboard_user_label(username: str | None, user_id: int) -> str:
     """
     Публичная подпись пользователя в leaderboard/friends-tab.
@@ -1234,18 +1252,6 @@ class LeaderboardService:
         # leaderboard-стэк работает без. Тесты Phase 0-3 не передают.
         self.friend_repo = friend_repo
 
-    async def _user_segment(self, user_id: int) -> str:
-        """Возвращает 'newbie' или 'main' по created_at пользователя."""
-        async with self.user_repo.db.execute(
-            "SELECT (julianday('now') - julianday(created_at)) AS age_days "
-            "FROM users WHERE user_id=?",
-            (user_id,),
-        ) as c:
-            row = await c.fetchone()
-        if row is None:
-            return "newbie"  # defensive
-        return "newbie" if row["age_days"] < 7 else "main"
-
     async def _current_week_iso(self, user_id: int) -> str:
         """Текущая ISO-неделя в TZ пользователя."""
         now_local = await self.leaderboard_repo._now_local_for_user(user_id)
@@ -1263,8 +1269,15 @@ class LeaderboardService:
         Подписи пользователей — @username из users.username (синхронизируется
         UsernameSyncMiddleware), иначе fallback id=...
         """
-        segment = await self._user_segment(user_id)
-        week_iso = await self._current_week_iso(user_id)
+        # Сегмент и неделя берутся из одной строки users (created_at +
+        # timezone) — один запрос вместо двух отдельных SELECT'ов по
+        # одному и тому же user_id на каждый показ /leaderboard.
+        now_local, age_days = await self.leaderboard_repo.now_local_and_age_days(
+            user_id
+        )
+        threshold = self.leaderboard_repo.NEWBIE_MAX_AGE_DAYS
+        segment = "newbie" if age_days is None or age_days < threshold else "main"
+        _, week_iso = user_calendar_keys(now_local)
 
         # Полный ranked (включая hidden) — для поиска позиции self.
         full_ranked = await self.leaderboard_repo.get_ranked_segment(
@@ -1366,9 +1379,20 @@ class LeaderboardService:
             "segments_processed": 0,
         }
 
+        # Сегмент считаем НА КОНЕЦ ранжируемой недели, а не на «сейчас»:
+        # rollover идёт во вторник за неделю, закончившуюся в воскресенье,
+        # и по 'now' пользователь, бывший newbie всю неделю, к моменту
+        # раздачи успевал стать main.
+        as_of = week_end_utc(ended_week_iso)
+        if as_of is None:
+            logger.warning(
+                "leaderboard.rollover.bad_week_iso week=%s — сегмент по 'now'",
+                ended_week_iso,
+            )
+
         for segment in ("main", "newbie"):
             ranked = await self.leaderboard_repo.get_ranked_segment(
-                ended_week_iso, segment, exclude_hidden=False
+                ended_week_iso, segment, exclude_hidden=False, as_of=as_of
             )
             if not ranked:
                 continue

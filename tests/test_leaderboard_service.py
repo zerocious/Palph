@@ -20,11 +20,18 @@ import pytest
 import pytest_asyncio
 
 from repository import LeaderboardRepository
-from services import LeaderboardService, user_calendar_keys
+from services import LeaderboardService, user_calendar_keys, week_end_utc
 
 
-NOW = datetime(2026, 5, 18, 14, 30)   # Monday, mid-day
-WEEK = "2026-W21"
+# Ранжируемая неделя — ПРОШЛАЯ завершившаяся, а не фиксированная дата.
+# Причина: _make_user стареет пользователя относительно datetime.now(),
+# а сегмент newbie/main теперь считается на конец ранжируемой недели.
+# С захардкоженной 2026-W21 данные становились невозможными — юзер,
+# созданный «30 дней назад», набирал очки за неделю, закончившуюся за
+# несколько месяцев ДО его регистрации. Раньше это не всплывало только
+# потому, что сегмент брался по 'now'.
+_LAST_WEEK = datetime.now() - timedelta(days=datetime.now().isoweekday() + 6)
+WEEK = _LAST_WEEK.strftime("%G-W%V")
 
 
 @pytest_asyncio.fixture
@@ -221,7 +228,7 @@ class TestAwardBadge:
         assert second is False
 
     async def test_different_weeks_independent(self, lb_repo, created_user):
-        assert await lb_repo.award_badge(created_user, "top_1", "2026-W21")
+        assert await lb_repo.award_badge(created_user, "top_1", WEEK)
         assert await lb_repo.award_badge(created_user, "top_1", "2026-W22")
 
 
@@ -347,6 +354,116 @@ async def _get_coins(db, user_id):
     ) as c:
         row = await c.fetchone()
     return row["total_coins"] if row else 0
+
+
+class TestSegmentAnchor:
+    """
+    Сегмент newbie/main обязан считаться НА КОНЕЦ ранжируемой недели.
+    Rollover идёт во вторник за неделю, закончившуюся в воскресенье, —
+    по 'now' пользователь, бывший newbie всю неделю, к моменту раздачи
+    успевал стать main: «Прорыв недели» не доставался никому, а он сам
+    вклинивался в топ-3 основного сегмента.
+    """
+
+    @staticmethod
+    async def _newbie_of_past_week(user_repo, lb_repo, db, uid, weeks_ago=3):
+        """
+        Пользователь, который был newbie в течение недели `weeks_ago`
+        назад, но давно перерос порог к сегодняшнему дню.
+        Возвращает (week_iso, week_end).
+        """
+        monday = datetime.now() - timedelta(days=datetime.now().isoweekday() - 1)
+        target = monday - timedelta(weeks=weeks_ago)
+        week_iso = target.strftime("%G-W%V")
+        week_end = week_end_utc(week_iso)
+        # Зарегистрирован за 5 дней до конца той недели → newbie тогда,
+        # но «сейчас» ему уже больше трёх недель → main.
+        created = datetime.strptime(week_end, "%Y-%m-%d %H:%M:%S") - timedelta(days=5)
+        await user_repo.create_user(uid)
+        await db.execute(
+            "UPDATE users SET created_at=? WHERE user_id=?",
+            (created.strftime("%Y-%m-%d %H:%M:%S"), uid),
+        )
+        await db.commit()
+        await _grant(lb_repo, uid, task=100, week_iso=week_iso)
+        return week_iso, week_end
+
+    async def test_same_user_flips_segment_with_anchor(
+        self, lb_repo, user_repo, db
+    ):
+        """Один и тот же пользователь: по концу недели — newbie, по 'now' — main."""
+        week_iso, week_end = await self._newbie_of_past_week(
+            user_repo, lb_repo, db, 1
+        )
+
+        as_week_end = await lb_repo.get_ranked_segment(
+            week_iso, "newbie", exclude_hidden=False, as_of=week_end
+        )
+        assert [r["user_id"] for r in as_week_end] == [1]
+
+        # Без якоря (поведение до фикса) он уже main — и в newbie не попадает.
+        as_now = await lb_repo.get_ranked_segment(
+            week_iso, "newbie", exclude_hidden=False
+        )
+        assert as_now == []
+        assert [
+            r["user_id"]
+            for r in await lb_repo.get_ranked_segment(
+                week_iso, "main", exclude_hidden=False
+            )
+        ] == [1]
+
+    async def test_rollover_awards_breakthrough_by_week_end(
+        self, lb_service, lb_repo, user_repo, db
+    ):
+        """
+        Итог для пользователя: он всю неделю соревновался среди новичков
+        и обязан получить «Прорыв недели», а не top_1 основного сегмента.
+        """
+        week_iso, _ = await self._newbie_of_past_week(user_repo, lb_repo, db, 1)
+
+        await lb_service.run_rollover(week_iso)
+
+        badges = {b["badge_id"] for b in await lb_repo.get_active_badges(1)}
+        assert "breakthrough" in badges, "newbie-приз ушёл мимо"
+        assert "top_1" not in badges, "попал в основной сегмент вместо newbie"
+
+    async def test_live_view_still_uses_now(self, lb_repo, user_repo, db):
+        """
+        as_of=None — дефолт: живой /leaderboard по-прежнему показывает
+        сегмент на текущий момент, поведение не изменилось.
+        """
+        await _make_user(user_repo, db, 1, age_days=2)    # newbie сейчас
+        await _make_user(user_repo, db, 2, age_days=30)   # main сейчас
+        await _grant(lb_repo, 1, task=100)
+        await _grant(lb_repo, 2, task=100)
+
+        newbies = await lb_repo.get_ranked_segment(WEEK, "newbie")
+        mains = await lb_repo.get_ranked_segment(WEEK, "main")
+        assert [r["user_id"] for r in newbies] == [1]
+        assert [r["user_id"] for r in mains] == [2]
+
+    async def test_threshold_lives_in_one_constant(self):
+        """Порог не должен снова расползтись копиями по SQL и сервису."""
+        assert LeaderboardRepository.NEWBIE_MAX_AGE_DAYS == 7
+
+
+class TestWeekEndUtc:
+    def test_returns_sunday_end_of_day(self):
+        # 2026-W37 — неделя с понедельника 2026-09-07 по воскресенье 13-е.
+        assert week_end_utc("2026-W37") == "2026-09-13 23:59:59"
+
+    def test_week_one_handles_year_boundary(self):
+        assert week_end_utc("2026-W01") == "2026-01-04 23:59:59"
+
+    def test_malformed_input_returns_none(self):
+        for bad in ("", "мусор", "2026-W99", "2026", None):
+            assert week_end_utc(bad) is None
+
+    def test_format_matches_created_at(self):
+        """Строка обязана сравниваться с users.created_at через julianday()."""
+        value = week_end_utc("2026-W37")
+        datetime.strptime(value, "%Y-%m-%d %H:%M:%S")  # не бросит — формат тот же
 
 
 class TestRunRollover:

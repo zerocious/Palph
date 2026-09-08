@@ -1422,6 +1422,11 @@ class LeaderboardRepository:
     dependency (services уже импортирует repository).
     """
 
+    # Граница сегментов newbie/main (LEADERBOARD.md §Segments).
+    # Одна константа на весь код: раньше «7» было зашито трижды — дважды
+    # в SQL get_ranked_segment и ещё раз в резолве сегмента на сервисе.
+    NEWBIE_MAX_AGE_DAYS = 7
+
     def __init__(self, db: aiosqlite.Connection):
         self.db = db
         import logging
@@ -1430,6 +1435,16 @@ class LeaderboardRepository:
     # ------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------
+    @staticmethod
+    def _now_in_tz(tz_name: str | None):
+        """datetime.now() в указанном TZ; Europe/Moscow при неизвестном."""
+        import pytz
+        from datetime import datetime
+        try:
+            return datetime.now(pytz.timezone(tz_name or "Europe/Moscow"))
+        except pytz.UnknownTimeZoneError:
+            return datetime.now(pytz.timezone("Europe/Moscow"))
+
     async def _now_local_for_user(self, user_id: int):
         """
         datetime.now() в локальном TZ пользователя (из users.timezone).
@@ -1437,17 +1452,30 @@ class LeaderboardRepository:
         Используется grant_-методами, когда caller не передал now_local
         явно. Тесты обычно передают свой now_local для детерминизма.
         """
-        import pytz
-        from datetime import datetime
         async with self.db.execute(
             "SELECT timezone FROM users WHERE user_id=?", (user_id,)
         ) as c:
             row = await c.fetchone()
-        tz_name = row["timezone"] if row else "Europe/Moscow"
-        try:
-            return datetime.now(pytz.timezone(tz_name))
-        except pytz.UnknownTimeZoneError:
-            return datetime.now(pytz.timezone("Europe/Moscow"))
+        return self._now_in_tz(row["timezone"] if row else None)
+
+    async def now_local_and_age_days(self, user_id: int) -> tuple:
+        """
+        (now_local, age_days) одним запросом.
+
+        И TZ, и возраст аккаунта лежат в одной строке users, а
+        render_leaderboard раньше читал их двумя отдельными SELECT'ами по
+        одному и тому же user_id. Возвращает (now_local, None), если
+        пользователя нет.
+        """
+        async with self.db.execute(
+            "SELECT timezone, (julianday('now') - julianday(created_at)) AS age_days "
+            "FROM users WHERE user_id=?",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+        if row is None:
+            return self._now_in_tz(None), None
+        return self._now_in_tz(row["timezone"]), row["age_days"]
 
     async def _ensure_rows(self, user_id: int, local_date: str, week_iso: str) -> None:
         """INSERT OR IGNORE для daily + weekly строк текущего дня/недели."""
@@ -1694,6 +1722,7 @@ class LeaderboardRepository:
         segment: str,
         *,
         exclude_hidden: bool = True,
+        as_of: str | None = None,
     ) -> list:
         """
         Возвращает список dict'ов всех пользователей в сегменте, отсортированный
@@ -1701,9 +1730,17 @@ class LeaderboardRepository:
           user_id, username, time_pts, task_pts, quiz_pts, card_pts,
           current_streak, multiplier, total_base, total_final, hidden
 
-        segment ∈ {'newbie', 'main'}.
-        - newbie: julianday(now) - julianday(u.created_at) < 7
-        - main:   julianday(now) - julianday(u.created_at) >= 7
+        segment ∈ {'newbie', 'main'}:
+        - newbie: возраст аккаунта < NEWBIE_MAX_AGE_DAYS на момент `as_of`
+        - main:   возраст >= NEWBIE_MAX_AGE_DAYS на момент `as_of`
+
+        `as_of` — 'YYYY-MM-DD HH:MM:SS' (UTC), момент, НА КОТОРЫЙ считается
+        возраст аккаунта. None = сейчас (живой показ /leaderboard).
+        run_rollover обязан передавать конец ранжируемой недели: он
+        запускается во вторник за неделю, закончившуюся в воскресенье, и
+        по 'now' пользователь, бывший newbie всю неделю, к моменту раздачи
+        успевал стать main — приз «Прорыв недели» уходил не тому или
+        никому, а сам он вклинивался в топ-3 основного сегмента.
 
         Сортировка — в Python, после применения streak_multiplier; SQL-side
         ORDER BY total_base некорректен из-за multiplier'а (1.20× для 14+
@@ -1713,10 +1750,11 @@ class LeaderboardRepository:
         видеть свою позицию.
         """
         from services import streak_multiplier
+        anchor = "julianday('now')" if as_of is None else "julianday(?)"
         if segment == "newbie":
-            seg_cond = "julianday('now') - julianday(u.created_at) < 7"
+            seg_cond = f"{anchor} - julianday(u.created_at) < {self.NEWBIE_MAX_AGE_DAYS}"
         elif segment == "main":
-            seg_cond = "julianday('now') - julianday(u.created_at) >= 7"
+            seg_cond = f"{anchor} - julianday(u.created_at) >= {self.NEWBIE_MAX_AGE_DAYS}"
         else:
             raise ValueError(f"Unknown segment: {segment!r}")
         hide_cond = "AND u.hidden_from_leaderboards = 0" if exclude_hidden else ""
@@ -1728,7 +1766,9 @@ class LeaderboardRepository:
             "JOIN users u ON ws.user_id = u.user_id "
             f"WHERE ws.week_iso = ? AND {seg_cond} {hide_cond}"
         )
-        async with self.db.execute(sql, (week_iso,)) as c:
+        # Порядок параметров = порядок '?' в тексте: week_iso, затем as_of.
+        params = (week_iso,) if as_of is None else (week_iso, as_of)
+        async with self.db.execute(sql, params) as c:
             rows = await c.fetchall()
 
         result = []
