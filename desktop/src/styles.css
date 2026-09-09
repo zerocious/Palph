@@ -1,0 +1,385 @@
+/*
+ * Тема приложения. Палитра держится на оранжевом акценте питомца;
+ * светлая и тёмная задаются токенами, а не отдельными правилами, —
+ * так экран не «разъезжается» при смене темы системы.
+ */
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f4f1;
+  --bg-card: #ffffff;
+  --bg-inset: #f1eeea;
+  --border: #e3ded7;
+  --text: #1c1a17;
+  --text-dim: #6f675e;
+  --accent: #e8823a;
+  --accent-soft: #fbe9dc;
+  --accent-text: #ffffff;
+  --success: #3f8f5c;
+  --danger: #c0453a;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(28, 26, 23, 0.06), 0 8px 24px rgba(28, 26, 23, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a;
+    --bg-card: #201f24;
+    --bg-inset: #282730;
+    --border: #33313b;
+    --text: #f2efe9;
+    --text-dim: #9a938c;
+    --accent: #f0913f;
+    --accent-soft: #3a2a1c;
+    --accent-text: #17161a;
+    --success: #6cc08a;
+    --danger: #e0685c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.3);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  transition: filter 0.15s ease, background 0.15s ease;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  width: 100%;
+  user-select: text;
+}
+
+input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen {
+  flex: 1;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.error {
+  color: var(--danger);
+}
+
+/* --- Экран привязки --------------------------------------------------- */
+.link-screen {
+  justify-content: center;
+  max-width: 420px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.link-screen h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.link-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.link-steps code {
+  color: var(--text);
+  background: var(--bg-inset);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.code-input {
+  font-size: 22px;
+  letter-spacing: 4px;
+  text-align: center;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 12px 16px;
+  font-weight: 600;
+}
+
+.ghost-button {
+  background: transparent;
+  color: var(--text-dim);
+  padding: 8px 12px;
+}
+
+.ghost-button:hover {
+  background: var(--bg-inset);
+}
+
+.advanced-toggle {
+  align-self: flex-start;
+  background: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 4px 0;
+  text-decoration: underline dotted;
+}
+
+/* --- Главный экран ---------------------------------------------------- */
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.pet-image {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--bg-inset);
+  flex-shrink: 0;
+}
+
+.pet-placeholder {
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+}
+
+.profile-name {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.stat {
+  background: var(--bg-inset);
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+}
+
+.stat-value {
+  display: block;
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* --- Таймер ----------------------------------------------------------- */
+.timer-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.countdown {
+  font-size: 52px;
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 2px;
+  line-height: 1;
+}
+
+.countdown.idle {
+  color: var(--text-dim);
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-inset);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 1s linear;
+}
+
+.duration-picker {
+  display: flex;
+  gap: 8px;
+}
+
+.duration-option {
+  background: var(--bg-inset);
+  color: var(--text);
+  padding: 8px 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.duration-option.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.timer-result {
+  color: var(--success);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* --- Достижения ------------------------------------------------------- */
+.section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  margin: 4px 0 0;
+}
+
+.achievements {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.achievement {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.achievement-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--bg-inset);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.achievement.done .achievement-icon {
+  background: var(--accent-soft);
+}
+
+.achievement-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.achievement-name {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.achievement.pending .achievement-name {
+  color: var(--text-dim);
+}
+
+.achievement-progress {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Подвал ----------------------------------------------------------- */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.banner {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.center-note {
+  margin: auto;
+  color: var(--text-dim);
+}
