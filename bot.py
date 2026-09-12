@@ -8113,7 +8113,15 @@ async def main():
             bot_module=sys.modules[__name__],
         )
     dp.include_router(router)
-    streak_service = StreakService(user_repo, bot, leaderboard_repo=leaderboard_repo)
+    streak_service = StreakService(
+        user_repo, bot,
+        leaderboard_repo=leaderboard_repo,
+        # Стрик-ачивки выдаются в момент ночного инкремента, а не на
+        # следующей сессии пользователя (иначе «Огненный» за 3 дня не
+        # приходил тому, кто остановился ровно на трёх днях).
+        achievement_service=ach_service,
+        achievement_notifier=send_achievement_notification,
+    )
     reminder_service = ReminderService(
         user_repo, bot,
         morning_tip_builder=build_morning_tip_block,

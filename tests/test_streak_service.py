@@ -237,3 +237,158 @@ class TestStreakFreezeIntegration:
         await streak_service_with_freeze.process_users_in_timezone("Europe/Moscow")
         u = await user_repo.get_user(uid)
         assert u["current_streak"] == 0
+
+
+# ============================================================
+# Стрик-ачивки выдаются в момент инкремента, а не на следующей сессии
+# ============================================================
+@pytest_asyncio.fixture
+async def streak_service_with_achievements(user_repo, achievements_catalog):
+    """StreakService с AchievementService и записывающим нотифаером."""
+    from services import AchievementService
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    notified: list = []
+
+    async def notifier(user_id, ach_ids):
+        notified.append((user_id, list(ach_ids)))
+
+    svc = StreakService(
+        user_repo,
+        bot=bot,
+        achievement_service=AchievementService(user_repo, achievements_catalog),
+        achievement_notifier=notifier,
+    )
+    svc._notified = notified
+    return svc
+
+
+async def _study_day(user_repo, svc, uid):
+    """Один «день»: пользователь позанимался, ночью отработал планировщик."""
+    await user_repo.set_has_studied_today(uid, True)
+    await svc.process_all_users()
+
+
+async def _completed_ids(user_repo, uid):
+    async with user_repo.db.execute(
+        "SELECT achievement_id FROM user_achievements "
+        "WHERE user_id=? AND completed=1",
+        (uid,),
+    ) as c:
+        return {r["achievement_id"] for r in await c.fetchall()}
+
+
+class TestStreakAchievements:
+    async def test_awarded_on_the_day_streak_is_reached(
+        self, user_repo, created_user, streak_service_with_achievements
+    ):
+        """
+        Три дня подряд → «Огненный» приходит на третий день, а не на
+        следующей сессии. Раньше единственной проверкой была
+        complete_session, куда попадал current_streak ДО инкремента.
+        """
+        svc = streak_service_with_achievements
+        for _ in range(2):
+            await _study_day(user_repo, svc, created_user)
+        assert "3_day_streak" not in await _completed_ids(user_repo, created_user)
+
+        await _study_day(user_repo, svc, created_user)
+
+        user = await user_repo.get_user(created_user)
+        assert user["current_streak"] == 3
+        assert "3_day_streak" in await _completed_ids(user_repo, created_user)
+
+    async def test_user_who_stops_at_three_still_gets_it(
+        self, user_repo, created_user, streak_service_with_achievements
+    ):
+        """Ключевой сценарий: больше сессий не будет — ачивка всё равно выдана."""
+        svc = streak_service_with_achievements
+        for _ in range(3):
+            await _study_day(user_repo, svc, created_user)
+        # Пользователь пропал: больше ни одной сессии.
+        assert "3_day_streak" in await _completed_ids(user_repo, created_user)
+
+    async def test_bonus_coins_credited(
+        self, user_repo, created_user, streak_service_with_achievements, achievements_catalog
+    ):
+        svc = streak_service_with_achievements
+        before = (await user_repo.get_user(created_user))["total_coins"]
+        for _ in range(3):
+            await _study_day(user_repo, svc, created_user)
+        after = (await user_repo.get_user(created_user))["total_coins"]
+        reward = achievements_catalog["3_day_streak"]["reward"]
+        streak_bonuses = 15 * 2  # бонус за стрик со 2-го дня, два раза
+        assert after - before == reward + streak_bonuses
+
+    async def test_user_is_notified(
+        self, user_repo, created_user, streak_service_with_achievements
+    ):
+        svc = streak_service_with_achievements
+        for _ in range(3):
+            await _study_day(user_repo, svc, created_user)
+        assert (created_user, ["3_day_streak"]) in svc._notified
+
+    async def test_not_awarded_twice(
+        self, user_repo, created_user, streak_service_with_achievements
+    ):
+        """Идемпотентность: на 4-й и 5-й день ачивка не выдаётся повторно."""
+        svc = streak_service_with_achievements
+        for _ in range(5):
+            await _study_day(user_repo, svc, created_user)
+        awards = [n for n in svc._notified if "3_day_streak" in n[1]]
+        assert len(awards) == 1
+
+    async def test_progress_tracked_before_completion(
+        self, user_repo, created_user, streak_service_with_achievements
+    ):
+        """До порога у ачивки обновляется прогресс, а не пустота."""
+        svc = streak_service_with_achievements
+        await _study_day(user_repo, svc, created_user)
+        async with user_repo.db.execute(
+            "SELECT progress, target, completed FROM user_achievements "
+            "WHERE user_id=? AND achievement_id='3_day_streak'",
+            (created_user,),
+        ) as c:
+            row = await c.fetchone()
+        assert row is not None, "прогресс стрик-ачивки не записан"
+        assert row["progress"] == 1 and row["target"] == 3 and not row["completed"]
+
+    async def test_concurrent_awards_credit_coins_once(
+        self, user_repo, created_user, achievements_catalog
+    ):
+        """
+        «Не выдано → выдать» — read-modify-write, поэтому ночная
+        обработка берёт db.lock, как и complete_session. Без него сессия,
+        завершённая ровно в момент ночного прогона, начисляла бы бонусные
+        монеты за одну ачивку дважды: сам бейдж защищён ON CONFLICT,
+        монеты — нет. Проверено: без лока 4 параллельные проверки дают
+        4 выдачи и 200 монет вместо 50.
+        """
+        import asyncio
+
+        from services import AchievementService
+
+        ach = AchievementService(user_repo, achievements_catalog)
+
+        async def award():
+            async with user_repo.db.lock:
+                earned, bonus = await ach.check_streak_awards(created_user, 3)
+                if bonus:
+                    await user_repo.add_coins(created_user, bonus)
+            return earned
+
+        before = (await user_repo.get_user(created_user))["total_coins"]
+        results = await asyncio.gather(*(award() for _ in range(4)))
+        gained = (await user_repo.get_user(created_user))["total_coins"] - before
+
+        assert sum(1 for r in results if "3_day_streak" in r) == 1
+        assert gained == achievements_catalog["3_day_streak"]["reward"]
+
+    async def test_works_without_achievement_service(
+        self, user_repo, created_user, streak_service
+    ):
+        """Сервис опционален — без него ночная обработка работает как раньше."""
+        for _ in range(3):
+            await _study_day(user_repo, streak_service, created_user)
+        assert (await user_repo.get_user(created_user))["current_streak"] == 3

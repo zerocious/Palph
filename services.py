@@ -356,6 +356,47 @@ class AchievementService:
         await self._update_progress(user_id, ach_id, progress=tips_views, target=target)
         return [], 0
 
+    # Стрик-ачивки: порог в днях → id. Проверяются отдельно от
+    # check_and_award, потому что стрик растёт НЕ в момент сессии, а
+    # ночью в StreakService (см. check_streak_awards).
+    STREAK_ACHIEVEMENTS: tuple = (
+        (3, "3_day_streak"),
+        (7, "7_day_streak"),
+        (14, "14_day_streak"),
+    )
+
+    async def check_streak_awards(self, user_id: int, streak: int) -> tuple[list, int]:
+        """
+        Ачивки за стрик по УЖЕ обновлённому значению current_streak.
+
+        Вызывается из StreakService сразу после ночного инкремента.
+        Раньше единственной точкой проверки была complete_session, куда
+        приходил current_streak ДО инкремента: «Огненный» за 3 дня не
+        срабатывал на третий день, а если пользователь останавливался
+        ровно на трёх днях — не срабатывал никогда.
+
+        Награждать раньше, на самой сессии, нельзя: профиль показывает
+        current_streak, то есть «2 дн.» в момент третьей сессии, и
+        ачивка «за 3 дня» противоречила бы тому, что видит пользователь.
+        """
+        user_achievements = await self._load_user_achievements(user_id)
+        earned: list = []
+        bonus = 0
+        for target, ach_id in self.STREAK_ACHIEVEMENTS:
+            if ach_id not in self.definitions:
+                continue
+            if self._is_completed(user_achievements, ach_id):
+                continue
+            if streak >= target:
+                await self._complete_achievement(user_id, ach_id, target=target)
+                earned.append(ach_id)
+                bonus += self._get_reward(ach_id)
+            else:
+                await self._update_progress(
+                    user_id, ach_id, progress=streak, target=target
+                )
+        return earned, bonus
+
     def _get_reward(self, ach_id: str) -> int:
         return self.definitions[ach_id]["reward"]
 
@@ -1051,6 +1092,8 @@ class StreakService:
         user_repo: UserRepository,
         bot=None,
         leaderboard_repo=None,  # type: LeaderboardRepository | None
+        achievement_service=None,  # type: AchievementService | None
+        achievement_notifier=None,
     ):
         self.user_repo = user_repo
         self.bot = bot  # опционально, для отправки уведомлений
@@ -1058,6 +1101,13 @@ class StreakService:
         # пытается consume freeze (LEADERBOARD.md §Streak Freeze) и только
         # потом ресетит стрик. Без него — поведение как до Phase 3.
         self.leaderboard_repo = leaderboard_repo
+        # achievement_service опционален: если передан, стрик-ачивки
+        # выдаются в момент инкремента, а не на следующей сессии.
+        self.achievement_service = achievement_service
+        # async (user_id, [ach_id, ...]) -> None. Берём готовый нотифаер
+        # бота, а не рендерим сообщение здесь: он уже учитывает настройку
+        # achievements_enabled, локаль и каталог достижений.
+        self.achievement_notifier = achievement_notifier
 
     async def process_users_in_timezone(self, tz: str):
         """
@@ -1125,6 +1175,45 @@ class StreakService:
                         )
                 incremented += 1
                 bonuses_total += bonus
+
+                # Стрик-ачивки — здесь, а не в complete_session: именно
+                # сейчас current_streak достиг нового значения.
+                #
+                # Под db.lock, как и в complete_session: проверка «не
+                # выдано → выдать» — это read-modify-write, и сессия,
+                # завершённая ровно в момент ночной обработки, иначе
+                # начислила бы бонусные монеты за одну ачивку дважды
+                # (сам бейдж защищён ON CONFLICT, монеты — нет).
+                ach_earned: list = []
+                if self.achievement_service is not None:
+                    try:
+                        async with self.user_repo.db.lock:
+                            ach_earned, ach_bonus = (
+                                await self.achievement_service.check_streak_awards(
+                                    user_id, new_streak
+                                )
+                            )
+                            if ach_bonus:
+                                await self.user_repo.add_coins(user_id, ach_bonus)
+                    except Exception as e:
+                        # Ачивка — вспомогательный flow; её сбой не должен
+                        # ронять ночную обработку стриков остальных юзеров.
+                        ach_earned = []
+                        logger.warning(
+                            "streak.achievement_check_failed user_id=%s reason=%s",
+                            user_id, type(e).__name__,
+                        )
+
+                # Уведомление — ВНЕ лока: держать его ради сетевого
+                # вызова к Telegram не нужно (ср. _notify_level_up).
+                if ach_earned and self.achievement_notifier is not None:
+                    try:
+                        await self.achievement_notifier(user_id, ach_earned)
+                    except Exception as e:
+                        logger.warning(
+                            "streak.achievement_notify_failed user_id=%s reason=%s",
+                            user_id, type(e).__name__,
+                        )
 
                 # Уведомление (если передан bot)
                 if self.bot and bonus > 0:
