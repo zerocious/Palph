@@ -1,4 +1,5 @@
 # repository.py
+import hashlib
 import json
 import math
 
@@ -684,6 +685,21 @@ class TipsRepository:
         ) as cursor:
             return await cursor.fetchone() is not None
 
+    @staticmethod
+    def _tip_of_day_index(user_id: int, local_date: str, tips_count: int) -> int:
+        """
+        Детерминированный индекс совета дня для (пользователь, дата).
+
+        Именно md5, а не встроенный hash(): хеш строк в CPython
+        рандомизирован per-process (PYTHONHASHSEED), поэтому один и тот
+        же (user_id, local_date) давал в разных запусках разный совет —
+        выбор нельзя было ни воспроизвести, ни объяснить, а тест на
+        «разные даты → разные советы» падал с вероятностью 1/N.
+        Тот же приём уже используется для card_hash / question_hash.
+        """
+        digest = hashlib.md5(f"{user_id}:{local_date}".encode("utf-8")).hexdigest()
+        return int(digest, 16) % tips_count
+
     async def resolve_tip_of_day(
         self,
         user_id: int,
@@ -706,7 +722,7 @@ class TipsRepository:
                 if stored:
                     return stored
 
-            pick = all_tips[hash(f"{user_id}:{local_date}") % len(all_tips)]
+            pick = all_tips[self._tip_of_day_index(user_id, local_date, len(all_tips))]
             tip_id = pick["id"]
             if row:
                 await self.db.execute(

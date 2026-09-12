@@ -58,12 +58,68 @@ class TestContextualTags:
 
 class TestTipOfDay:
     async def test_stable_per_calendar_day(self, tips_repo, created_user):
+        """Контракт: в пределах одного дня совет не меняется."""
         tips = bot._all_tips_flat()
         d1 = await tips_repo.resolve_tip_of_day(created_user, "2026-05-22", tips)
         d2 = await tips_repo.resolve_tip_of_day(created_user, "2026-05-22", tips)
-        d3 = await tips_repo.resolve_tip_of_day(created_user, "2026-05-23", tips)
         assert d1["id"] == d2["id"]
-        assert d1["id"] != d3["id"] or len(tips) == 1
+
+    async def test_tip_changes_across_days(self, tips_repo, created_user):
+        """
+        За неделю совет обязан смениться хотя бы раз. Раньше здесь
+        сравнивались ровно две соседние даты — но «разные даты → разные
+        советы» дизайном не гарантировано (это 1/N на пару), так что
+        проверка была верна лишь по случайности выбранных дат.
+        """
+        tips = bot._all_tips_flat()
+        picked = {
+            (await tips_repo.resolve_tip_of_day(created_user, f"2026-05-{d}", tips))["id"]
+            for d in range(22, 29)
+        }
+        assert len(picked) > 1 or len(tips) == 1
+
+    def test_index_is_deterministic_in_process(self):
+        n = len(bot._all_tips_flat())
+        first = TipsRepository._tip_of_day_index(7, "2026-05-22", n)
+        assert all(
+            TipsRepository._tip_of_day_index(7, "2026-05-22", n) == first
+            for _ in range(5)
+        )
+
+    def test_index_is_stable_across_processes(self):
+        """
+        Главная регрессия: выбор строился на встроенном hash(), а хеш
+        строк в CPython рандомизирован per-process (PYTHONHASHSEED).
+        Один и тот же (пользователь, дата) давал разный совет в разных
+        запусках, и тест «разные даты → разные советы» падал случайно.
+        """
+        import os
+        import subprocess
+        import sys
+
+        n = len(bot._all_tips_flat())
+        expected = TipsRepository._tip_of_day_index(7, "2026-05-22", n)
+
+        results = set()
+        for seed in ("0", "1", "12345"):
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            out = subprocess.run(
+                [
+                    sys.executable, "-c",
+                    "from repository import TipsRepository as T;"
+                    f"print(T._tip_of_day_index(7, '2026-05-22', {n}))",
+                ],
+                capture_output=True, text=True, env=env, check=True,
+            )
+            results.add(int(out.stdout.strip()))
+
+        assert results == {expected}, f"выбор зависит от процесса: {results}"
+
+    def test_index_within_range(self):
+        for n in (1, 2, 47, 1000):
+            for uid in (0, 1, 999999):
+                idx = TipsRepository._tip_of_day_index(uid, "2026-05-22", n)
+                assert 0 <= idx < n
 
 
 class TestBotGuideCategory:
