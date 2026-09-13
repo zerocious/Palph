@@ -10,4 +10,7 @@ pandas>=2.0,<3
 matplotlib>=3.8,<4
 jupyter>=1.0,<2
 # Asset build script only (scripts/build_pet_assets.py) — pin for CVE tracking.
-Pillow>=10.4,<12
+# Нижняя граница 12.3: в 11.x и старше висят 25 уязвимостей (PYSEC-2026-2253,
+# -2255, -2256, -3451, -3453, -3454, -3493..-3496 и др.), из-за которых
+# падал шаг «Audit dev deps» в .github/workflows/security.yml.
+Pillow>=12.3,<13

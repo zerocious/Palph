@@ -1,5 +1,13 @@
 name: Security audit
 
+# Файл переименован из security.yml намеренно. GitHub отключает workflow
+# после 60 дней неактивности репозитория (тот оказался в состоянии
+# disabled_inactivity с 3 августа и не запускался ни по расписанию, ни на
+# PR), а включить его обратно можно только руками в UI: API даёт на
+# workflow_dispatch «Cannot trigger a workflow_dispatch on a disabled
+# workflow». Workflow опознаётся по пути файла, поэтому новый путь — это
+# новый workflow, и он создаётся включённым. Содержимое не менялось.
+#
 # Сканируем зависимости на known CVEs через pip-audit:
 #   - раз в неделю автоматически (понедельник 07:00 UTC)
 #   - вручную через workflow_dispatch
