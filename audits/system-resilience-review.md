@@ -1,6 +1,19 @@
 # System Resilience Review — Palph (Telegram bot, aiogram 3)
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-05 (pytest suite **804** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-13 (pytest suite **807** tests).
+
+## Статус находок на 2026-09-13
+
+Часть находок этого обзора закрыта в коде уже после его написания.
+Колонка «признак в коде» проверяется автоматически
+(`scripts/check_docs.py` → `check_audit_status`).
+
+| Находка | Статус | Признак в коде |
+|---------|--------|----------------|
+| Нет таймаута для вызовов Telegram | ✅ решено | `AiohttpSession(timeout=TELEGRAM_TIMEOUT)` |
+| Нет `PRAGMA busy_timeout` | ✅ решено | `PRAGMA busy_timeout` |
+| Нет retry на `database is locked` | ✅ решено | `async def execute_with_db_retry` |
+| Нет bulkhead на исходящие отправки | ✅ решено | `_TELEGRAM_SEND_SEM` |
 
 **Date:** 2026-05-24  
 **Scope:** Timeout handling, retry/backoff, circuit breaking, bulkhead/isolation, graceful degradation  

@@ -41,6 +41,9 @@ CHECKS = [
     CHECKER.check_content,
     CHECKER.check_feature_flags,
     CHECKER.check_commands,
+    CHECKER.check_audit_status,
+    CHECKER.check_feature_usage,
+    CHECKER.check_doc_sync_dates,
     CHECKER.check_balance_constants,
 ]
 

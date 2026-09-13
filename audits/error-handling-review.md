@@ -1,10 +1,48 @@
 # Error-Handling Review — Palph (Telegram bot, aiogram 3)
 
-**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-05 (Palph v0.8, pytest suite **804** tests)
+**Audit date:** 2026-05-22 · **Doc sync:** 2026-09-13 (Palph v0.8, pytest suite **807** tests)
 
 > Ссылки вида `bot.py:1234` — номера строк **на дату аудита**; с тех пор код
 > сдвинулся, ищите по имени функции. Оформлены как код, а не как ссылки,
 > именно поэтому.
+
+## Статус находок на 2026-09-13
+
+Аудит писался 2026-05-22; часть находок с тех пор **закрыта в коде**, но
+текст ниже по-прежнему описывает их как проблемы. Таблица — источник
+правды о том, что действительно осталось. Колонка «признак в коде» —
+конкретный символ, по которому статус проверяется автоматически
+(`scripts/check_docs.py`, проверка `check_audit_status`), поэтому таблица
+не может протухнуть незаметно.
+
+| Находка | Статус | Признак в коде |
+|---------|--------|----------------|
+| 1.1 Нет централизованного обработчика ошибок | ✅ решено | `@router.errors()` |
+| 1.2 Нет иерархии исключений (`errors.py`) | 🔴 открыто | `class PalphError` |
+| 1.3 Непоследовательное логирование ошибок | 🟡 частично | — |
+| 1.4 `except Exception: pass` в 8+ местах | 🟡 частично | — |
+| 2.1 Не обрабатывается `TelegramRetryAfter` | ✅ решено | `except TelegramRetryAfter` |
+| 2.2 «message is not modified» ловится как общий `Exception` | 🔴 открыто | `not modified` |
+| 2.3 Нет хелпера/декоратора авторизации | 🔴 открыто | `def require_admin` |
+| 3.1 Фоновые задачи без `add_done_callback` | ✅ решено | `add_done_callback(_log_task_exception)` |
+| 3.2 `asyncio.run(main())` без обработки исключений | 🔴 открыто | `except KeyboardInterrupt` |
+| 3.3 `start_polling` без graceful shutdown | ✅ решено | `logger.info("app.shutdown")` |
+| 3.4 Middleware не поднимает ошибки `username_sync` | 🔴 открыто | `username_sync_failed` |
+| 4.1 Нет retry/back-off для Telegram | ✅ решено | `async def _send_with_retry_after` |
+| 4.2 Нет circuit breaker | ✅ решено | `class TelegramSendBreaker` |
+| 5.1 Имя и текст исключения утекают в админский UI | 🔴 открыто | `Подробности в bot.log` |
+| 5.2 Нет разделения dev/prod по многословности ошибок | 🔴 открыто | `LOG_VERBOSE_ERRORS` |
+| 5.4 Корневой логгер не настроен | 🔴 открыто | `logging.basicConfig` |
+
+Как читать: **✅ решено** — признак в коде присутствует, текст находки ниже
+исторический; **🔴 открыто** — признака нет, находка актуальна;
+**🟡 частично** — точечной проверки нет, смотрите текст.
+
+Соглашение о колонке: признак — это **всегда то, что появится в коде,
+когда находку закроют** (символ решения, а не симптом проблемы). Иначе
+проверка получилась бы с перевёрнутой логикой для половины строк — на
+этом я и споткнулся, когда первым признаком для 5.1 поставил сам
+протекающий формат строки.
 **Reviewer:** Claude (Opus 4.7)
 **Branch / HEAD:** `main` @ `aa7071c`
 **Scope:** `bot.py`, `services.py`, `repository.py`, `tasks.py`, `db.py`, `fsm_storage.py`, `i18n.py`, `locale_bot.py`
@@ -621,7 +659,7 @@ await _telegram_call_with_retry(
 **Severity: 3/10 — Unable to verify need**
 
 I don't see evidence this bot has scaled to a size where a circuit breaker
-adds value (no caching of failed `chat_id`s, no batch sender). At ~804 tests
+adds value (no caching of failed `chat_id`s, no batch sender). At ~807 tests
 and presumably <1000 users (per the README description of "<100 пользователей"
 heuristic in `bot.py:170`), the simpler retry from 4.1 is enough.
 Flagged only because the audit brief asked.

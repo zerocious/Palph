@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,12 +63,47 @@ MUTATIONS: list[Mutation] = [
     ("structure", "незакрытый блок кода", "docs/i18n.md",
      "## Локаль пользователя", "```python\n## Локаль пользователя", "разметка"),
 
+    # --- даты сверки и пины на коммит ---
+    # {DATE} подставляется из шапки самого файла — мутация не рассыпается
+    # при следующем обновлении Doc sync.
+    ("structure", "Doc sync откатили назад", "docs/testing.md",
+     "**Doc sync:** {DATE}", "**Doc sync:** 2026-05-01", "Doc sync не старше"),
+    ("structure", "Doc sync поставили в будущее", "docs/glossary.md",
+     "**Doc sync:** {DATE}", "**Doc sync:** 2099-01-01", "Doc sync не в будущем"),
+    ("structure", "пин на коммит вернулся в шапку", "docs/architecture.md",
+     "> **Doc sync:** {DATE} ·", "> **Doc sync:** {DATE} · код на коммите `0ac30af` ·",
+     "пина на коммит"),
+
+    # --- фичи /feature_usage ---
+    ("structure", "фичу переименовали в коде", "services.py",
+     '("\U0001f43e Питомец создан"', '("\U0001f43e Питомец заведён"',
+     "фичи /feature_usage"),
+    ("structure", "счётчик фич разошёлся", "TODO.md",
+     "`/feature_usage` — 14 фич", "`/feature_usage` — 13 фич", "счётчик фич"),
+    ("structure", "порядок фич в примере перепутан", "admin_commands.md",
+     "\U0001f43e Питомец создан                    \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591  72.2% (13)\n"
+     "\U0001f465 \u22651 друг",
+     "\U0001f465 \u22651 друг                           \u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591  16.7% (3)\n"
+     "\U0001f43e Питомец создан",
+     "порядок фич"),
+
     # --- команды ---
     ("commands", "удалён раздел админ-команды", "admin_commands.md",
      "### `/backup` 👑 главный админ", "### `/backupX` 👑 главный админ",
      "раздел в admin_commands"),
     ("commands", "команда пикера без хендлера", "locale_bot.py",
      'BotCommand(command="pet"', 'BotCommand(command="petz"', "пикера существуют"),
+
+    # --- статус находок в аудитах ---
+    ("audits", "закрытая находка снова помечена открытой", "audits/error-handling-review.md",
+     "| 4.2 Нет circuit breaker | ✅ решено |", "| 4.2 Нет circuit breaker | 🔴 открыто |",
+     "статус находок"),
+    ("audits", "открытая находка помечена решённой", "audits/error-handling-review.md",
+     "| 1.2 Нет иерархии исключений (`errors.py`) | 🔴 открыто |",
+     "| 1.2 Нет иерархии исключений (`errors.py`) | ✅ решено |",
+     "статус находок"),
+    ("audits", "решение убрано из кода", "services.py",
+     "class TelegramSendBreaker:", "class TelegramSendBreakerRenamed:", "статус находок"),
 
     # --- числа баланса (мутация в КОДЕ, документ остаётся старым) ---
     ("constants", "MAX_TASK_ATTEMPTS", "bot.py",
@@ -110,7 +146,7 @@ def run_checker() -> tuple[int, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Мутационная проверка check_docs.py")
-    ap.add_argument("--group", choices=("structure", "commands", "constants"),
+    ap.add_argument("--group", choices=("structure", "commands", "audits", "constants"),
                     help="прогнать только одну группу")
     args = ap.parse_args()
 
@@ -129,6 +165,14 @@ def main() -> int:
         shutil.copy(path, backup)
         try:
             src = path.read_text(encoding="utf-8")
+            if "{DATE}" in old or "{DATE}" in new:
+                m = re.search(r"Doc sync[:*]*\s*\**\s*(\d{4}-\d{2}-\d{2})", src)
+                if m is None:
+                    print(f"[ЯКОРЬ УСТАРЕЛ] {group}/{desc}: нет Doc sync в {rel}")
+                    missed.append(desc)
+                    continue
+                old = old.replace("{DATE}", m.group(1))
+                new = new.replace("{DATE}", m.group(1))
             if old not in src:
                 print(f"[ЯКОРЬ УСТАРЕЛ] {group}/{desc}: не нашёл фрагмент в {rel}")
                 missed.append(desc)

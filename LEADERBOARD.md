@@ -4,8 +4,8 @@ Design spec for the weekly leaderboard. Source of truth for implementation
 across multiple slices. Edit this file, not the formula in code, when
 balancing changes.
 
-Version: v1.1 · **Doc sync:** 2026-09-05 (all phases shipped; verified
-against `services.py` / `repository.py` at commit `0ac30af`).
+Version: v1.1 · **Doc sync:** 2026-09-13 (all phases shipped; formula
+verified against `services.py` / `repository.py`).
 
 Implementation reference: [docs/features.md](docs/features.md) §6 (mechanics),
 [docs/data-model.md](docs/data-model.md) §Лидерборд (tables).

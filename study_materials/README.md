@@ -4,7 +4,7 @@ Palph v0.8 — data-driven discovery in `bot.py` (`available_subjects`, `availab
 
 Each subject lives in `study_materials/<subject_id>/`. The bot discovers subjects from folder names (see `SUBJECTS` in `bot.py`).
 
-**Doc sync:** 2026-09-05. Пошаговые рецепты наполнения — [../docs/content-authoring.md](../docs/content-authoring.md).
+**Doc sync:** 2026-09-13. Пошаговые рецепты наполнения — [../docs/content-authoring.md](../docs/content-authoring.md).
 
 ## Required for sprint exam plan
 

@@ -1,6 +1,6 @@
 # Prelaunch Export Checklist
 
-> Пройти **до публичного запуска**. **Doc sync:** 2026-09-05 (export **20** таблиц, schema v0.8 — сверено с `AnalyticsService.EXPORTABLE_TABLES`). Подтверждает, что PA-инфраструктура готова собирать данные. Таксономия событий — [../../docs/analytics.md](../../docs/analytics.md).
+> Пройти **до публичного запуска**. **Doc sync:** 2026-09-13 (export **20** таблиц, schema v0.8 — сверено с `AnalyticsService.EXPORTABLE_TABLES`). Подтверждает, что PA-инфраструктура готова собирать данные. Таксономия событий — [../../docs/analytics.md](../../docs/analytics.md).
 
 ## Автоматическая проверка
 

@@ -1,6 +1,6 @@
 # Math — высшая математика (схема Бернулли)
 
-**Doc sync:** 2026-09-05 · **71** text-only tasks in Palph v0.8 (`task-08` removed — duplicate of `task-06`); **36** tasks carry a pedagogical `hint` from `source/top3_tasks_etalon_1.md`. Counts re-verified against the files: `ls tasks/*.json | wc -l`, `grep -l '"hint"' tasks/*.json | wc -l`.
+**Doc sync:** 2026-09-13 · **71** text-only tasks in Palph v0.8 (`task-08` removed — duplicate of `task-06`); **36** tasks carry a pedagogical `hint` from `source/top3_tasks_etalon_1.md`. Counts re-verified against the files: `ls tasks/*.json | wc -l`, `grep -l '"hint"' tasks/*.json | wc -l`.
 
 ## Contents
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import datetime
 import json
 import os
 import re
@@ -234,6 +235,244 @@ def check_feature_flags() -> None:
             f"{name} = {value}" in arch,
             "значение флага изменилось — обнови таблицу «Выключенные фичи»",
         )
+
+
+# ---------------------------------------------------------------- аудиты
+def check_audit_status() -> None:
+    """
+    Таблицы «Статус находок» в аудитах — против кода, в обе стороны.
+
+    Аудиты писались в мае и с тех пор молча устарели: девять находок,
+    описанных как открытые проблемы («нет обработчика ошибок», «нет
+    circuit breaker», «нет busy_timeout»), давно закрыты в коде. Читатель
+    таких аудитов делает неверные выводы о состоянии проекта.
+
+    Строка «✅ решено» требует, чтобы признак в коде БЫЛ; «🔴 открыто» —
+    чтобы его НЕ БЫЛО. «🟡 частично» и прочерк пропускаются.
+    """
+    src = "".join(
+        read(f) for f in ("bot.py", "services.py", "repository.py", "db.py", "tasks.py")
+    )
+    rows_total = 0
+    wrong: list[str] = []
+    for doc in ("audits/error-handling-review.md", "audits/system-resilience-review.md"):
+        text = read(doc)
+        for status, marker in re.findall(
+            r"^\|[^|]+\| (✅ решено|🔴 открыто|🟡 частично) \| `?([^|`]+?)`? \|", text, re.M
+        ):
+            marker = marker.strip()
+            if status.startswith("🟡") or marker == "—":
+                continue
+            rows_total += 1
+            # Не голая подстрока: `class TelegramSendBreaker` иначе находится
+            # внутри `class TelegramSendBreakerRenamed`, и переименование
+            # решения проверка не заметит (та же ловушка, что с узкими
+            # классами символов в регулярках).
+            pat = re.escape(marker)
+            if re.match(r"\w", marker):
+                pat = r"(?<!\w)" + pat
+            if re.search(r"\w$", marker):
+                pat = pat + r"(?!\w)"
+            present = re.search(pat, src) is not None
+            if status.startswith("✅") and not present:
+                wrong.append(f"{doc}: «решено», но `{marker}` в коде нет")
+            if status.startswith("🔴") and present:
+                wrong.append(f"{doc}: «открыто», но `{marker}` в коде уже есть")
+    check("таблицы статуса находок разобраны", rows_total >= 15, f"строк {rows_total}")
+    check("статус находок в аудитах совпадает с кодом", not wrong, "; ".join(wrong[:4]))
+
+
+# ---------------------------------------------------------------- Doc sync
+DOC_SYNC_HEADER_LINES = 12
+_DOC_SYNC_RE = re.compile(r"Doc sync[:*]*\s*\**\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _git(*args: str) -> str | None:
+    """stdout команды git или None, если git недоступен/вернул ошибку."""
+    try:
+        proc = subprocess.run(
+            ("git", *args), cwd=ROOT, capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _last_commit_dates() -> dict[str, str] | None:
+    """
+    {путь → дата последнего коммита в него}. Один вызов git log на всё дерево.
+
+    Безродительский коммит пропускается. В shallow clone граничный коммит
+    выглядит как корневой и «добавляет» всё дерево целиком — его дата
+    приклеилась бы к файлам, которых он не трогал, и проверка ниже
+    ругалась бы на документы, никем не правленные. Цена: файл, не
+    менявшийся с первого доступного коммита, остаётся без даты правки и
+    не проверяется.
+    """
+    out = _git("log", "--date=short", "--format=%x01%ad%x02%P", "--name-only")
+    if out is None:
+        return None
+    dates: dict[str, str] = {}
+    current, rooted = "", False
+    for line in out.splitlines():
+        if line.startswith("\x01"):
+            head, _, parents = line[1:].partition("\x02")
+            current, rooted = head.strip(), not parents.strip()
+        elif line and current and not rooted and line not in dates:
+            dates[line] = current  # git log идёт от новых к старым → первое = последнее
+    return dates
+
+
+def check_doc_sync_dates() -> None:
+    """
+    `Doc sync` в шапке не старше последнего коммита в этот документ.
+
+    Правило «в шапке правленого документа обновлён `Doc sync`» жило в
+    development-guide.md и не соблюдалось даже автором правила: за проходы
+    5–9 документы менялись, а дата оставалась 2026-09-05. Дата без
+    гарантии хуже отсутствия даты — читатель ей верит.
+
+    Шапка — первые 12 строк: дальше в тексте `Doc sync` встречается как
+    упоминание соглашения, а не как заявление документа о себе.
+
+    Работает и в shallow clone: даты берутся из доступной истории, а
+    файлы, не правленные в её пределах, просто не проверяются.
+    """
+    if (_git("rev-parse", "--is-inside-work-tree") or "").strip() != "true":
+        skip("даты Doc sync", "git недоступен или это не рабочее дерево")
+        return
+    dates = _last_commit_dates()
+    listing = _git("ls-files", "*.md")
+    status = _git("status", "--porcelain", "--", "*.md")
+    if dates is None or listing is None or status is None:
+        skip("даты Doc sync", "git log недоступен")
+        return
+    # Незакоммиченная правка — это правка сегодняшним днём. Без этого
+    # проверка ловила забытый `Doc sync` только ПОСЛЕ коммита: так в этом
+    # же проходе docs/scripts.md уехал в коммит с датой прошлой недели.
+    dirty = set()
+    for line in status.splitlines():
+        rel = line[3:].strip()
+        if " -> " in rel:  # переименование
+            rel = rel.split(" -> ", 1)[1]
+        dirty.add(rel.strip('"'))
+
+    today = datetime.date.today().isoformat()
+    dated, stale, future, pinned = 0, [], [], []
+    for rel in listing.split():
+        path = ROOT / rel
+        if not path.exists():
+            continue  # удалён в рабочем дереве, коммита ещё нет
+        header = "\n".join(
+            path.read_text(encoding="utf-8").splitlines()[:DOC_SYNC_HEADER_LINES]
+        )
+        # Пин на SHA в шапке живого документа неподдерживаем: документ не
+        # может назвать коммит, который его же и содержит, поэтому пин
+        # всегда отстаёт — ровно так `0ac30af` и протух после фикса
+        # листания советов. Свежесть заявляет `Doc sync`. Аудиты и журнал
+        # сессий — датированные записи, там пин уместен.
+        if not (rel.startswith("audits/") or rel == "session_notes.md"):
+            for line in header.splitlines():
+                if re.search(r"(?:[Кк]оммит\w*|commit) `[0-9a-f]{7,40}`", line):
+                    pinned.append(f"{rel}: {line.strip()[:60]}")
+        m = _DOC_SYNC_RE.search(header)
+        if not m:
+            continue  # документ не заявляет дату сверки — нечего проверять
+        dated += 1
+        claimed = m.group(1)
+        if claimed > today:
+            future.append(f"{rel}: {claimed}")
+        edited = dates.get(rel, "")
+        why = f"правка {edited}"
+        if rel in dirty and today > edited:
+            edited, why = today, "незакоммиченная правка"
+        if edited > claimed:
+            stale.append(f"{rel}: Doc sync {claimed}, {why}")
+    check("шапки с датой сверки найдены", dated >= 30, f"документов с датой {dated}")
+    check(
+        "Doc sync не старше последней правки документа",
+        not stale,
+        (f"{len(stale)} шт.: " + "; ".join(sorted(stale)[:4])) if stale else "",
+    )
+    check("Doc sync не в будущем", not future, "; ".join(future[:4]))
+    check(
+        "в шапках живых документов нет пина на коммит",
+        not pinned,
+        "; ".join(pinned[:3]),
+    )
+
+
+# ------------------------------------------------- фичи в /feature_usage
+def _feature_usage_names() -> list[str]:
+    """Имена фич из `AnalyticsService.compute_feature_usage` — в порядке вывода."""
+    tree = ast.parse(read("services.py"))
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and node.name == "compute_feature_usage"
+        ):
+            continue
+        for stmt in ast.walk(node):
+            if (
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.List)
+                and any(getattr(t, "id", "") == "items" for t in stmt.targets)
+            ):
+                return [
+                    str(el.elts[0].value)
+                    for el in stmt.value.elts
+                    if isinstance(el, ast.Tuple)
+                    and el.elts
+                    and isinstance(el.elts[0], ast.Constant)
+                ]
+    return []
+
+
+def check_feature_usage() -> None:
+    """
+    Список фич `/feature_usage` — против admin_commands.md и счётчиков «N фич».
+
+    Проход №4 нашёл это вручную: пример в справочнике показывал 8 строк
+    при 14 реальных фичах. Сверяются не числа, а сами имена и их порядок —
+    иначе переименование фичи в коде осталось бы незамеченным.
+    """
+    names = _feature_usage_names()
+    check(
+        "список фич /feature_usage разобран из services.py",
+        len(names) >= 10,
+        f"разобрано имён: {len(names)}",
+    )
+    if not names:
+        return
+    doc = read("admin_commands.md")
+    missing = [n for n in names if n not in doc]
+    check(
+        "все фичи /feature_usage перечислены в admin_commands.md",
+        not missing,
+        "; ".join(missing[:3]),
+    )
+    if not missing:
+        positions = [doc.index(n) for n in names]
+        check(
+            "порядок фич в справочнике совпадает с кодом",
+            positions == sorted(positions),
+            "строки примера перепутаны местами",
+        )
+    claims: list[str] = []
+    for md in md_files():
+        if md.name == "session_notes.md":
+            continue  # журнал сессий: «8 фич» там верно для своей даты
+        for line in md.read_text(encoding="utf-8").splitlines():
+            # «≥3 фичи с данными» — порог приёмки, а не счётчик фич в коде.
+            line = re.sub(r"≥\s*\d+\s+фич\w*", "", line)
+            for num in re.findall(r"(?<![\d≥])(\d+) (?:фич|features)", line):
+                if int(num) != len(names):
+                    claims.append(f"{md.relative_to(ROOT)}: {num}")
+    check(
+        f"счётчик фич в документах = {len(names)}",
+        not claims,
+        "; ".join(sorted(set(claims))[:5]),
+    )
 
 
 # ---------------------------------------------------------------- команды
@@ -473,7 +712,9 @@ def main() -> int:
         check_links, check_markdown_hygiene, check_schema, check_events,
         check_export_aliases,
         check_locales, check_content, check_feature_flags,
-        check_commands, check_balance_constants, check_test_counts,
+        check_commands, check_audit_status, check_feature_usage,
+        check_doc_sync_dates, check_balance_constants,
+        check_test_counts,
     ):
         try:
             fn()
