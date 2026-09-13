@@ -21,6 +21,7 @@ import pytest_asyncio
 
 from repository import LeaderboardRepository
 from services import LeaderboardService, user_calendar_keys, week_end_utc
+from tests.conftest import user_now
 
 
 # Ранжируемая неделя — ПРОШЛАЯ завершившаяся, а не фиксированная дата.
@@ -30,7 +31,7 @@ from services import LeaderboardService, user_calendar_keys, week_end_utc
 # созданный «30 дней назад», набирал очки за неделю, закончившуюся за
 # несколько месяцев ДО его регистрации. Раньше это не всплывало только
 # потому, что сегмент брался по 'now'.
-_LAST_WEEK = datetime.now() - timedelta(days=datetime.now().isoweekday() + 6)
+_LAST_WEEK = user_now() - timedelta(days=user_now().isoweekday() + 6)
 WEEK = _LAST_WEEK.strftime("%G-W%V")
 
 
@@ -67,7 +68,9 @@ async def _make_user(user_repo, db, uid, age_days, *, streak=0, hidden=False, us
 async def _grant(lb_repo, uid, *, time=0, task=0, quiz=0, card=0, week_iso=WEEK):
     """Прямой write в weekly_scores для теста; обходит cap-логику."""
     if week_iso is None:
-        local_date, week_iso = user_calendar_keys(datetime.now())
+        # TZ пользователя, а не контейнера — иначе очки попадут не в ту
+        # неделю, которую прочитает рендер (см. conftest.user_now).
+        local_date, week_iso = user_calendar_keys(user_now())
     else:
         local_date = "2026-05-18"
     await lb_repo._ensure_rows(uid, local_date, week_iso)

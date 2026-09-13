@@ -259,84 +259,94 @@ class AchievementService:
         self.user_repo = user_repo
         self.definitions = definitions  # загружены из achievements.json
 
-    async def check_and_award(self, user_id: int, sessions: int, streak: int, total_minutes: int) -> tuple[list, int]:
+    # Каталог правил: (achievement_id, метрика, порог). Одна таблица
+    # вместо девяти почти одинаковых if/elif-блоков. Из-за их ручного
+    # дублирования у трёх «сессионных» ачивок просто забыли ветку
+    # обновления прогресса: строка в user_achievements не создавалась до
+    # самой выдачи, и экран достижений показывал «🔒 ЗАБЛОКИРОВАНО»
+    # человеку с 9 сессиями из 10, тогда как минутные и стриковые
+    # честно показывали «45/100».
+    #
+    # Порядок важен: в этом же порядке id попадают в список earned, а
+    # значит и в уведомление пользователю.
+    ACHIEVEMENT_RULES: tuple = (
+        ("first_session", "sessions", 1),
+        ("3_day_streak", "streak", 3),
+        ("100_minutes", "minutes", 100),
+        ("10_sessions", "sessions", 10),
+        ("7_day_streak", "streak", 7),
+        ("300_minutes", "minutes", 300),
+        ("30_sessions", "sessions", 30),
+        ("14_day_streak", "streak", 14),
+        ("750_minutes", "minutes", 750),
+    )
+
+    async def _award_by_rules(
+        self, user_id: int, values: dict, rules
+    ) -> tuple[list, int]:
         """
-        sessions – новое количество сессий (после завершения текущей)
-        streak – текущий стрик до обновления (обновляется отдельно)
-        total_minutes – общее количество минут (sessions * длительность одной сессии)
-        Возвращает: (список id новых достижений, сумма бонусных монет)
+        Общий проход по правилам: достигнутое — выдать, остальному —
+        обновить прогресс. Возвращает (список новых id, сумма наград).
+
+        Ачивку, которой нет в achievements.json, пропускаем: раньше такой
+        id сначала записывался в user_achievements, а потом ронял сессию
+        на KeyError в _get_reward.
         """
         user_achievements = await self._load_user_achievements(user_id)
-        new_achievements = []
-        bonus_coins = 0
+        earned: list = []
+        bonus = 0
+        for ach_id, metric, target in rules:
+            if ach_id not in self.definitions:
+                continue
+            if self._is_completed(user_achievements, ach_id):
+                continue
+            value = values[metric]
+            if value >= target:
+                await self._complete_achievement(user_id, ach_id, target=target)
+                earned.append(ach_id)
+                bonus += self._get_reward(ach_id)
+            else:
+                await self._update_progress(
+                    user_id, ach_id, progress=value, target=target
+                )
+        return earned, bonus
 
-        # 1. Первый шаг
-        if sessions >= 1 and not user_achievements.get("first_session", {}).get("completed"):
-            await self._complete_achievement(user_id, "first_session", target=1)
-            new_achievements.append("first_session")
-            bonus_coins += self._get_reward("first_session")
+    async def check_and_award(
+        self, user_id: int, sessions: int, streak: int, total_minutes: int
+    ) -> tuple[list, int]:
+        """
+        sessions – новое количество сессий (после завершения текущей)
+        streak – текущий стрик до обновления (обновляется отдельно,
+                 стрик-ачивки выдаёт check_streak_awards в момент
+                 ночного инкремента — здесь остаётся страховкой)
+        total_minutes – суммарные минуты учёбы
+        Возвращает: (список id новых достижений, сумма бонусных монет)
+        """
+        return await self._award_by_rules(
+            user_id,
+            {"sessions": sessions, "streak": streak, "minutes": total_minutes},
+            self.ACHIEVEMENT_RULES,
+        )
 
-        # 2. Огненный (3 дня стрика)
-        if streak >= 3 and not self._is_completed(user_achievements, "3_day_streak"):
-            await self._complete_achievement(user_id, "3_day_streak", target=3)
-            new_achievements.append("3_day_streak")
-            bonus_coins += self._get_reward("3_day_streak")
-        elif not self._is_completed(user_achievements, "3_day_streak"):
-            await self._update_progress(user_id, "3_day_streak", progress=streak, target=3)
+    async def check_streak_awards(self, user_id: int, streak: int) -> tuple[list, int]:
+        """
+        Ачивки за стрик по УЖЕ обновлённому значению current_streak.
 
-        # 3. Марафонец (100 минут)
-        if total_minutes >= 100 and not self._is_completed(user_achievements, "100_minutes"):
-            await self._complete_achievement(user_id, "100_minutes", target=100)
-            new_achievements.append("100_minutes")
-            bonus_coins += self._get_reward("100_minutes")
-        elif not self._is_completed(user_achievements, "100_minutes"):
-            await self._update_progress(user_id, "100_minutes", progress=total_minutes, target=100)
+        Вызывается из StreakService сразу после ночного инкремента.
+        Раньше единственной точкой проверки была complete_session, куда
+        приходил current_streak ДО инкремента: «Огненный» за 3 дня не
+        срабатывал на третий день, а если пользователь останавливался
+        ровно на трёх днях — не срабатывал никогда.
 
-        # 4. Десятый шаг (10 сессий)
-        if sessions >= 10 and not self._is_completed(user_achievements, "10_sessions"):
-            await self._complete_achievement(user_id, "10_sessions", target=10)
-            new_achievements.append("10_sessions")
-            bonus_coins += self._get_reward("10_sessions")
-
-        # 5. Неделя огня (7 дней)
-        if streak >= 7 and not self._is_completed(user_achievements, "7_day_streak"):
-            await self._complete_achievement(user_id, "7_day_streak", target=7)
-            new_achievements.append("7_day_streak")
-            bonus_coins += self._get_reward("7_day_streak")
-        elif not self._is_completed(user_achievements, "7_day_streak"):
-            await self._update_progress(user_id, "7_day_streak", progress=streak, target=7)
-
-        # 6. Марафон (300 минут)
-        if total_minutes >= 300 and not self._is_completed(user_achievements, "300_minutes"):
-            await self._complete_achievement(user_id, "300_minutes", target=300)
-            new_achievements.append("300_minutes")
-            bonus_coins += self._get_reward("300_minutes")
-        elif not self._is_completed(user_achievements, "300_minutes"):
-            await self._update_progress(user_id, "300_minutes", progress=total_minutes, target=300)
-
-        # 7. Тридцатый шаг (30 сессий)
-        if sessions >= 30 and not self._is_completed(user_achievements, "30_sessions"):
-            await self._complete_achievement(user_id, "30_sessions", target=30)
-            new_achievements.append("30_sessions")
-            bonus_coins += self._get_reward("30_sessions")
-
-        # 8. Две недели огня (14 дней)
-        if streak >= 14 and not self._is_completed(user_achievements, "14_day_streak"):
-            await self._complete_achievement(user_id, "14_day_streak", target=14)
-            new_achievements.append("14_day_streak")
-            bonus_coins += self._get_reward("14_day_streak")
-        elif not self._is_completed(user_achievements, "14_day_streak"):
-            await self._update_progress(user_id, "14_day_streak", progress=streak, target=14)
-
-        # 9. Ультрамарафон (750 минут)
-        if total_minutes >= 750 and not self._is_completed(user_achievements, "750_minutes"):
-            await self._complete_achievement(user_id, "750_minutes", target=750)
-            new_achievements.append("750_minutes")
-            bonus_coins += self._get_reward("750_minutes")
-        elif not self._is_completed(user_achievements, "750_minutes"):
-            await self._update_progress(user_id, "750_minutes", progress=total_minutes, target=750)
-
-        return new_achievements, bonus_coins
+        Награждать раньше, на самой сессии, нельзя: профиль показывает
+        current_streak, то есть «2 дн.» в момент третьей сессии, и
+        ачивка «за 3 дня» противоречила бы тому, что видит пользователь.
+        """
+        return await self._award_by_rules(
+            user_id,
+            {"streak": streak},
+            [r for r in self.ACHIEVEMENT_RULES if r[1] == "streak"],
+        )
 
     async def check_tips_award(self, user_id: int, tips_views: int) -> tuple[list, int]:
         """
@@ -355,47 +365,6 @@ class AchievementService:
             return [ach_id], self._get_reward(ach_id)
         await self._update_progress(user_id, ach_id, progress=tips_views, target=target)
         return [], 0
-
-    # Стрик-ачивки: порог в днях → id. Проверяются отдельно от
-    # check_and_award, потому что стрик растёт НЕ в момент сессии, а
-    # ночью в StreakService (см. check_streak_awards).
-    STREAK_ACHIEVEMENTS: tuple = (
-        (3, "3_day_streak"),
-        (7, "7_day_streak"),
-        (14, "14_day_streak"),
-    )
-
-    async def check_streak_awards(self, user_id: int, streak: int) -> tuple[list, int]:
-        """
-        Ачивки за стрик по УЖЕ обновлённому значению current_streak.
-
-        Вызывается из StreakService сразу после ночного инкремента.
-        Раньше единственной точкой проверки была complete_session, куда
-        приходил current_streak ДО инкремента: «Огненный» за 3 дня не
-        срабатывал на третий день, а если пользователь останавливался
-        ровно на трёх днях — не срабатывал никогда.
-
-        Награждать раньше, на самой сессии, нельзя: профиль показывает
-        current_streak, то есть «2 дн.» в момент третьей сессии, и
-        ачивка «за 3 дня» противоречила бы тому, что видит пользователь.
-        """
-        user_achievements = await self._load_user_achievements(user_id)
-        earned: list = []
-        bonus = 0
-        for target, ach_id in self.STREAK_ACHIEVEMENTS:
-            if ach_id not in self.definitions:
-                continue
-            if self._is_completed(user_achievements, ach_id):
-                continue
-            if streak >= target:
-                await self._complete_achievement(user_id, ach_id, target=target)
-                earned.append(ach_id)
-                bonus += self._get_reward(ach_id)
-            else:
-                await self._update_progress(
-                    user_id, ach_id, progress=streak, target=target
-                )
-        return earned, bonus
 
     def _get_reward(self, ach_id: str) -> int:
         return self.definitions[ach_id]["reward"]

@@ -98,3 +98,104 @@ class TestNoAchievements:
         )
         assert new_ids == []
         assert bonus == 0
+
+
+# ============================================================
+# Прогресс достижений — то, что рисует экран «🏆 Достижения»
+# ============================================================
+async def _progress_row(user_repo, uid, ach_id):
+    async with user_repo.db.execute(
+        "SELECT progress, target, completed FROM user_achievements "
+        "WHERE user_id=? AND achievement_id=?",
+        (uid, ach_id),
+    ) as c:
+        return await c.fetchone()
+
+
+class TestProgressTracking:
+    async def test_session_achievements_show_progress(
+        self, ach_service, user_repo, created_user
+    ):
+        """
+        У «сессионных» ачивок не было ветки обновления прогресса, строка в
+        user_achievements не создавалась до самой выдачи — и экран
+        достижений показывал «🔒 ЗАБЛОКИРОВАНО» человеку с 9 сессиями из
+        10, тогда как минутные и стриковые честно показывали «45/100».
+        """
+        await ach_service.check_and_award(
+            user_id=created_user, sessions=9, streak=1, total_minutes=45
+        )
+        for ach_id, target in (("10_sessions", 10), ("30_sessions", 30)):
+            row = await _progress_row(user_repo, created_user, ach_id)
+            assert row is not None, f"{ach_id}: строки прогресса нет"
+            assert row["progress"] == 9
+            assert row["target"] == target
+            assert not row["completed"]
+
+    async def test_every_unfinished_achievement_has_a_row(
+        self, ach_service, user_repo, created_user, achievements_catalog
+    ):
+        """
+        Ни одна ачивка из правил не должна остаться без прогресса —
+        иначе на экране она молча выглядит недоступной.
+        """
+        await ach_service.check_and_award(
+            user_id=created_user, sessions=2, streak=1, total_minutes=20
+        )
+        async with user_repo.db.execute(
+            "SELECT achievement_id FROM user_achievements WHERE user_id=?",
+            (created_user,),
+        ) as c:
+            have = {r["achievement_id"] for r in await c.fetchall()}
+        expected = {
+            ach_id
+            for ach_id, _metric, _target in AchievementService.ACHIEVEMENT_RULES
+            if ach_id in achievements_catalog
+        }
+        assert expected <= have, f"без строки прогресса: {expected - have}"
+
+    async def test_progress_matches_its_metric(
+        self, ach_service, user_repo, created_user
+    ):
+        """Каждому правилу — своя метрика, а не чужая."""
+        await ach_service.check_and_award(
+            user_id=created_user, sessions=4, streak=2, total_minutes=70
+        )
+        assert (await _progress_row(user_repo, created_user, "10_sessions"))["progress"] == 4
+        assert (await _progress_row(user_repo, created_user, "3_day_streak"))["progress"] == 2
+        assert (await _progress_row(user_repo, created_user, "100_minutes"))["progress"] == 70
+
+    async def test_completed_row_is_not_downgraded(
+        self, ach_service, user_repo, created_user
+    ):
+        """Выданную ачивку повторный проход не сбрасывает в прогресс."""
+        await ach_service.check_and_award(
+            user_id=created_user, sessions=10, streak=0, total_minutes=10
+        )
+        assert (await _progress_row(user_repo, created_user, "10_sessions"))["completed"]
+        await ach_service.check_and_award(
+            user_id=created_user, sessions=1, streak=0, total_minutes=10
+        )
+        row = await _progress_row(user_repo, created_user, "10_sessions")
+        assert row["completed"], "выданная ачивка откатилась в незавершённую"
+
+    async def test_unknown_achievement_id_is_skipped(self, user_repo, created_user):
+        """
+        Ачивка, которой нет в каталоге, пропускается. Раньше такой id
+        сначала записывался в user_achievements, а потом ронял сессию на
+        KeyError в _get_reward.
+        """
+        service = AchievementService(user_repo, {})  # пустой каталог
+        new_ids, bonus = await service.check_and_award(
+            user_id=created_user, sessions=100, streak=100, total_minutes=10000
+        )
+        assert new_ids == [] and bonus == 0
+
+    async def test_award_order_follows_rules_table(self, ach_service, created_user):
+        """Порядок выдачи = порядок таблицы: он попадает в уведомление."""
+        new_ids, _ = await ach_service.check_and_award(
+            user_id=created_user, sessions=30, streak=14, total_minutes=750
+        )
+        order = [a for a, _m, _t in AchievementService.ACHIEVEMENT_RULES]
+        assert new_ids == [a for a in order if a in new_ids]
+

@@ -26,6 +26,9 @@ if _ROOT not in sys.path:
 # реальный BOT_TOKEN в env, если он уже установлен.
 os.environ.setdefault("BOT_TOKEN", "test-token-for-pytest-imports")
 
+import pytz  # noqa: E402
+from datetime import datetime  # noqa: E402
+
 from db import get_db, init_db  # noqa: E402
 from repository import UserRepository, SessionRepository  # noqa: E402
 
@@ -74,3 +77,23 @@ def achievements_catalog() -> dict:
     path = os.path.join(_ROOT, "achievements.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# ------------------------------------------------------------
+# Время «как его видит пользователь»
+# ------------------------------------------------------------
+# Пользователи в тестах создаются с дефолтным users.timezone
+# ('Europe/Moscow' по схеме), и рендеры лидерборда резолвят ISO-неделю
+# именно в нём (LeaderboardRepository._now_in_tz). Контейнер CI живёт в
+# UTC, поэтому каждое воскресенье с 21:00 UTC «сейчас» контейнера и
+# «сейчас» пользователя лежат в РАЗНЫХ неделях — тест писал очки в одну,
+# а рендер читал другую и видел пустой лидерборд.
+#
+# Любой тест, который пишет данные «на текущую неделю», обязан брать её
+# отсюда, а не из datetime.now().
+DEFAULT_USER_TZ = pytz.timezone("Europe/Moscow")
+
+
+def user_now() -> datetime:
+    """datetime.now() в том же TZ, в котором его увидит рендер (naive)."""
+    return datetime.now(DEFAULT_USER_TZ).replace(tzinfo=None)
