@@ -432,6 +432,12 @@
     "multiple_footer": "\n\n🪙 Total bonus: +{total_reward} coins\n🔥 You're a true study champion!",
     "default_name": "Achievement"
   },
+  "achievements_screen": {
+    "title": "🏆 Achievements (page {page}/{total})\n\n",
+    "earned": "UNLOCKED!",
+    "locked": "LOCKED",
+    "empty": "No achievements on this page yet."
+  },
   "user_tasks": {
     "instruction": "📋 <b>How to add your own tasks from a .txt file</b>\n\n<b>File format</b> (UTF-8 encoding, .txt extension):\n\nEach task is <b>one line</b>:\n<code>question || answer | other answer</code>\n\nUse <code>||</code> between the prompt and answers.\nMultiple correct answers are separated by <code>|</code>.\n\n<b>Examples:</b>\n<code>What is 2+2? || 4 | four</code>\n<code>Work sampling method? || photography | photo</code>\n\n<b>Hint</b> (optional), after answers with <code>##</code>:\n<code>How many planets? || 8 ## There are 8 planets in the Solar System</code>\n\n<b>Comments</b> — lines starting with <code>#</code>\nEmpty lines are ignored.\n\n<b>Limits:</b> up to 50 tasks per subject, file up to 64 KB.\n\n<b>Already have task text?</b> Copy the prompt below into ChatGPT, Claude, or another AI, replace <code>PASTE_YOUR_TEXT_HERE</code> with your material, save the reply as .txt (UTF-8), and send the file here.\n\n<pre>Convert the study tasks below into the format for this Telegram bot.\n\nOutput rules (strict):\n- One task = one line of text\n- Line format: question || answer1 | answer2\n- Exactly two || characters between question and answers\n- Separate multiple correct answers with a single |\n- Hint (if any in the source): after answers use ## hint text\n- No numbering, bullets, headings, or blank lines\n- No explanations — output only ready task lines\n\nExample line:\nWhat is 2+2? || 4 | four\n\nSource task text:\n---\nPASTE_YOUR_TEXT_HERE\n---</pre>\n\nSend the finished .txt file in this chat.\nTo cancel — /cancel",
     "manage_title": "📋 My tasks\n\nChoose a subject:",

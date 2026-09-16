@@ -3447,6 +3447,52 @@ async def leaderboard_show_from_profile(callback: CallbackQuery):
 # ------------------------------------------------------------
 # Достижения
 # ------------------------------------------------------------
+def render_achievements_page(
+    catalog: dict, user_achievements: dict, page: int, locale: str,
+) -> tuple[str, list[int], int]:
+    """
+    Текст страницы достижений + список доступных страниц + фактическая
+    страница (запрошенная могла быть вне диапазона).
+
+    Каталог приходит уже на языке пользователя: экран раньше брал
+    глобальный ACHIEVEMENTS (ru-fallback), из-за чего англоязычный
+    пользователь видел русские названия — при том что
+    achievements.en.json заполнен полностью и уже используется в
+    уведомлениях о выдаче.
+
+    Страницы выводятся из самого каталога, а не зашиты тройкой: добавь
+    кто-нибудь ачивку с page=4, и она стала бы недостижимой.
+    """
+    pages = sorted({int(v.get("page", 1)) for v in catalog.values()}) or [1]
+    if page not in pages:
+        page = pages[0]
+
+    text = t(
+        "achievements_screen.title", locale,
+        page=pages.index(page) + 1, total=len(pages),
+    )
+    earned_label = t("achievements_screen.earned", locale)
+    locked_label = t("achievements_screen.locked", locale)
+
+    on_page = [(k, v) for k, v in catalog.items() if int(v.get("page", 1)) == page]
+    if not on_page:
+        text += t("achievements_screen.empty", locale)
+    for ach_id, data in on_page:
+        status = user_achievements.get(ach_id)
+        if status and status["completed"]:
+            mark, state = "✅", earned_label
+        elif status:
+            mark, state = "⏳", f"{status['progress']}/{status['target']}"
+        else:
+            mark, state = "🔒", locked_label
+        text += (
+            f"{mark} {data.get('icon', '🏆')} {data.get('name', ach_id)}\n"
+            f"   {data.get('description', '')}\n"
+            f"   🪙 +{data.get('reward', 0)} — {state}\n\n"
+        )
+    return text, pages, page
+
+
 @router.callback_query(F.data.startswith("show_achievements:"))
 async def show_achievements(callback: CallbackQuery):
     parts = callback.data.split(":")
@@ -3473,29 +3519,17 @@ async def show_achievements(callback: CallbackQuery):
             "target": row["target"]
         }
 
-    page_achievements = {k: v for k, v in ACHIEVEMENTS.items() if v.get("page", 1) == page}
-    text = f"🏆 Достижения (страница {page}/3)\n\n"
-    for ach_id, ach_data in page_achievements.items():
-        ach_name = ach_data["name"]
-        ach_desc = ach_data["description"]
-        ach_reward = ach_data["reward"]
-        ach_icon = ach_data["icon"]
-        status = user_achievements.get(ach_id)
-        if status and status["completed"]:
-            text += f"✅ {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — ПОЛУЧЕНО!\n\n"
-        elif status:
-            progress = status["progress"]
-            target = status["target"]
-            text += f"⏳ {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — {progress}/{target}\n\n"
-        else:
-            text += f"🔒 {ach_icon} {ach_name}\n   {ach_desc}\n   🪙 +{ach_reward} — ЗАБЛОКИРОВАНО\n\n"
+    locale = await loc(user_id)
+    text, pages, page = render_achievements_page(
+        load_achievements_catalog(locale), user_achievements, page, locale
+    )
 
     keyboard = InlineKeyboardBuilder()
-    for p in range(1, 4):
+    for p in pages:
         if p != page:
             keyboard.button(text=str(p), callback_data=f"show_achievements:{user_id}:{p}")
-    keyboard.button(text="◀️ Профиль", callback_data=f"back_to_profile:{user_id}")
-    keyboard.adjust(3, 1)
+    keyboard.button(text=t("profile.back", locale), callback_data=f"back_to_profile:{user_id}")
+    keyboard.adjust(max(1, len(pages)), 1)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard.as_markup())
     except Exception:

@@ -62,13 +62,34 @@ def faq_items(locale: str) -> list[dict[str, str]]:
     return items
 
 
+# Разобранные каталоги достижений: locale → (mtime, size, catalog).
+# Файл читался и парсился заново на КАЖДЫЙ показ экрана достижений и на
+# каждое уведомление о выдаче. Ключ инвалидации — mtime+size, чтобы
+# правка каталога подхватывалась без перезапуска бота. Размер ограничен
+# числом локалей.
+_achievements_cache: dict[str, tuple[float, int, dict]] = {}
+
+
 def load_achievements_catalog(locale: str) -> dict:
     loc = normalize_locale(locale)
     for filename in (f"achievements.{loc}.json", "achievements.json"):
         path = BOT_DIR / filename
-        if path.is_file():
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+        try:
+            stat = path.stat()
+        except OSError:
+            continue  # нет файла — пробуем следующий вариант
+
+        cached = _achievements_cache.get(loc)
+        if cached is not None and (cached[0], cached[1]) == (stat.st_mtime, stat.st_size):
+            # Копия: caller'ы читают каталог, но общий изменяемый dict
+            # легко испортить всем пользователям одной неосторожной
+            # правкой (ср. кеш секций квизов в bot.py).
+            return dict(cached[2])
+
+        with open(path, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+        _achievements_cache[loc] = (stat.st_mtime, stat.st_size, catalog)
+        return dict(catalog)
     return {}
 
 
