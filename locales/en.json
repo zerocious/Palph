@@ -321,7 +321,7 @@
     "earn_coins": {
       "btn": "5️⃣ Earning coins",
       "title": "5️⃣ How do you earn coins?",
-      "body": "• +1 coin per minute of study via the timer\n• +15 bonus when your streak reaches 2+ days\n• Bonus coins for achievements (see profile)\n• +1 coin per correct MCQ answer\n• +1 coin per flashcard reviewed\n• Up to +3 coins per picture task (depends on attempt)\n• +1 coin for the first tip of the day in «🎓 Productivity tips» (time management, memory, or bot guide)\n• «💡 Curious» achievement bonus — 10 tips read (+30 🪙)\n• Morning reminder may include a «tip of the day» (once per calendar day)"
+      "body": "• +1 coin per minute of study via the timer\n• +15 bonus when your streak reaches 2+ days\n• A day keeps your streak if it has a timer session or at least 5 correct answers (quizzes, MCQ, tasks, cards)\n• Bonus coins for achievements (see profile)\n• +1 coin per correct MCQ answer\n• +1 coin per flashcard reviewed\n• Up to +3 coins per picture task (depends on attempt)\n• +1 coin for the first tip of the day in «🎓 Productivity tips» (time management, memory, or bot guide)\n• «💡 Curious» achievement bonus — 10 tips read (+30 🪙)\n• Morning reminder may include a «tip of the day» (once per calendar day)"
     },
     "sm2": {
       "btn": "6️⃣ SM-2 for flashcards",
@@ -419,8 +419,8 @@
   },
   "reminders": {
     "morning": "🌅 Good morning!\nYour pet is waiting for today's first session 🐾\nEven 5 minutes is already a win.",
-    "evening_sad": "🌙 Evening.\n🐾😢 Your pet is sad — you haven't studied today.\nStudy at least 5 minutes before midnight to keep your streak 🔥",
-    "evening_fallback": "🌙 Evening!\nNo study session today yet — fit in at least 5 minutes before midnight to keep your streak 🔥",
+    "evening_sad": "🌙 Evening.\n🐾😢 Your pet is sad — you haven't studied today.\nStudy at least 5 minutes with the timer, or answer a few tasks and cards before midnight, to keep your streak 🔥",
+    "evening_fallback": "🌙 Evening!\nNo studying yet today — fit in 5 minutes with the timer, or a few correct answers in quizzes, tasks and cards, before midnight to keep your streak 🔥",
     "streak_bonus": "🌙 Good evening! Your streak was updated:\n🔥 {streak} days in a row\n🪙 +{bonus} coins for consistency!",
     "freeze_used": "❄️ Streak freeze was used.\n🔥 Streak saved: {streak} days.",
     "tip_of_day_header": "\n\n———\n🌟 <b>Tip of the day</b>\n\n"

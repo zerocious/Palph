@@ -1493,6 +1493,37 @@ class LeaderboardRepository:
             return self._now_in_tz(None), None
         return self._now_in_tz(row["timezone"]), row["age_days"]
 
+    # Сколько засчитанных действий за день (верные ответы на квизы/MCQ,
+    # решённые задачи, успешно повторённые карточки) приравниваются к
+    # учебному дню для СТРИКА. Pomodoro-сессия по-прежнему засчитывается
+    # сразу (increment_sessions); порог нужен тем, кто занимался без
+    # таймера: час карточек и задач давал очки в лидерборд, но стрик
+    # горел, а вечером приходило «ты сегодня не учился». 5 — по числу из
+    # самого напоминания («хотя бы 5 минут»); все три счётчика имеют
+    # дневной кап ≥ 5, так что порог достижим любым одним видом активности.
+    STREAK_ACTIVITY_THRESHOLD = 5
+
+    async def _mark_studied_if_active(self, user_id: int, local_date: str) -> None:
+        """
+        Ставит users.has_studied_today = 1, если дневные счётчики активности
+        достигли STREAK_ACTIVITY_THRESHOLD. НЕ коммитит — вызывается из
+        grant_*, чтобы флаг и очки попали в одну транзакцию.
+
+        Один атомарный UPDATE: условие «ещё не засчитан» и порог проверяются
+        в самой БД, поэтому гонки между параллельными ответами нет, а для
+        уже засчитанного дня запрос ничего не пишет. Хук живёт здесь, а не
+        в хендлерах бота, намеренно: все четыре точки начисления идут через
+        grant_*, и новая точка не сможет «забыть» засчитать активность.
+        """
+        await self.db.execute(
+            "UPDATE users SET has_studied_today = 1 "
+            "WHERE user_id = ? AND has_studied_today = 0 AND ("
+            "  SELECT COALESCE(quiz_count + task_count + cards_count, 0) "
+            "  FROM daily_score_counters WHERE user_id = ? AND local_date = ?"
+            ") >= ?",
+            (user_id, user_id, local_date, self.STREAK_ACTIVITY_THRESHOLD),
+        )
+
     async def _ensure_rows(self, user_id: int, local_date: str, week_iso: str) -> None:
         """INSERT OR IGNORE для daily + weekly строк текущего дня/недели."""
         await self.db.execute(
@@ -1584,6 +1615,7 @@ class LeaderboardRepository:
             "WHERE user_id=? AND week_iso=?",
             (user_id, week_iso),
         )
+        await self._mark_studied_if_active(user_id, local_date)
         await self.db.commit()
         return True
 
@@ -1635,6 +1667,7 @@ class LeaderboardRepository:
             "WHERE user_id=? AND week_iso=?",
             (pts, user_id, week_iso),
         )
+        await self._mark_studied_if_active(user_id, local_date)
         await self.db.commit()
         return (pts, series_bonus)
 
@@ -1700,6 +1733,7 @@ class LeaderboardRepository:
             "WHERE user_id=? AND week_iso=?",
             (pts, user_id, week_iso),
         )
+        await self._mark_studied_if_active(user_id, local_date)
         await self.db.commit()
         return pts
 
