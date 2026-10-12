@@ -509,6 +509,8 @@
     "level_up": "🎉 <b>Level up!</b>\n🐾 Your pet grew: {old_level} → <b>{new_level}</b>",
     "level_up_unlocked": "\n\n<b>New items unlocked:</b>\n{items}\n\nBuy them in profile via the customization picker.",
     "level_up_none": "\n\nNo new items at this level — keep going!",
+    "level_up_item_color": "🎨 color “{value}” — {price} 🪙",
+    "level_up_item_accessory": "🎁 “{value}” — {price} 🪙",
     "default_name": "Pet"
   },
   "leaderboard": {

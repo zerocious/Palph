@@ -750,6 +750,7 @@ class StudyService:
         pet_repo: PetRepository | None = None,
         leaderboard_repo: LeaderboardRepository | None = None,
         bot=None,
+        pet_customization_enabled: bool = False,
     ):
         self.user_repo = user_repo
         self.session_repo = session_repo
@@ -760,44 +761,57 @@ class StudyService:
         self.pet_repo = pet_repo
         self.leaderboard_repo = leaderboard_repo
         self.bot = bot  # для отправки level-up уведомлений
+        # Покупка цветов/аксессуаров включается флагом bot.PET_CUSTOMIZATION_ENABLED
+        # (сейчас выключена). Уведомление о level-up упоминает «новые
+        # предметы» только когда их реально можно купить: иначе оно
+        # зовёт пользователя за покупкой, которой нет, и монеты копятся
+        # без применения. Дефолт False — безопасная сторона: забытый
+        # проброс флага скрывает обещание, а не даёт его ложно.
+        self.pet_customization_enabled = pet_customization_enabled
 
     async def _notify_level_up(
         self, user_id: int, old_level: int, new_level: int
     ) -> None:
         """
-        Отправляет сообщение о level-up с перечислением только-что
-        разблокированных предметов из COLOR_CATALOG / ACCESSORY_CATALOG.
-        По спеке TODO #16: «сообщение содержит список разблокированных-
-        но-непокупленных предметов с их ценой».
+        Отправляет сообщение о level-up на языке пользователя. Если
+        кастомизация питомца включена — дополняет его списком только-что
+        разблокированных предметов из COLOR_CATALOG / ACCESSORY_CATALOG
+        (спека TODO #16: «список разблокированных-но-непокупленных
+        предметов с их ценой»). Если выключена — просто поздравляет:
+        ни список предметов, ни «новых предметов не открылось» тут не
+        нужны, покупать всё равно нечего.
 
-        Бесшумно поглощает Telegram exceptions (заблокирован, etc.) —
-        notification является вспомогательным flow.
+        Бесшумно поглощает любые ошибки (заблокирован, БД, шаблон) —
+        уведомление вспомогательный flow и вызывается ПОСЛЕ коммита
+        complete_session, так что его сбой не должен ронять сессию.
         """
         if self.bot is None or self.pet_repo is None:
             return
 
-        unlocked = []
-        for value, (lvl, price) in self.pet_repo.COLOR_CATALOG.items():
-            if old_level < lvl <= new_level and price > 0:
-                unlocked.append(f"🎨 цвет «{value}» — {price} 🪙")
-        for value, (lvl, price) in self.pet_repo.ACCESSORY_CATALOG.items():
-            if old_level < lvl <= new_level and price > 0:
-                unlocked.append(f"🎁 «{value}» — {price} 🪙")
-
-        msg = (
-            f"🎉 <b>Уровень повышен!</b>\n"
-            f"🐾 Питомец вырос: {old_level} → <b>{new_level}</b>"
-        )
-        if unlocked:
-            msg += (
-                "\n\n<b>Открылись новые предметы:</b>\n"
-                + "\n".join(f"• {u}" for u in unlocked)
-                + "\n\nКупить можно в профиле через customization picker."
-            )
-        else:
-            msg += "\n\nНа этом уровне новых предметов не открылось — продолжай!"
-
         try:
+            locale = _user_locale(await self.user_repo.get_locale(user_id))
+            msg = t("pet.level_up", locale, old_level=old_level, new_level=new_level)
+
+            if self.pet_customization_enabled:
+                unlocked = []
+                for value, (lvl, price) in self.pet_repo.COLOR_CATALOG.items():
+                    if old_level < lvl <= new_level and price > 0:
+                        unlocked.append(
+                            t("pet.level_up_item_color", locale, value=value, price=price)
+                        )
+                for value, (lvl, price) in self.pet_repo.ACCESSORY_CATALOG.items():
+                    if old_level < lvl <= new_level and price > 0:
+                        unlocked.append(
+                            t("pet.level_up_item_accessory", locale, value=value, price=price)
+                        )
+                if unlocked:
+                    msg += t(
+                        "pet.level_up_unlocked", locale,
+                        items="\n".join(f"• {u}" for u in unlocked),
+                    )
+                else:
+                    msg += t("pet.level_up_none", locale)
+
             await self.bot.send_message(user_id, msg, parse_mode="HTML")
         except Exception as e:
             logger.warning(

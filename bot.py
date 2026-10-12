@@ -8118,6 +8118,9 @@ async def main():
     study_service = StudyService(
         user_repo, session_repo, ach_service,
         pet_repo, leaderboard_repo, bot=bot,
+        # Один источник истины: level-up упоминает покупку предметов только
+        # пока она реально доступна в профиле.
+        pet_customization_enabled=PET_CUSTOMIZATION_ENABLED,
     )
     leaderboard_service = LeaderboardService(user_repo, leaderboard_repo, friend_repo=friend_repo)
     # bot создан выше для передачи в StudyService (level-up notifications).

@@ -509,6 +509,8 @@
     "level_up": "🎉 <b>Уровень повышен!</b>\n🐾 Питомец вырос: {old_level} → <b>{new_level}</b>",
     "level_up_unlocked": "\n\n<b>Открылись новые предметы:</b>\n{items}\n\nКупить можно в профиле через customization picker.",
     "level_up_none": "\n\nНа этом уровне новых предметов не открылось — продолжай!",
+    "level_up_item_color": "🎨 цвет «{value}» — {price} 🪙",
+    "level_up_item_accessory": "🎁 «{value}» — {price} 🪙",
     "default_name": "Питомец"
   },
   "leaderboard": {
