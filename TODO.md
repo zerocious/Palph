@@ -21,7 +21,7 @@ Example:
 Готовность: `tips/*.json` + `tips/README.md`; кэш при старте; inline «Ещё совет» / «Все советы» / пагинация; контекстный pick + cooldown 7д (`user_tips_seen`); `user_tips_stats` + `TipsRepository`; событие `tip_viewed`; ачивка `10_tips_read`; FAQ обновлён; 26 тестов  
 Приоритет: Must — **закрыто**
 
-**Known issue (defer):** пагинация «Все советы» (◀️/▶️) инкрементит `total_views` → можно ускорить ачивку; монета остаётся 1/день. Fix: не вызывать gamification hook на `tips:list` page turns.
+**Known issue — исправлено:** пагинация «Все советы» (◀️/▶️) инкрементила `total_views` → ачивку можно было набрать тапами по стрелке. Теперь листание не двигает счётчик, дневную монету и ачивку (`_on_tip_viewed(count_progress=False)`); событие `tip_viewed` и пометка «просмотрен» сохраняются, аналитика не меняется. Тесты: `tests/test_tips_paging_farming.py`.
 
 ---
 

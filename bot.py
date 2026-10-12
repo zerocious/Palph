@@ -5322,13 +5322,37 @@ async def build_morning_tip_block(user_id: int, tz: str) -> str:
     return t("reminders.tip_of_day_header", locale) + body
 
 
-async def _on_tip_viewed(user_id: int, category: str, tip_id: str | None = None) -> str:
-    """Монета за первый совет дня, ачивка за 10 советов, событие tip_viewed."""
+async def _on_tip_viewed(
+    user_id: int,
+    category: str,
+    tip_id: str | None = None,
+    *,
+    count_progress: bool = True,
+) -> str:
+    """
+    Монета за первый совет дня, ачивка за 10 советов, событие tip_viewed.
+
+    count_progress=False — листание списка «Все советы» (◀️/▶️). Совет при
+    этом реально показан, поэтому он помечается просмотренным и событие
+    tip_viewed пишется как раньше: аналитика (adoption, top tips,
+    retention) читает его в нескольких местах и не должна меняться. Но
+    счётчик просмотров, дневная монета и ачивка 10_tips_read НЕ двигаются:
+    раньше десять тапов по стрелке выдавали ачивку с наградой, а
+    «читать» ради неё по-прежнему можно только через «Ещё совет».
+    """
     locale = await loc(user_id)
     if category not in _tip_cats(locale):
         return ""
     if tip_id:
         await tips_repo.record_seen(user_id, tip_id)
+    if not count_progress:
+        await event_repo.log(user_id, "tip_viewed", {
+            "category": category,
+            "tip_id": tip_id,
+            "source": "list",
+            "counted": False,
+        })
+        return ""
     user = await user_repo.get_user(user_id)
     local_date = _user_local_date_str(user)
     total_views, coin_granted = await tips_repo.record_view(user_id, local_date)
@@ -5388,7 +5412,12 @@ async def _edit_or_send_tip(
     locale = await loc(callback.from_user.id)
     tips = _tip_cats(locale)[category]["tips"]
     total = len(tips)
-    suffix = await _on_tip_viewed(callback.from_user.id, category, tip.get("id"))
+    # page is not None — это листание списка, а не «прочитал совет»:
+    # прогресс (счётчик, монета, ачивка) не засчитываем.
+    suffix = await _on_tip_viewed(
+        callback.from_user.id, category, tip.get("id"),
+        count_progress=page is None,
+    )
     body = _format_tip_message(
         category, tip, locale, page=page, total=total if page is not None else None,
     ) + suffix
