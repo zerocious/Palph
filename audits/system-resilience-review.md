@@ -1,6 +1,6 @@
 # System Resilience Review — Palph (Telegram bot, aiogram 3)
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-13 (pytest suite **807** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-10-12 (pytest suite **810** tests).
 
 ## Статус находок на 2026-09-13
 
@@ -381,7 +381,7 @@ async with _TELEGRAM_SEND_SEM:
 
 **Locations:**
 - `services.py:388-449` — `render_pet` fallback chain → `FileNotFoundError`
-- `services.py:807-837` — evening reminder: GIF → text on missing asset
+- `services.py:810-837` — evening reminder: GIF → text on missing asset
 - `services.py:731-740` — morning tip builder failure → send without tip block
 - `i18n.py:36-43` — `t()` falls back ru → raw key
 - `bot.py:918-921`, `944+` — tips JSON with legacy `.txt` fallback

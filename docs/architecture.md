@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Doc sync:** 2026-09-13 · сверено с `bot.py`, `services.py`, `db.py`.
+> **Doc sync:** 2026-10-12 · сверено с `bot.py`, `services.py`, `db.py`.
 
 Palph — однопроцессный Telegram-бот на **aiogram 3.x** + **aiosqlite**.
 Никаких внешних сервисов: ни Redis, ни очередей, ни отдельной БД-инстанции.
@@ -53,22 +53,22 @@ Palph — однопроцессный Telegram-бот на **aiogram 3.x** + **
 
 ## Карта модулей
 
-| Модуль | Строк | Ответственность |
-|--------|------:|-----------------|
-| `bot.py` | 8057 | Точка входа, роутер aiogram, все хендлеры, клавиатуры, FSM-состояния, загрузка учебного контента с диска, админ-команды, `main()` |
-| `services.py` | 2858 | `StudyService`, `StreakService`, `ReminderService`, `LeaderboardService`, `AnalyticsService`, `BackupService`, `AchievementService`, `UserRateLimiter`, SM-2, формулы лидерборда, рендер питомца, resilience-обёртки Telegram |
-| `repository.py` | 2373 | 15 репозиториев: `UserRepository`, `SessionRepository`, `UserFlashcardRepository`, `UserTaskRepository`, `TipsRepository`, `FlashcardRepository`, `McqProgressRepository`, `TaskProgressRepository`, `SubjectStatsRepository`, `EventRepository`, `AdminRepository`, `PetRepository`, `LeaderboardRepository`, `FriendRepository`, `PlanRepository` |
-| `plan_handlers.py` | 791 | UI спринт-плана к экзамену. **Выключен флагом `PLAN_UI_ENABLED = False`** |
-| `plan_service.py` | 545 | Чистые функции спринт-плана: каталог контента, диагностика, генерация 14-дневного плана |
-| `db.py` | 542 | `get_db()`, `init_db()` (28 таблиц + 14 индексов), ALTER-миграции, разрешение путей `DB_PATH`/`LOG_FILE`/`BACKUP_DIR` |
-| `file_upload_security.py` | 231 | Валидация загружаемых `.txt`, защита от path traversal, санитайз ключей ассетов питомца, лимиты длины |
-| `parse_logs.py` | 196 | ETL `bot.log` → CSV событий (для `/parse_logs`) |
-| `tasks.py` | 147 | Три фоновых планировщика: стрики+бэкап, напоминания, недельный rollover |
-| `locale_bot.py` | 139 | Хелперы локализации: каталоги предметов/режимов/FAQ, команды бота, ярлыки |
-| `fsm_storage.py` | 121 | `SQLiteStorage` — persistent FSM для aiogram |
-| `user_task_txt.py` | 119 | Парсер пользовательских задач из `.txt` + промпт-инструкция |
-| `task_answer_match.py` | 95 | Сверка числовых ответов (дроби, запятая/точка, нормализованный текст) |
-| `i18n.py` | 76 | `t()`, `kb_in()`, загрузка бандлов `locales/*.json` |
+| Модуль | Строк (≈) | Ответственность |
+|--------|----------:|-----------------|
+| `bot.py` | ~8100 | Точка входа, роутер aiogram, все хендлеры, клавиатуры, FSM-состояния, загрузка учебного контента с диска, админ-команды, `main()` |
+| `services.py` | ~2900 | `StudyService`, `StreakService`, `ReminderService`, `LeaderboardService`, `AnalyticsService`, `BackupService`, `AchievementService`, `UserRateLimiter`, SM-2, формулы лидерборда, рендер питомца, resilience-обёртки Telegram |
+| `repository.py` | ~2400 | 15 репозиториев: `UserRepository`, `SessionRepository`, `UserFlashcardRepository`, `UserTaskRepository`, `TipsRepository`, `FlashcardRepository`, `McqProgressRepository`, `TaskProgressRepository`, `SubjectStatsRepository`, `EventRepository`, `AdminRepository`, `PetRepository`, `LeaderboardRepository`, `FriendRepository`, `PlanRepository` |
+| `plan_handlers.py` | ~790 | UI спринт-плана к экзамену. **Выключен флагом `PLAN_UI_ENABLED = False`** |
+| `plan_service.py` | ~550 | Чистые функции спринт-плана: каталог контента, диагностика, генерация 14-дневного плана |
+| `db.py` | ~540 | `get_db()`, `init_db()` (28 таблиц + 14 индексов), ALTER-миграции, разрешение путей `DB_PATH`/`LOG_FILE`/`BACKUP_DIR` |
+| `file_upload_security.py` | ~230 | Валидация загружаемых `.txt`, защита от path traversal, санитайз ключей ассетов питомца, лимиты длины |
+| `parse_logs.py` | ~200 | ETL `bot.log` → CSV событий (для `/parse_logs`) |
+| `tasks.py` | ~150 | Три фоновых планировщика: стрики+бэкап, напоминания, недельный rollover |
+| `locale_bot.py` | ~140 | Хелперы локализации: каталоги предметов/режимов/FAQ, команды бота, ярлыки |
+| `fsm_storage.py` | ~120 | `SQLiteStorage` — persistent FSM для aiogram |
+| `user_task_txt.py` | ~120 | Парсер пользовательских задач из `.txt` + промпт-инструкция |
+| `task_answer_match.py` | ~95 | Сверка числовых ответов (дроби, запятая/точка, нормализованный текст) |
+| `i18n.py` | ~76 | `t()`, `kb_in()`, загрузка бандлов `locales/*.json` |
 
 Легаси: `archive/telegabot.py.legacy` — исходный монолит до рефакторинга,
 в рантайме не участвует.

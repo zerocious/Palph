@@ -87,12 +87,36 @@ MUTATIONS: list[Mutation] = [
      "\U0001f43e Питомец создан",
      "порядок фич"),
 
+    # --- размеры модулей, переменные окружения, папка scripts/ ---
+    ("structure", "размер модуля разошёлся", "docs/architecture.md",
+     "| `bot.py` | ~8100 |", "| `bot.py` | ~4000 |", "размеры модулей"),
+    ("structure", "переменная окружения не описана", "bot.py",
+     'os.getenv("LOG_LEVEL", "INFO")', 'os.getenv("LOG_LEVEL_X", "INFO")',
+     "переменные окружения из кода описаны"),
+    ("structure", "дефолт переменной разошёлся", "bot.py",
+     'os.getenv("BACKUP_RETENTION_DAYS", "30")', 'os.getenv("BACKUP_RETENTION_DAYS", "45")',
+     "дефолты переменных"),
+    ("structure", "хардкод-константа разошлась с документом", "bot.py",
+     "TELEGRAM_TIMEOUT = 30", "TELEGRAM_TIMEOUT = 45", "TELEGRAM_TIMEOUT"),
+    ("structure", "скрипт исчез из справочника", "docs/scripts.md",
+     "| `check_plan_issues.py` |", "| `check_plan_issuesX.py` |", "каждый скрипт описан"),
+    ("structure", "счётчик скриптов разошёлся", "docs/scripts.md",
+     "16 python-скриптов", "17 python-скриптов", "счётчик скриптов"),
+
     # --- команды ---
     ("commands", "удалён раздел админ-команды", "admin_commands.md",
      "### `/backup` 👑 главный админ", "### `/backupX` 👑 главный админ",
      "раздел в admin_commands"),
     ("commands", "команда пикера без хендлера", "locale_bot.py",
      'BotCommand(command="pet"', 'BotCommand(command="petz"', "пикера существуют"),
+    ("commands", "счётчик админ-команд разошёлся", "admin_commands.md",
+     "> **21** админская команда", "> **20** админская команда", "админских команд"),
+    ("commands", "снята отметка главного админа", "admin_commands.md",
+     "### `/backup` 👑 главный админ", "### `/backup` для админов",
+     "только для главного админа"),
+    ("commands", "guard главного админа убран из кода", "bot.py",
+     "if message.from_user.id != MAIN_ADMIN_ID:", "if not is_admin(message.from_user.id):",
+     "только для главного админа"),
 
     # --- статус находок в аудитах ---
     ("audits", "закрытая находка снова помечена открытой", "audits/error-handling-review.md",

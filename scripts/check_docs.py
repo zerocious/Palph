@@ -282,6 +282,103 @@ def check_audit_status() -> None:
     check("статус находок в аудитах совпадает с кодом", not wrong, "; ".join(wrong[:4]))
 
 
+# ------------------------------------------------------- папка scripts/
+def check_scripts_doc() -> None:
+    """
+    Содержимое `scripts/` — против docs/scripts.md, в обе стороны.
+
+    Новый скрипт, о котором не знает справочник, найдут в лучшем случае
+    по `ls`; исчезнувший — будут искать. Счётчик в шапке проверяется
+    отдельно: именно такие числа («15 python-скриптов») переписывают
+    последними.
+    """
+    doc = read("docs/scripts.md")
+    real = sorted(
+        p.name for p in (ROOT / "scripts").iterdir()
+        if p.is_file() and (p.suffix == ".py" or p.name.endswith(".sh.example"))
+    )
+    check("папка scripts/ не пуста", len(real) >= 10, f"файлов {len(real)}")
+    mentioned = set(re.findall(r"`([A-Za-z0-9_]+\.(?:py|sh\.example))`", doc))
+    missing = [n for n in real if n not in mentioned]
+    check("каждый скрипт описан в docs/scripts.md", not missing, ", ".join(missing))
+
+    # Призраков ищем только среди строк таблиц: в прозе документа
+    # упоминаются и модули бота (`bot.py`, `services.py`), это не скрипты.
+    rows = set(re.findall(r"^\| `([A-Za-z0-9_]+\.(?:py|sh\.example))`", doc, re.M))
+    ghosts = sorted(rows - set(real))
+    check("в docs/scripts.md нет строк об удалённых скриптах", not ghosts, ", ".join(ghosts))
+
+    py = sum(1 for n in real if n.endswith(".py"))
+    sh = len(real) - py
+    claims = re.findall(r"(\d+) python-скриптов \+ (\d+) shell-шаблон", doc)
+    check("счётчик скриптов в шапке разобран", bool(claims))
+    wrong = [c for c in claims if (int(c[0]), int(c[1])) != (py, sh)]
+    check(f"счётчик скриптов = {py} python + {sh} shell", not wrong,
+          f"в доке {wrong[:1]}, реально {py} + {sh}")
+
+
+# --------------------------------------------------- размеры модулей
+def check_module_lines() -> None:
+    """
+    Карта модулей в architecture.md — против `wc -l`.
+
+    Числа стояли точные и протухли на первом же коммите в `bot.py`
+    (8057 в документе против 8080 в файле). Точное значение документу и
+    не нужно: он сообщает, какие модули большие. Поэтому в таблице `~N`,
+    а проверка допускает 10% (но не меньше 10 строк) расхождения —
+    обычная правка не краснеет, переезд половины модуля краснеет.
+    """
+    rows = re.findall(
+        r"^\| `([A-Za-z0-9_]+\.py)` \| ~?(\d+) \|", read("docs/architecture.md"), re.M
+    )
+    check("карта модулей в architecture.md разобрана", len(rows) >= 10, f"строк {len(rows)}")
+    bad = []
+    for name, claimed in rows:
+        path = ROOT / name
+        if not path.exists():
+            bad.append(f"{name}: модуля нет")
+            continue
+        actual = len(path.read_text(encoding="utf-8").splitlines())
+        if abs(actual - int(claimed)) > max(10, actual * 0.1):
+            bad.append(f"{name}: в доке ~{claimed}, реально {actual}")
+    check("размеры модулей в architecture.md близки к реальным", not bad, "; ".join(bad[:4]))
+
+
+# ------------------------------------------------ переменные окружения
+def check_env_vars() -> None:
+    """
+    Переменные окружения и их дефолты — против кода, в обе стороны.
+
+    `configuration.md` — первый документ, который читают при деплое:
+    лишняя переменная в нём тратит время, недостающая ломает запуск.
+    """
+    src = read("bot.py") + read("db.py") + read("tasks.py") + read("services.py")
+    used = set(re.findall(r"os\.getenv\(\s*\"([A-Z_]+)\"", src))
+    used |= set(re.findall(r"resolve_env_path\(\s*\"([A-Z_]+)\"", src))
+    defaults = dict(re.findall(r"os\.getenv\(\s*\"([A-Z_]+)\"\s*,\s*\"([^\"]*)\"", src))
+
+    doc = read("docs/configuration.md")
+    documented = set(re.findall(r"^\| `([A-Z_]+)` \|", doc, re.M))
+    check("таблица переменных окружения разобрана", len(documented) >= 5,
+          f"переменных в доке {len(documented)}")
+    check("все переменные окружения из кода описаны", not used - documented,
+          ", ".join(sorted(used - documented)))
+    check("в docs/configuration.md нет несуществующих переменных",
+          not documented - used, ", ".join(sorted(documented - used)))
+
+    wrong = []
+    for name, default in sorted(defaults.items()):
+        row = re.search(r"^\| `" + name + r"` \|[^|]*\| ([^|]*) \|", doc, re.M)
+        if row and default and default not in row.group(1):
+            wrong.append(f"{name}: в коде `{default}`, в доке {row.group(1).strip()}")
+    check("дефолты переменных совпадают с кодом", not wrong, "; ".join(wrong[:4]))
+
+    # Константы, про которые документ отдельно говорит «не через env».
+    for const, value in (("TELEGRAM_TIMEOUT", r"30"), ("CHANNEL_URL", r"https://t\.me/palph_study")):
+        in_code = re.search(rf"^{const} = \"?{value}\"?", src, re.M) is not None
+        check(f"{const} в документации совпадает с кодом", in_code)
+
+
 # ---------------------------------------------------------------- Doc sync
 DOC_SYNC_HEADER_LINES = 12
 _DOC_SYNC_RE = re.compile(r"Doc sync[:*]*\s*\**\s*(\d{4}-\d{2}-\d{2})")
@@ -494,6 +591,31 @@ def _commands_from_code() -> tuple[set[str], set[str]]:
     return admin, user
 
 
+def _main_admin_only_commands() -> set[str]:
+    """
+    Команды, закрытые не просто админкой, а `MAIN_ADMIN_ID`.
+
+    Признак — сам guard (`message.from_user.id != MAIN_ADMIN_ID`), а не
+    упоминание константы: `/help` и `/delete_account` её тоже упоминают,
+    но доступ главным админом не ограничивают. Та же ошибка, что с
+    маркерами в аудитах, — брать симптом вместо решения.
+    """
+    src = read("bot.py")
+    tree = ast.parse(src)
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        names: set[str] = set()
+        for dec in node.decorator_list:
+            # ast.unparse нормализует кавычки к одинарным — ловим оба вида.
+            names |= set(re.findall(r"Command\(['\"]([A-Za-z0-9_]+)['\"]", ast.unparse(dec)))
+        body = ast.get_source_segment(src, node) or ""
+        if names and re.search(r"from_user\.id\s*!=\s*MAIN_ADMIN_ID", body):
+            out |= names
+    return out
+
+
 def check_commands() -> None:
     """
     Слэш-команды: код против справочников. Ровно так вручную нашлось, что
@@ -529,6 +651,25 @@ def check_commands() -> None:
     readme_user = set(re.findall(r"`/([A-Za-z0-9_]+)`", ub))
     check("все команды пикера перечислены в README", picker <= readme_user,
           f"не хватает: {sorted(picker - readme_user)}")
+
+    # Счётчик в шапке справочника. Разделов в документе на один больше,
+    # чем команд: у `/export` их два (`<alias>` и `all`), поэтому считаем
+    # различные имена, а не заголовки.
+    counts = re.search(
+        r"\*\*(\d+)\*\* админская команда, из них \*\*(\d+)\*\* только для главного",
+        ac,
+    )
+    check("счётчик команд в шапке admin_commands.md разобран", counts is not None)
+    if counts:
+        check(f"админских команд {len(admin)}", int(counts.group(1)) == len(admin),
+              f"в доке {counts.group(1)}")
+        main_doc = set(re.findall(r"^### `/([A-Za-z0-9_]+)[^\n]*👑 главный админ", ac, re.M))
+        main_code = _main_admin_only_commands()
+        check("команды «только для главного админа» совпадают с кодом",
+              main_doc == main_code,
+              f"в доке {sorted(main_doc)}, в коде {sorted(main_code)}")
+        check(f"их ровно {len(main_code)}", int(counts.group(2)) == len(main_code),
+              f"в доке {counts.group(2)}")
 
 
 # ---------------------------------------------------------------- константы
@@ -713,6 +854,7 @@ def main() -> int:
         check_export_aliases,
         check_locales, check_content, check_feature_flags,
         check_commands, check_audit_status, check_feature_usage,
+        check_module_lines, check_env_vars, check_scripts_doc,
         check_doc_sync_dates, check_balance_constants,
         check_test_counts,
     ):

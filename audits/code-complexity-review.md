@@ -1,6 +1,6 @@
 # Code Complexity Review
 
-> **Audit date:** 2026-05-24 · **Doc sync:** 2026-09-13 (Palph v0.8, pytest suite **807** tests).
+> **Audit date:** 2026-05-24 · **Doc sync:** 2026-10-12 (Palph v0.8, pytest suite **810** tests).
 > Line counts below are point-in-time snapshots; re-run audit after major refactors.
 
 **Product:** Palph (Telegram bot, aiogram 3)  

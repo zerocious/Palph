@@ -1,6 +1,6 @@
 # Требования к тестам
 
-> **Doc sync:** 2026-09-13 · **807** тест в 52 файлах, все зелёные
+> **Doc sync:** 2026-10-12 · **810** тест в 52 файлах, все зелёные
 > (`python -m pytest -q`, ~24 с).
 
 ## Запуск
@@ -200,7 +200,7 @@ shallow-клоне.
 | UX и настройки | `test_main_menu_ux.py`, `test_profile_ux.py`, `test_settings_fixes.py`, `test_tz_presets.py`, `test_i18n.py` | 39 |
 | Спринт-план (UI выключен) | `test_plan_service.py`, `test_plan_repository.py` | 34 |
 | Ачивки | `test_achievement_service.py` | 14 |
-| Документация | `test_docs_consistency.py` | 14 |
+| Документация | `test_docs_consistency.py` | 17 |
 
 Точные цифры на текущий момент: `pytest --collect-only -q | tail -1`.
 

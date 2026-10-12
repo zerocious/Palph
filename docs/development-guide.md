@@ -1,6 +1,6 @@
 # Рекомендации при разработке
 
-> **Doc sync:** 2026-09-13.
+> **Doc sync:** 2026-10-12.
 
 Как добавлять новое, не ломая то, что работает. Архитектурный контекст —
 [architecture.md](architecture.md), требования к тестам —
@@ -159,7 +159,7 @@ await event_repo.log(user_id, "my_event", {"subject_id": sid, "value": v})
 
 ## Чеклист перед коммитом
 
-1. `python -m pytest -q` — зелёный (807 тестов).
+1. `python -m pytest -q` — зелёный (810 тестов).
 2. `python scripts/check_docs.py` — документация сходится с кодом.
 3. `python -m py_compile bot.py services.py repository.py db.py`.
 4. `python -c "import bot"` — ловит ошибки в декораторах и на импорте.
